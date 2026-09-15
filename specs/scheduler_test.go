@@ -152,7 +152,7 @@ func TestRunParallelBatched_FatalAssertionStopsSpecBody(t *testing.T) {
 // has no mechanism to run a subtest against a live testing.TB from a worker goroutine) instead of
 // vanishing without a trace.
 func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
-	results := make([]string, 1)
+	results := make([]parallelFailure, 1)
 	backend := &parallelBackend{specIndex: 0, results: &results}
 
 	var subtestRan bool
@@ -161,11 +161,11 @@ func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
 	if subtestRan {
 		t.Error("expected the subtest body to never run under parallel mode, but it ran")
 	}
-	if results[0] == "" {
+	if results[0].Message == "" {
 		t.Fatal("expected Run to record a failure, got none")
 	}
-	if !strings.Contains(results[0], "generated") {
-		t.Errorf("expected the failure to mention the subtest name, got %q", results[0])
+	if !strings.Contains(results[0].Message, "generated") {
+		t.Errorf("expected the failure to mention the subtest name, got %q", results[0].Message)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
 // package — see runWorker, runWorkerBatched, and parallelStep in program.go), same as any other
 // fatal assertion.
 func TestParallelBackend_RunAbortsSpecWhenAbortOnFatal(t *testing.T) {
-	results := make([]string, 1)
+	results := make([]parallelFailure, 1)
 	backend := &parallelBackend{specIndex: 0, results: &results, abortOnFatal: true}
 
 	var ranAfter bool
@@ -191,7 +191,7 @@ func TestParallelBackend_RunAbortsSpecWhenAbortOnFatal(t *testing.T) {
 	if ranAfter {
 		t.Error("expected code after Run to be skipped, but it ran")
 	}
-	if results[0] == "" {
+	if results[0].Message == "" {
 		t.Error("expected Run to record a failure before aborting")
 	}
 }

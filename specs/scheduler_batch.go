@@ -19,7 +19,7 @@ const DefaultChunkSize = 16
 // (not per spec), reducing backend setup overhead. A fatal assertion aborts only the spec that
 // raised it (see runWorkerSpec) — the chunk loop continues to the next spec. No allocations in
 // the loop.
-func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string, chunkSize uint32) {
+func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure, chunkSize uint32) {
 	ctx, release := acquireContext(backend)
 	defer release()
 

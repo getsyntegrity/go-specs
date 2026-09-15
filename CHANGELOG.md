@@ -60,6 +60,18 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   still happens only on failure, and assertions still allocate nothing when they pass.
   ([#101](https://github.com/getsyntegrity/go-specs/issues/101))
 
+- `ItParallel`/`RunParallel`/`RunParallelBatched` failures now embed the user's own assertion file
+  and line in the reported message text, e.g. `spec[0]: /path/to/spec_test.go:42: expected 1 to
+  equal 2`. The worker goroutine that ran the assertion has already exited by the time the failure
+  is reported, so `testing.T.Helper()` — the mechanism #101 above uses — has no live frame left to
+  mark; the location is instead captured while the goroutine's frame is still live and carried as
+  data (file, line) until the failure is formatted into text at the one place a plain `go test` run
+  can show it. Go's own primary-decorated location (the line `go test` prints right after
+  `--- FAIL:`) still names an internal go-specs frame — that part of #101's fix does not extend to
+  the parallel path, and is not expected to. `report.EventReporter`'s `SpecResultEvent.Message` is
+  unchanged: it still receives the failure string verbatim, with no location text mixed in.
+  ([#108](https://github.com/getsyntegrity/go-specs/issues/108))
+
 - `report.SpecStartEvent.Path` no longer splits a declared name that contains `/`. It was rebuilt by
   splitting the slash-joined breadcrumb, so `It("slash/inside")` arrived as two segments: the event
   reported more scopes than were declared and its last segment was not `Name`, which made a reporter
