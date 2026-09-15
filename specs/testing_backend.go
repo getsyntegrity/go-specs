@@ -31,6 +31,12 @@ type runnableBackend struct {
 	tb testing.TB
 }
 
+// Helper exists to satisfy testBackend. It is useless for source attribution and no assertion
+// should call it: testing.T.Helper marks the function that called it, so this marks the
+// runnableBackend.Helper frame — which has already returned by the time the reporting call builds
+// its stack, and therefore never appears in it. On a backend not backed by a testing.TB
+// (parallelBackend) it is a no-op besides. A frame that wants to be transparent must call
+// tb.Helper() literally inside itself; see helperTB.
 func (r *runnableBackend) Helper()  { r.tb.Helper() }
 func (r *runnableBackend) FailNow() { r.tb.FailNow() }
 

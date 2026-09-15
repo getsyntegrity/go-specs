@@ -57,3 +57,32 @@ func (f *fakeSnapshotBackend) Name() string { return "" }
 func (f *fakeSnapshotBackend) Cleanup(func()) {}
 
 func (f *fakeSnapshotBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
+
+// TestSnapshotFailureLeavesContextUnfailed pins a defect, not a guarantee.
+//
+// Every other assertion calls Context.recordFailure() on each of its failure branches, which is
+// what SpecResultEvent.Failed is built from. Context.Snapshot calls it only when runtime.Caller
+// fails; the mismatch verdict is decided inside snapshots.RunFromFile, which reports to the backend
+// itself and never touches ctx.failed. So a failing snapshot exits `go test` red while the reporter
+// is told the spec passed: Failed is false, and SuiteEndEvent.FailedSpecs does not count it.
+//
+// Any reporter-driven consumer — a JUnit writer, a CI summary, a flake tracker — disagrees with the
+// exit code for exactly this one assertion.
+//
+// This predates the source-attribution fix and is not fixed here; see issue #115. The assertion
+// below deliberately requires ctx.failed to stay false, so whoever fixes it has to change this test
+// on purpose rather than discovering the behaviour changed underneath them.
+func TestSnapshotFailureLeavesContextUnfailed(t *testing.T) {
+	fake := &fakeSnapshotBackend{}
+	ctx := &Context{backend: fake}
+
+	ctx.Snapshot("nonexistent-key-pinning-the-unrecorded-failure", 42)
+
+	if fake.fatalfMsg == "" {
+		t.Fatal("expected the snapshot mismatch to be reported to the backend")
+	}
+	if ctx.failed {
+		t.Fatal("ctx.failed is now set on a snapshot mismatch — the defect this test pins is fixed; " +
+			"assert Failed is true instead and close issue #115")
+	}
+}

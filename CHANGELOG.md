@@ -59,3 +59,12 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `DescribeFast`, and the Builder/Runner path. The passing fast path is unchanged: caller discovery
   still happens only on failure, and assertions still allocate nothing when they pass.
   ([#101](https://github.com/getsyntegrity/go-specs/issues/101))
+
+### Known issues
+
+- A failing `ctx.Snapshot` is reported to a `report.EventReporter` as a **passing** spec
+  (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
+  though `go test` exits non-zero. Pre-existing and unrelated to the attribution fix above; every
+  other assertion records the failure correctly. Pinned by
+  `TestSnapshotFailureLeavesContextUnfailed`.
+  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))

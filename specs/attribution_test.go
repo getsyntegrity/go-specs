@@ -24,6 +24,14 @@ import (
 //
 // The fixture lives in testdata/attribution so `go test ./...` never runs it directly; every spec
 // in it fails on purpose.
+//
+// SCOPE: the fixture covers the sequential backends only. ItParallel is deliberately absent, and
+// not as an oversight — the parallel path has no source attribution to assert. parallelBackend
+// records a failure as a formatted string into a results slice (see scheduler.go) and the scheduler
+// surfaces it later from a different goroutine and a different frame, so testing.T.Helper's frame
+// bookkeeping — the entire mechanism this file pins — never applies. Context.tb is nil there and
+// parallelBackend.Helper is a no-op. Giving parallel specs a real source location is a separate
+// change: it needs the location captured where the assertion runs, not marked for testing to find.
 
 const (
 	attributionFixtureDir  = "testdata/attribution"
@@ -32,17 +40,6 @@ const (
 	// that constant and this test only needs to blank it out for the subprocess.
 	updateSnapshotsEnv = "GO_SPECS_UPDATE_SNAPSHOTS"
 )
-
-// goSpecsInternalFiles are files that must never appear as a failure location. testing_backend.go
-// and context.go are the two frames the pre-fix code actually reported.
-var goSpecsInternalFiles = []string{
-	"testing_backend.go",
-	"context.go",
-	"matcher.go",
-	"snapshot.go",
-	"runner.go",
-	"execution_plan.go",
-}
 
 var (
 	attributionWantRe = regexp.MustCompile(`// want:(\w+)`)
@@ -111,14 +108,11 @@ func assertNoInternalFrames(t *testing.T, output string) {
 		if m == nil {
 			continue
 		}
-		file := filepath.Base(m[1])
-		for _, internal := range goSpecsInternalFiles {
-			if file == internal {
-				t.Errorf("failure attributed to go-specs internal frame %s: %q", internal, strings.TrimSpace(line))
-			}
-		}
-		if file != attributionFixtureFile {
-			t.Errorf("failure attributed to unexpected file %s, want %s: %q",
+		// Allowlist, deliberately: the only acceptable failure location is the fixture itself, so
+		// every go-specs frame is rejected without having to enumerate them. A denylist of internal
+		// filenames would pass silently the day one of them is renamed or a new one starts leaking.
+		if file := filepath.Base(m[1]); file != attributionFixtureFile {
+			t.Errorf("failure attributed to %s, want the user's own file %s: %q",
 				file, attributionFixtureFile, strings.TrimSpace(line))
 		}
 	}
