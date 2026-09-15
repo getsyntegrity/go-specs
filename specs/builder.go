@@ -22,31 +22,38 @@ const (
 
 // specItem is one registered spec (or skip). Before/after enable coalescing; hookKey identifies the scope set.
 type specItem struct {
-	kind    specKind
-	name    string // the It/ItParallel name, for SpecStartEvent.Name; "" for skip (its steps are dropped anyway)
-	before  []step
-	spec    step // single spec body; nil for skip
-	after   []step
-	steps   []step // full sequence only for kindParallel (before+fn+after flattened)
-	hookKey string // from b.hookKey() for coalescing without comparing funcs
+	kind specKind
+	name string // the It/ItParallel name, for SpecStartEvent.Name; "" for skip (its steps are dropped anyway)
+	// fullName is the Describe breadcrumb ending in name (see Builder.fullName), used only as this
+	// spec's testing.T.Run identity (#102). Reported identity always stays name, never this.
+	fullName string
+	before   []step
+	spec     step // single spec body; nil for skip
+	after    []step
+	steps    []step // full sequence only for kindParallel (before+fn+after flattened)
+	hookKey  string // from b.hookKey() for coalescing without comparing funcs
 }
 
 // Builder compiles a DSL into a Program. Use NewBuilder(), then Describe/BeforeEach/AfterEach/It, then Build().
 type Builder struct {
-	program  *Program
-	scopes   []scope
-	pending  []specItem
-	hasFocus bool
+	program *Program
+	scopes  []scope
+	// scopeNames holds the name of every enclosing Describe, outermost first. Only Describe pushes
+	// here — ensureScope's implicit root scope is unnamed — so it can be shorter than scopes.
+	scopeNames []string
+	pending    []specItem
+	hasFocus   bool
 }
 
 // NewBuilder creates a builder that will produce a new Program.
 // The optional capacity hint is ignored (kept for API compatibility with flat usage).
 func NewBuilder(capacity ...int) *Builder {
 	return &Builder{
-		program:  &Program{Groups: nil},
-		scopes:   nil,
-		pending:  nil,
-		hasFocus: false,
+		program:    &Program{Groups: nil},
+		scopes:     nil,
+		scopeNames: nil,
+		pending:    nil,
+		hasFocus:   false,
 	}
 }
 
@@ -91,8 +98,18 @@ func (b *Builder) Describe(name string, body func()) {
 		return
 	}
 	b.scopes = append(b.scopes, scope{})
+	b.scopeNames = append(b.scopeNames, name)
 	body()
 	b.scopes = b.scopes[:len(b.scopes)-1]
+	b.scopeNames = b.scopeNames[:len(b.scopeNames)-1]
+}
+
+// fullName returns the Describe breadcrumb ending in name — the same mapping the bytecode compiler
+// applies (see compiler.fullName), so both sequential execution models give a spec the same Go
+// subtest identity (#102). It is captured per spec at registration time, since the scope stack is
+// unwound by the time finalize builds groups.
+func (b *Builder) fullName(name string) string {
+	return joinSubtestPath(b.scopeNames, name)
 }
 
 // ensureScope ensures at least one scope exists (for BeforeEach/AfterEach/It used without Describe).
@@ -146,12 +163,13 @@ func (b *Builder) It(name string, fn interface{}) {
 	}
 	b.ensureScope()
 	b.pending = append(b.pending, specItem{
-		kind:    kindNormal,
-		name:    name,
-		before:  b.emitBefore(),
-		spec:    step(f),
-		after:   b.emitAfter(),
-		hookKey: b.hookKey(),
+		kind:     kindNormal,
+		name:     name,
+		fullName: b.fullName(name),
+		before:   b.emitBefore(),
+		spec:     step(f),
+		after:    b.emitAfter(),
+		hookKey:  b.hookKey(),
 	})
 }
 
@@ -171,12 +189,13 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 	b.ensureScope()
 	b.hasFocus = true
 	b.pending = append(b.pending, specItem{
-		kind:    kindFocus,
-		name:    name,
-		before:  b.emitBefore(),
-		spec:    step(fn),
-		after:   b.emitAfter(),
-		hookKey: b.hookKey(),
+		kind:     kindFocus,
+		name:     name,
+		fullName: b.fullName(name),
+		before:   b.emitBefore(),
+		spec:     step(fn),
+		after:    b.emitAfter(),
+		hookKey:  b.hookKey(),
 	})
 }
 
@@ -266,10 +285,11 @@ func (b *Builder) finalize() {
 		if curIdx >= 0 && groups[curIdx].hookKey == it.hookKey {
 			groups[curIdx].specs = append(groups[curIdx].specs, it.spec)
 			groups[curIdx].names = append(groups[curIdx].names, it.name)
+			groups[curIdx].fullNames = append(groups[curIdx].fullNames, it.fullName)
 			groups[curIdx].skipped = append(groups[curIdx].skipped, pendingSkips...)
 			pendingSkips = nil
 		} else {
-			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, after: it.after, hookKey: it.hookKey, skipped: pendingSkips})
+			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, fullNames: []string{it.fullName}, after: it.after, hookKey: it.hookKey, skipped: pendingSkips})
 			pendingSkips = nil
 			curIdx = len(groups) - 1
 		}

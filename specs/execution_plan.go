@@ -287,7 +287,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	ctx, release := acquireContext(backend)
 	defer release()
 	started := reportSpecStarted(rep, name, path)
-	message, output := runSpecProgram(backend, ctx, program, name)
+	message, output := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 	return proposalControllerResult{}
 }
@@ -299,7 +299,12 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 // still run and be reported. A fake backend (e.g. controlledBackend, whose Run is a no-op) or a
 // *testing.B falls back to running program directly against ctx/backend, same as before this
 // isolation existed.
-func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, name string) (message, output string) {
+//
+// subtestName is the spec's full Describe/When/It breadcrumb (specSubtestName), passed to
+// testing.T.Run purely for -v/-run/IDE/test2json identity. It is never read back from t.Name():
+// SpecStartEvent/SpecResultEvent keep taking Name from plan.Names and Path from plan.FullNames, so
+// testing's sanitization (spaces to "_") and "#01" suffixing never leak into reported identity.
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string) {
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
@@ -312,7 +317,7 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, na
 		ctx.SetPathValues(PathValues{})
 		return runProgram(program, ctx, nil)
 	}
-	return runSpecProgramIsolated(t, ctx, program, name)
+	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
 
 // runSpecProgramIsolated creates the real subtest and runs program inside it. Split out from
@@ -322,8 +327,8 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, na
 // escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
-func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, name string) (message, output string) {
-	t.Run(name, func(subT *testing.T) {
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string) {
+	t.Run(subtestName, func(subT *testing.T) {
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
@@ -340,6 +345,20 @@ func specEventName(plan *ExecutionPlan, i int) string {
 		return ""
 	}
 	return plan.Names[i]
+}
+
+// specSubtestName returns the Go subtest identity for plan spec i: its full Describe/When/It
+// breadcrumb (plan.FullNames[i]), not the leaf It name, so two specs sharing a leaf name under
+// different scopes stay independently selectable with `go test -run` instead of being told apart
+// only by testing's incidental "#01" suffix (#102). See SubtestName for the mapping's contract.
+//
+// It falls back to plan.Names[i] for a plan built without breadcrumbs — a hand-built ExecutionPlan,
+// or a compiler with an empty name stack, where the leaf name already is the whole breadcrumb.
+func specSubtestName(plan *ExecutionPlan, i int) string {
+	if i >= 0 && i < len(plan.FullNames) && plan.FullNames[i] != "" {
+		return plan.FullNames[i]
+	}
+	return specEventName(plan, i)
 }
 
 // specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for

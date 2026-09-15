@@ -82,6 +82,48 @@ There is no branching on step type in the hot path; the compiler has already lai
 
 ---
 
+## Subtest identity
+
+When the backend is a real `*testing.T`, each sequential spec runs in its own subtest — that is what
+keeps a `Fatalf` in one spec from unwinding the whole suite. That subtest is named by the spec's
+**full `Describe`/`When`/`It` breadcrumb**, joined with `/`, not by the leaf `It` name alone:
+
+```go
+Describe(t, "Cart", func(s *specs.Spec) {
+    s.When("empty", func(s *specs.Spec) {
+        s.It("has no items", func(ctx *specs.Context) { /* ... */ })
+    })
+})
+```
+
+runs as `TestCart/Cart/empty/has_no_items`, so you can select exactly that behaviour:
+
+```bash
+go test -run 'TestCart/Cart/empty/has_no_items'
+```
+
+Both sequential execution models use this mapping — `Describe`/`Spec`/`ExecutionPlan` and
+`Builder`/`Program`/`Runner` — and `specs.SubtestName` exposes it. The mapping is a plain join; the
+`testing` package then applies its own presentation rules on top, and those are what a `-run`
+pattern must match:
+
+| Declared name | In the `-run` pattern | Why |
+|---|---|---|
+| `has no items` | `has_no_items` | `testing` rewrites spaces to `_` |
+| `a/b` | `a/b` (two elements) | `/` is not escaped; it adds a level |
+| `` (empty) | trailing empty element | an empty name does not collapse |
+| same breadcrumb twice | `…#01` on the second | `testing`'s usual disambiguation |
+
+Two specs that share only a leaf `It` name under different `When` scopes have different breadcrumbs,
+so they no longer collide and are never told apart by an incidental `#01`.
+
+This affects Go subtest identity only. Reporter events keep the framework's own values —
+`SpecStartEvent.Name` is the unsanitized leaf name and `Path` is the unsanitized breadcrumb — so
+nothing `testing` does here leaks into a report. `DescribeFlat`, `DescribeFast`, and runs against a
+`*testing.B` create no subtests at all and are unaffected.
+
+---
+
 ## Memory layout concept
 
 The compiled program is a flat slice of function pointers. The builder produces this layout; the runner consumes it in order.
