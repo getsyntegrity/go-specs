@@ -23,9 +23,8 @@ func declareDescribeVariantSuite(s *specs.Spec) {
 }
 
 // BenchmarkDescribeVariant_Describe, _DescribeFlat and _DescribeFast exist to keep DescribeFast's
-// godoc claim checkable rather than asserted: the three entry points are behaviourally identical,
-// because Spec.flat is recorded at declaration time and read nowhere (#110). Run them together and
-// the allocs/op must match; a future change that wires the flag up will separate them here first.
+// godoc claim checkable rather than asserted: the three entry points are documented aliases of one
+// another (#110), so their allocs/op must match. Run them together and confirm it.
 //
 // The backend is the *testing.B these benchmarks already run on, which is the one backend that
 // genuinely runs without subtests — so this measures declaration plus execution with the subtest

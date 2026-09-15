@@ -52,6 +52,17 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- `Spec.flat` — written by `DescribeFlat`/`DescribeFast` but never read by anything downstream, since
+  `CompiledSuite` never carried it — has been removed, along with the `flat` parameter threaded
+  through the internal `describeWithCompiler`/`describeWithCompilerContext` helpers. `DescribeFlat`
+  and `DescribeFast` are now documented aliases for `Describe`: this was already their exact runtime
+  behavior (both create one subtest per spec against a `*testing.T`, exactly like `Describe`, per
+  `TestDescribeFlatSubtestIdentityRealProcess`/`TestDescribeFastSubtestIdentityRealProcess`), so no
+  caller-visible behavior changes. Wiring the flag up instead — skipping the per-spec subtest for
+  these two entry points — was the alternative; it was rejected because it would have reintroduced
+  the `Fatalf`/`FailNow` cross-spec failure #74 fixed, only for `DescribeFlat`/`DescribeFast` callers.
+  ([#110](https://github.com/getsyntegrity/go-specs/issues/110))
+
 - Failing built-in assertions now report the user's own assertion file and line instead of a
   go-specs internal frame such as `testing_backend.go` or `context.go`. Terminal and IDE output
   jump straight to the behaviour that broke. Covers `EqualTo`, `ExpectT(...).ToEqual`/`.To`,
