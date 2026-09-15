@@ -29,14 +29,54 @@ type step func(*Context)
 // before/spec/after of their own and never touch this group's before/after; Runner reports them
 // (SpecStarted+SpecFinished{Skipped:true}, no body run) independently of whether this group's real
 // specs run at all.
+//
+// scopeNames parallels names, holding each spec's raw (unjoined) enclosing Describe names —
+// outermost first, captured by Builder at registration time (see specItem.scopeNames) — for
+// SpecStartEvent.Path (see specPath). Like names, it is left nil for a parallelStep group.
+// skippedScopeNames is the same, parallel to skipped.
 type group struct {
-	before    []step
-	specs     []step
-	names     []string
-	fullNames []string
-	after     []step
-	hookKey   string
-	skipped   []string
+	before            []step
+	specs             []step
+	names             []string
+	fullNames         []string
+	scopeNames        [][]string
+	after             []step
+	hookKey           string
+	skipped           []string
+	skippedScopeNames [][]string
+}
+
+// specPath returns g.specs[i]'s SpecStartEvent.Path: its declared enclosing scope names (outermost
+// first) followed by its own name — mirroring the ExecutionPlan model's specEventPath. The result is
+// a fresh slice, never a window into g.scopeNames, matching Path's "freshly allocated, safe to
+// retain or modify" contract. Returns nil when i is out of range for g.names (an unnamed spec, or a
+// parallelStep group, whose real specs report their own path — see parallelStep).
+func (g *group) specPath(i int) []string {
+	if i < 0 || i >= len(g.names) {
+		return nil
+	}
+	var scopes []string
+	if i < len(g.scopeNames) {
+		scopes = g.scopeNames[i]
+	}
+	path := make([]string, 0, len(scopes)+1)
+	path = append(path, scopes...)
+	return append(path, g.names[i])
+}
+
+// skippedPath is specPath for g.skipped[i] (a compile-time-skipped spec), same shape and same
+// freshly-allocated contract.
+func (g *group) skippedPath(i int) []string {
+	if i < 0 || i >= len(g.skipped) {
+		return nil
+	}
+	var scopes []string
+	if i < len(g.skippedScopeNames) {
+		scopes = g.skippedScopeNames[i]
+	}
+	path := make([]string, 0, len(scopes)+1)
+	path = append(path, scopes...)
+	return append(path, g.skipped[i])
 }
 
 // subtestName returns the Go subtest identity for g.specs[i]: its full Describe breadcrumb, falling
@@ -78,13 +118,15 @@ type specResult struct {
 // one on Context only when it has a report.EventReporter; nil otherwise, so a parallel group's
 // execution is unaffected without one.
 type specExecutionObserver interface {
-	specStarted(name string) report.SpecStartEvent
+	// path is the spec's SpecStartEvent.Path (declared scope names, outermost first, then name), or
+	// nil for a group built without breadcrumbs — see group.specPath.
+	specStarted(name string, path []string) report.SpecStartEvent
 	specFinished(start report.SpecStartEvent, result specResult)
 	// specSkipped reports one compile-time-skipped spec (SkipIt/Skip): a single SpecStarted +
 	// SpecFinished{Skipped: true} pair, with no body ever run. Only Runner.Run's sequential group
 	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
 	// concept, so it never needs it.
-	specSkipped(name string)
+	specSkipped(name string, path []string)
 }
 
 // Program is a compiled execution program. Groups run in order; within a group: before once, all specs, after once (reverse).
@@ -140,7 +182,11 @@ func runAll(steps []step) step {
 // obs is read once from ctx before any goroutine starts, then only read (never mutated) by them,
 // so no synchronization is needed for the pointer itself; obs's own methods serialize the actual
 // report.EventReporter calls, since not every EventReporter implementation is concurrency-safe.
-func parallelStep(steps []step, names []string) step {
+//
+// scopeNames parallels names and steps, holding each spec's declared enclosing Describe names (see
+// group.scopeNames) for SpecStartEvent.Path; an out-of-range or nil entry reports a nil path, same
+// as an unnamed spec reports an empty name.
+func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 	return func(ctx *Context) {
 		if len(steps) == 0 {
 			return
@@ -160,7 +206,14 @@ func parallelStep(steps []step, names []string) step {
 				child.SetPathValues(pathValues)
 				var started report.SpecStartEvent
 				if obs != nil {
-					started = obs.specStarted(name)
+					var scopes []string
+					if i < len(scopeNames) {
+						scopes = scopeNames[i]
+					}
+					path := make([]string, 0, len(scopes)+1)
+					path = append(path, scopes...)
+					path = append(path, name)
+					started = obs.specStarted(name, path)
 				}
 				defer func() {
 					switch r := recover(); r {

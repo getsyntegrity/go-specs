@@ -2,7 +2,10 @@
 // Hooks are resolved at compile time; the runner only runs steps in order.
 package specs
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // scope holds hooks for one Describe level. Root scope is at index 0.
 type scope struct {
@@ -27,11 +30,18 @@ type specItem struct {
 	// fullName is the Describe breadcrumb ending in name (see Builder.fullName), used only as this
 	// spec's testing.T.Run identity (#102). Reported identity always stays name, never this.
 	fullName string
-	before   []step
-	spec     step // single spec body; nil for skip
-	after    []step
-	steps    []step // full sequence only for kindParallel (before+fn+after flattened)
-	hookKey  string // from b.hookKey() for coalescing without comparing funcs
+	// scopeNames holds the enclosing Describe names, outermost first, exactly as declared — never
+	// joined, unlike fullName. It feeds SpecStartEvent.Path (see group.specPath): a joined breadcrumb
+	// cannot be split back into scopes without ambiguity when a declared name itself contains "/"
+	// (the same defect #113/#114 fixed for the ExecutionPlan model's Path). Captured at registration
+	// time as a copy, since Builder.scopeNames is a mutated stack that unwinds before finalize builds
+	// groups — sharing its backing array here would alias sibling Describes' names.
+	scopeNames []string
+	before     []step
+	spec       step // single spec body; nil for skip
+	after      []step
+	steps      []step // full sequence only for kindParallel (before+fn+after flattened)
+	hookKey    string // from b.hookKey() for coalescing without comparing funcs
 }
 
 // Builder compiles a DSL into a Program. Use NewBuilder(), then Describe/BeforeEach/AfterEach/It, then Build().
@@ -168,13 +178,14 @@ func (b *Builder) It(name string, fn interface{}) {
 	}
 	b.ensureScope()
 	b.pending = append(b.pending, specItem{
-		kind:     kindNormal,
-		name:     name,
-		fullName: b.fullName(name),
-		before:   b.emitBefore(),
-		spec:     step(f),
-		after:    b.emitAfter(),
-		hookKey:  b.hookKey(),
+		kind:       kindNormal,
+		name:       name,
+		fullName:   b.fullName(name),
+		scopeNames: slices.Clone(b.scopeNames),
+		before:     b.emitBefore(),
+		spec:       step(f),
+		after:      b.emitAfter(),
+		hookKey:    b.hookKey(),
 	})
 }
 
@@ -183,7 +194,7 @@ func (b *Builder) It(name string, fn interface{}) {
 // compiled Program can still report the spec's identity as skipped. See finalize.
 func (b *Builder) SkipIt(name string, fn func(*Context)) {
 	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindSkip, name: name})
+	b.pending = append(b.pending, specItem{kind: kindSkip, name: name, scopeNames: slices.Clone(b.scopeNames)})
 }
 
 // FIt registers a focused spec. If any spec is focused, only focused specs are compiled into the program.
@@ -194,13 +205,14 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 	b.ensureScope()
 	b.hasFocus = true
 	b.pending = append(b.pending, specItem{
-		kind:     kindFocus,
-		name:     name,
-		fullName: b.fullName(name),
-		before:   b.emitBefore(),
-		spec:     step(fn),
-		after:    b.emitAfter(),
-		hookKey:  b.hookKey(),
+		kind:       kindFocus,
+		name:       name,
+		fullName:   b.fullName(name),
+		scopeNames: slices.Clone(b.scopeNames),
+		before:     b.emitBefore(),
+		spec:       step(fn),
+		after:      b.emitAfter(),
+		hookKey:    b.hookKey(),
 	})
 }
 
@@ -215,7 +227,7 @@ func (b *Builder) ItParallel(name string, fn func(*Context)) {
 		return
 	}
 	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, steps: b.emitSpecSteps(fn)})
+	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, scopeNames: slices.Clone(b.scopeNames), steps: b.emitSpecSteps(fn)})
 }
 
 // hookKey returns a key that uniquely identifies the current scope stack and hook set.
@@ -261,28 +273,33 @@ func (b *Builder) finalize() {
 	var groups []group
 	curIdx := -1
 	var pendingSkips []string
+	var pendingSkipScopeNames [][]string
 	for i := 0; i < len(items); i++ {
 		it := items[i]
 		if it.kind == kindSkip {
 			pendingSkips = append(pendingSkips, it.name)
+			pendingSkipScopeNames = append(pendingSkipScopeNames, it.scopeNames)
 			continue
 		}
 		if it.kind == kindParallel {
 			curIdx = -1
 			parSteps := []step{runAll(it.steps)}
 			parNames := []string{it.name}
+			parScopeNames := [][]string{it.scopeNames}
 			j := i + 1
 			for j < len(items) && items[j].kind == kindParallel {
 				parSteps = append(parSteps, runAll(items[j].steps))
 				parNames = append(parNames, items[j].name)
+				parScopeNames = append(parScopeNames, items[j].scopeNames)
 				j++
 			}
 			// names is left nil: this group's single spec is the synthetic parallelStep closure,
 			// which reports each real ItParallel spec itself (via ctx.execObserver) as it runs on
 			// its own goroutine. Runner.Run's sequential per-spec reporting only fires when names
 			// is populated, so it correctly stays out of the way here instead of double-reporting.
-			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames)}, skipped: pendingSkips})
+			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames, parScopeNames)}, skipped: pendingSkips, skippedScopeNames: pendingSkipScopeNames})
 			pendingSkips = nil
+			pendingSkipScopeNames = nil
 			i = j - 1
 			continue
 		}
@@ -291,16 +308,30 @@ func (b *Builder) finalize() {
 			groups[curIdx].specs = append(groups[curIdx].specs, it.spec)
 			groups[curIdx].names = append(groups[curIdx].names, it.name)
 			groups[curIdx].fullNames = append(groups[curIdx].fullNames, it.fullName)
+			groups[curIdx].scopeNames = append(groups[curIdx].scopeNames, it.scopeNames)
 			groups[curIdx].skipped = append(groups[curIdx].skipped, pendingSkips...)
+			groups[curIdx].skippedScopeNames = append(groups[curIdx].skippedScopeNames, pendingSkipScopeNames...)
 			pendingSkips = nil
+			pendingSkipScopeNames = nil
 		} else {
-			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, fullNames: []string{it.fullName}, after: it.after, hookKey: it.hookKey, skipped: pendingSkips})
+			groups = append(groups, group{
+				before:            it.before,
+				specs:             []step{it.spec},
+				names:             []string{it.name},
+				fullNames:         []string{it.fullName},
+				scopeNames:        [][]string{it.scopeNames},
+				after:             it.after,
+				hookKey:           it.hookKey,
+				skipped:           pendingSkips,
+				skippedScopeNames: pendingSkipScopeNames,
+			})
 			pendingSkips = nil
+			pendingSkipScopeNames = nil
 			curIdx = len(groups) - 1
 		}
 	}
 	if len(pendingSkips) > 0 {
-		groups = append(groups, group{skipped: pendingSkips})
+		groups = append(groups, group{skipped: pendingSkips, skippedScopeNames: pendingSkipScopeNames})
 	}
 	b.program.Groups = groups
 }

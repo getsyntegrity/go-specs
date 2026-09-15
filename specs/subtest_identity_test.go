@@ -545,13 +545,15 @@ func TestDescribeFastSubtestIdentityRealProcess(t *testing.T) {
 
 // TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim is
 // TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim for the Runner/Program model, which
-// reaches the reporter through a different path — reporterObserver.specStarted(g.names[i]) — and so
-// needs its own proof that hierarchical subtest names did not leak into reported identity.
+// reaches the reporter through a different path — reporterObserver.specStarted(g.names[i],
+// g.specPath(i)) — and so needs its own proof that hierarchical subtest names did not leak into
+// reported identity.
 //
-// The two models report different things, and both are pinned here on purpose. The plan model
-// carries a Path built from the breadcrumb; the Runner model has never carried one, so Path stays
-// empty and Name is the bare leaf It name. What #102 had to preserve is that neither field picks up
-// the breadcrumb or testing's rewrite of it.
+// Until #112 was fixed, the Runner model never carried a Path at all (Name was reported, Path
+// always stayed empty), unlike the ExecutionPlan model. Both models now agree: Path is the declared
+// scope names, outermost first, with Name as the last element — built from the builder's raw
+// (unjoined) scope stack (see specItem.scopeNames), not by splitting the joined breadcrumb, which
+// would reintroduce the #113/#114 defect for a declared name containing "/".
 func TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
 	b := NewBuilder()
 	b.Describe("suite", func() {
@@ -568,8 +570,36 @@ func TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T)
 	if got := rep.specStarted[0].Name; got != "does a thing" {
 		t.Fatalf("expected the reported Name to stay the unsanitized leaf name, got %q", got)
 	}
-	if got := rep.specStarted[0].Path; len(got) != 0 {
-		t.Fatalf("expected the Runner model to report no Path, got %q", got)
+	wantPath := []string{"suite", "when a", "does a thing"}
+	if got := rep.specStarted[0].Path; strings.Join(got, "|") != strings.Join(wantPath, "|") {
+		t.Fatalf("expected the reported Path to be %q, got %q", wantPath, got)
+	}
+}
+
+// TestRunnerRunReportedPathKeepsNamesContainingSeparator is
+// TestSpecRunReportedPathKeepsNamesContainingSeparator (#113) for the Runner/Program model: the
+// fix for #112 must not resurrect that defect by rebuilding Path from the joined breadcrumb.
+func TestRunnerRunReportedPathKeepsNamesContainingSeparator(t *testing.T) {
+	var rep recordingReporter
+	NewRunnerWithReporter(identityHelperProgram(), "suite", &rep).Run(t)
+
+	var got *report.SpecStartEvent
+	for i := range rep.specStarted {
+		if rep.specStarted[i].Name == "slash/inside" {
+			got = &rep.specStarted[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a reported spec named %q, got %d events", "slash/inside", len(rep.specStarted))
+	}
+	// Three declared scopes, three reported segments: the "/" inside the leaf is not a boundary.
+	wantPath := []string{"suite", "when b", "slash/inside"}
+	if strings.Join(got.Path, "|") != strings.Join(wantPath, "|") {
+		t.Fatalf("expected the declared Path %q, got %q", wantPath, got.Path)
+	}
+	if got.Path[len(got.Path)-1] != got.Name {
+		t.Fatalf("expected Path's last segment to be the spec's Name %q, got %q", got.Name, got.Path[len(got.Path)-1])
 	}
 }
 

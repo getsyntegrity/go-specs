@@ -201,7 +201,7 @@ func TestParallelStep_PanicRecovered(t *testing.T) {
 	ctx := &Context{backend: backend}
 	run := parallelStep([]step{
 		runAll([]step{func(*Context) { panic("boom") }}),
-	}, nil)
+	}, nil, nil)
 	run(ctx) // must return normally; an unrecovered panic here would crash the whole test binary
 	if !backend.failed {
 		t.Error("expected the panic to be reported as a spec failure")
@@ -226,7 +226,7 @@ func TestParallelStep_FatalAssertionStopsSpecBody(t *testing.T) {
 			ctx.Expect(1).ToEqual(2)
 			ranAfterFailure = true // must not run: the assertion above is fatal
 		}}),
-	}, nil)
+	}, nil, nil)
 	run(ctx)
 	if !backend.failed {
 		t.Fatal("expected a failure to be reported")
@@ -253,7 +253,7 @@ func TestParallelStep_FatalAssertionSkipsRemainingSteps(t *testing.T) {
 			func(ctx *Context) { ctx.Expect(1).ToEqual(2) }, // the spec body, fails fatally
 			func(*Context) { afterRan = true },              // stands in for a baked-in AfterEach
 		}),
-	}, nil)
+	}, nil, nil)
 	run(ctx)
 	if !backend.failed {
 		t.Fatal("expected a failure to be reported")
@@ -277,7 +277,7 @@ func TestParallelStep_NonFatalErrorDoesNotAbort(t *testing.T) {
 			ctx.backend.Error("logged, non-fatal")
 			ranAfterError = true
 		}}),
-	}, nil)
+	}, nil, nil)
 	run(ctx)
 	if !ranAfterError {
 		t.Error("expected code after a non-fatal Error to still run")
@@ -309,7 +309,7 @@ func TestParallelStep_FailFastRunsAllSpecsInGroup(t *testing.T) {
 			ctx.Expect(1).ToEqual(2)
 		}}),
 		runAll([]step{func(*Context) { mark("sibling") }}),
-	}, nil)
+	}, nil, nil)
 	run(ctx)
 
 	if !ran["fails"] || !ran["sibling"] {
@@ -327,7 +327,7 @@ func TestParallelStep_NilCtxT(t *testing.T) {
 	var sawNilT bool
 	run := parallelStep([]step{
 		runAll([]step{func(ctx *Context) { sawNilT = ctx.T == nil }}),
-	}, nil)
+	}, nil, nil)
 	run(NewContext(t))
 	if !sawNilT {
 		t.Error("expected ctx.T to be nil inside an ItParallel body")

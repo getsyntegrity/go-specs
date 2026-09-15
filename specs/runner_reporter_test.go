@@ -103,7 +103,7 @@ func TestParallelStepWithObserverRecordsPerGoroutineDuration(t *testing.T) {
 		runAll([]step{func(*Context) {}}),
 		runAll([]step{func(*Context) { time.Sleep(sleep) }}),
 		runAll([]step{func(*Context) {}}),
-	}, []string{"fast1", "slow", "fast2"})
+	}, []string{"fast1", "slow", "fast2"}, nil)
 	run(ctx)
 
 	if len(rep.specStarted) != 3 || len(rep.specFinished) != 3 {
@@ -185,7 +185,7 @@ func TestParallelStepWithObserverReportsEachSpecIndividually(t *testing.T) {
 		runAll([]step{func(*Context) {}}),
 		runAll([]step{func(ctx *Context) { ctx.backend.Error("boom") }}),
 		runAll([]step{func(*Context) {}}),
-	}, []string{"p1", "p2", "p3"})
+	}, []string{"p1", "p2", "p3"}, nil)
 	run(ctx)
 
 	if !backend.failed {
@@ -231,7 +231,7 @@ func TestParallelStepWithObserverPassesFailureStringStraightToMessage(t *testing
 	run := parallelStep([]step{
 		runAll([]step{func(*Context) {}}),
 		runAll([]step{func(ctx *Context) { ctx.backend.Errorf("boom: %d", 42) }}),
-	}, []string{"p1", "p2"})
+	}, []string{"p1", "p2"}, nil)
 	run(ctx)
 
 	if len(rep.specFinished) != 2 {
@@ -310,6 +310,30 @@ func TestRunnerWithReporterItParallelSharesRunnerObserver(t *testing.T) {
 	end := rep.suiteFinished[0]
 	if end.TotalSpecs != 3 || end.FailedSpecs != 0 {
 		t.Fatalf("expected TotalSpecs=3 FailedSpecs=0, got %+v", end)
+	}
+}
+
+// TestRunnerWithReporterItParallelReportsPath proves an ItParallel spec's declared enclosing scopes
+// reach SpecStartEvent.Path too (#112): parallelStep reports each real spec itself, on its own
+// goroutine, through the same code path as a sequential spec's Path.
+func TestRunnerWithReporterItParallelReportsPath(t *testing.T) {
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.Describe("When parallel", func() {
+				b.ItParallel("p1", func(ctx *Context) {})
+			})
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	if len(rep.specStarted) != 1 {
+		t.Fatalf("expected one SpecStarted, got %+v", rep.specStarted)
+	}
+	wantPath := []string{"Suite", "When parallel", "p1"}
+	if got := rep.specStarted[0].Path; strings.Join(got, "|") != strings.Join(wantPath, "|") {
+		t.Fatalf("expected declared Path %q, got %q", wantPath, got)
 	}
 }
 
@@ -405,6 +429,36 @@ func TestRunnerWithReporterReportsSkippedSpec(t *testing.T) {
 	end := rep.suiteFinished[0]
 	if end.TotalSpecs != 3 || end.FailedSpecs != 0 || end.SkippedSpecs != 1 {
 		t.Fatalf("expected TotalSpecs=3 (a,b,c) FailedSpecs=0 SkippedSpecs=1, got %+v", end)
+	}
+}
+
+// TestRunnerWithReporterReportsSkippedSpecPath proves a SkipIt spec's declared enclosing scopes
+// reach SpecStartEvent.Path too (#112) — a compile-time skip is still a declared spec, and its
+// identity should be no less complete than a spec that actually ran.
+func TestRunnerWithReporterReportsSkippedSpecPath(t *testing.T) {
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.Describe("When nested", func() {
+				b.SkipIt("skipped", func(ctx *Context) {})
+			})
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	var got *report.SpecStartEvent
+	for i := range rep.specStarted {
+		if rep.specStarted[i].Name == "skipped" {
+			got = &rep.specStarted[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a SpecStarted named %q, got %+v", "skipped", rep.specStarted)
+	}
+	wantPath := []string{"Suite", "When nested", "skipped"}
+	if strings.Join(got.Path, "|") != strings.Join(wantPath, "|") {
+		t.Fatalf("expected declared Path %q, got %q", wantPath, got.Path)
 	}
 }
 
