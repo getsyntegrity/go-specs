@@ -10,12 +10,13 @@ type SuiteStartEvent struct {
 
 // SuiteEndEvent is emitted when a suite finishes executing.
 type SuiteEndEvent struct {
-	Name         string
-	Time         time.Time
-	Duration     time.Duration // elapsed time between this suite's SuiteStartEvent and this event
-	TotalSpecs   int           // passed + failed + skipped
-	FailedSpecs  int
-	SkippedSpecs int
+	Name          string
+	Time          time.Time
+	Duration      time.Duration // elapsed time between this suite's SuiteStartEvent and this event
+	TotalSpecs    int           // passed + failed + skipped + filtered
+	FailedSpecs   int
+	SkippedSpecs  int
+	FilteredSpecs int // specs excluded by external test selection (e.g. `go test -run`) before their body ran
 }
 
 // SpecStartEvent captures the start of an individual spec (It/Then).
@@ -38,9 +39,15 @@ type SpecStartEvent struct {
 // SpecStartEvent here instead of reusing the original would silently corrupt Duration too.
 type SpecResultEvent struct {
 	SpecStartEvent
-	Failed   bool
-	Skipped  bool          // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
-	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped
+	Failed  bool
+	Skipped bool // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
+	// Filtered is true when a runnable spec was excluded by external test selection — e.g. a `go test
+	// -run` pattern that does not match this spec's subtest name — so its body never ran either.
+	// Failed is always false and Duration is always 0, exactly as for Skipped, but the cause differs:
+	// Skipped is a decision the suite itself made (XIt/Skip), Filtered is a decision made outside it.
+	// A spec is never both Skipped and Filtered.
+	Filtered bool
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped or Filtered
 	Message  string        // short failure summary; empty when not Failed, and also empty for a sequential
 	// Fatalf-based assertion failure — runtime.Goexit unwinds the whole Run call before a SpecFinished
 	// for that spec is ever emitted, so it never reaches this event at all (see specs.runStepRecovered).

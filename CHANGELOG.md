@@ -54,6 +54,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- A spec whose subtest is discarded by `-run` (e.g. `go test -run 'TestX/suite/when_b'` against a
+  suite with a sibling `when_a` spec) is no longer reported to `report.EventReporter` as passed.
+  `runSpecIsolated` (`Builder`/`Runner`) and `runSpecProgramIsolated` (`Describe`/`ExecutionPlan`)
+  both run the spec's body inside a `testing.T.Run` call, but neither its return value nor
+  `ctx.failed` can tell a filtered-out spec apart from one that ran and passed: `testing.T.Run`
+  itself returns `true` for a subtest `-run` never invoked — a subtest that never ran is treated as
+  vacuously passing — and `ctx.failed` is simply never touched when the body doesn't execute. Both
+  functions now set a flag from inside the `t.Run` closure itself, which only runs when the filter
+  accepts the subtest, and report the spec as `report.SpecResultEvent{Filtered: true}` instead of a
+  bare pass. `Failed` stays `false` and `Duration` stays `0`, the same shape a compile-time `Skipped`
+  spec has, but `Skipped` itself stays `false`: the cause is external test selection, not a declared
+  `XIt`/`Skip`, and a consumer that needs to tell the two apart still can. `report.SuiteEndEvent`
+  gains a matching `FilteredSpecs` field, and `TotalSpecs` now counts it too.
+  ([#111](https://github.com/getsyntegrity/go-specs/issues/111))
+
 - `Spec.flat` — written by `DescribeFlat`/`DescribeFast` but never read by anything downstream, since
   `CompiledSuite` never carried it — has been removed, along with the `flat` parameter threaded
   through the internal `describeWithCompiler`/`describeWithCompilerContext` helpers. `DescribeFlat`
