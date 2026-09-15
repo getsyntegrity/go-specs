@@ -16,6 +16,10 @@ type step func(*Context)
 // Before/after slices are shared across all specs in the group to reduce memory and improve locality.
 // hookKey is the builder's scope key for coalescing; not used by the runner.
 //
+// fullNames parallels names, holding each spec's Describe breadcrumb (see Builder.fullName). It is
+// used only as the spec's testing.T.Run identity (#102) — never as reported identity, which always
+// comes from names — and, like names, is nil for a parallelStep group.
+//
 // names holds one entry per group.specs entry (SpecStartEvent.Name), or is left nil for a group
 // whose single spec is a parallelStep closure: that closure reports each real spec itself (see
 // parallelStep), so Runner.Run's sequential per-spec reporting must not also wrap it.
@@ -26,12 +30,23 @@ type step func(*Context)
 // (SpecStarted+SpecFinished{Skipped:true}, no body run) independently of whether this group's real
 // specs run at all.
 type group struct {
-	before  []step
-	specs   []step
-	names   []string
-	after   []step
-	hookKey string
-	skipped []string
+	before    []step
+	specs     []step
+	names     []string
+	fullNames []string
+	after     []step
+	hookKey   string
+	skipped   []string
+}
+
+// subtestName returns the Go subtest identity for g.specs[i]: its full Describe breadcrumb, falling
+// back to the leaf name for a group built without breadcrumbs (a hand-built group in a test, or a
+// spec declared outside any Describe, where the leaf name already is the whole breadcrumb).
+func (g *group) subtestName(i int) string {
+	if full := specName(g.fullNames, i); full != "" {
+		return full
+	}
+	return specName(g.names, i)
 }
 
 // specName returns names[i], or "" when names doesn't cover index i (an unnamed spec, e.g. from
@@ -132,7 +147,7 @@ func parallelStep(steps []step, names []string) step {
 		}
 		pathValues := ctx.Path()
 		obs := ctx.execObserver
-		results := make([]string, len(steps))
+		results := make([]parallelFailure, len(steps))
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
@@ -156,12 +171,12 @@ func parallelStep(steps []step, names []string) step {
 					case parallelAbort{}:
 						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
 					default:
-						if results[i] == "" {
-							results[i] = fmt.Sprintf("panic: %v", r)
+						if results[i].Message == "" {
+							results[i] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
 						}
 					}
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i] != "", Message: results[i]})
+						obs.specFinished(started, specResult{Failed: results[i].Message != "", Message: results[i].Message})
 					}
 					release()
 				}()
@@ -169,8 +184,8 @@ func parallelStep(steps []step, names []string) step {
 			}()
 		}
 		wg.Wait()
-		for _, msg := range results {
-			if msg != "" {
+		for _, r := range results {
+			if r.Message != "" {
 				ctx.recordFailure()
 				break
 			}

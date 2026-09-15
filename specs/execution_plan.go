@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,30 @@ type ExecutionPlan struct {
 	Names        []string
 	FullNames    []string
 	PathGens     []*PathGenerator
+	// PathScopes is the shared backing array holding the declared scope names that enclose each
+	// spec, laid out the same way Instructions is: PathScopeStart[i] and PathScopeLen[i] delimit
+	// spec i's window. The spec's own name is not repeated here — Names[i] already holds it, and
+	// SpecStartEvent.Path is the window followed by Names[i].
+	//
+	// The scopes are stored rather than recovered from FullNames because joining with "/" is not
+	// injective — a declared name that itself contains "/" is indistinguishable from a scope
+	// boundary once joined, so splitting the breadcrumb back apart invents scopes that were never
+	// declared. FullNames stays as-is: it is the subtest identity, a different derivation.
+	//
+	// Consecutive specs sharing the same scopes share one window instead of each storing a copy.
+	// Storing a private copy per spec is O(specs × depth) string headers, and Go grows a large slice
+	// by ~1.25x, so the discarded intermediate arrays cost several times the final size again. On
+	// 50k sibling specs that shape measured +91% build memory; sharing the window removes it.
+	//
+	// The sharing is by adjacency, not by set: appendSpecPath reuses only the window it handed the
+	// previous spec (see there). Every spec in one block shares a window, which is the shape suites
+	// have, but an interleaved tree — When("a"){It}, When("b"){It}, When("a"){It} — reuses nothing
+	// and degrades back to a copy per spec. That is a size trade, never a correctness one: the
+	// reported Path is identical either way. Deduplicating across the whole plan would need a lookup
+	// keyed on the chain, which costs more than it saves for the tree shapes seen in practice.
+	PathScopes     []string
+	PathScopeStart []int
+	PathScopeLen   []int
 }
 
 func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
@@ -34,6 +59,11 @@ func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
 		Names:        make([]string, 0, estimatedSpecs),
 		FullNames:    make([]string, 0, estimatedSpecs),
 		PathGens:     make([]*PathGenerator, 0, estimatedSpecs),
+		// PathScopes is sized for distinct scope chains, not for one copy per spec: sibling specs
+		// share a window, so this grows with the shape of the tree rather than with the spec count.
+		PathScopes:     make([]string, 0, 16),
+		PathScopeStart: make([]int, 0, estimatedSpecs),
+		PathScopeLen:   make([]int, 0, estimatedSpecs),
 	}
 }
 
@@ -120,6 +150,14 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 		plan.Names = append(plan.Names, name)
 		plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
 		plan.PathGens = append(plan.PathGens, node.PathGen)
+		// scratch.path already has this spec's own name pushed as its last element (an ItNode is
+		// not a SuiteNode, so the push above applies to it too); the scopes are everything before
+		// it. An unnamed spec was never pushed, so for it the whole of scratch.path is scopes.
+		scopes := scratch.path
+		if name != "" {
+			scopes = scopes[:len(scopes)-1]
+		}
+		appendSpecPath(plan, scopes)
 	}
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
@@ -171,7 +209,7 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		return runPlanFlatNoSubtests(runCtx, backend, nil, s.Plan)
+		return runPlanSpecsInOrder(runCtx, backend, nil, s.Plan)
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
 	// Paths() can execute a variable number of candidates per plan index, so the plan alone can't
@@ -183,7 +221,7 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	results := runPlanFlatNoSubtests(runCtx, backend, counter, s.Plan)
+	results := runPlanSpecsInOrder(runCtx, backend, counter, s.Plan)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:        name,
 		Time:        time.Now(),
@@ -223,7 +261,11 @@ func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
 	return context.WithCancel(ctx)
 }
 
-func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. The plan is already
+// flat — its hooks are compiled into each spec's own instruction range — so there is no group
+// nesting to walk here. Each spec still gets its own subtest when the backend wraps a real
+// *testing.T; that decision belongs to runSpecProgram, not to this loop.
+func runPlanSpecsInOrder(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
 	results := make([]proposalControllerResult, 0, len(plan.ProgramStart))
 	for i := 0; i < len(plan.ProgramStart); i++ {
 		results = append(results, runExecutionContext(runCtx, backend, rep, plan, i))
@@ -243,7 +285,13 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	}
 	program := plan.Instructions[start : start+length]
 	name := specEventName(plan, i)
-	path := specEventPath(plan, i)
+	// path feeds reportSpecStarted and nothing else, and that returns a zero event when rep is nil.
+	// Building it unconditionally would cost one allocation per spec per run on the reporter-less
+	// path — the one this package advertises as allocation-free.
+	var path []string
+	if rep != nil {
+		path = specEventPath(plan, i)
+	}
 	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
@@ -311,7 +359,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	ctx, release := acquireContext(backend)
 	defer release()
 	started := reportSpecStarted(rep, name, path)
-	message, output := runSpecProgram(backend, ctx, program, name)
+	message, output := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 	return proposalControllerResult{}
 }
@@ -323,7 +371,12 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 // still run and be reported. A fake backend (e.g. controlledBackend, whose Run is a no-op) or a
 // *testing.B falls back to running program directly against ctx/backend, same as before this
 // isolation existed.
-func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, name string) (message, output string) {
+//
+// subtestName is the spec's full Describe/When/It breadcrumb (specSubtestName), passed to
+// testing.T.Run purely for -v/-run/IDE/test2json identity. It is never read back from t.Name():
+// SpecStartEvent/SpecResultEvent keep taking Name from plan.Names and Path from plan.FullNames, so
+// testing's sanitization (spaces to "_") and "#01" suffixing never leak into reported identity.
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string) {
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
@@ -336,7 +389,7 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, na
 		ctx.SetPathValues(PathValues{})
 		return runProgram(program, ctx, nil)
 	}
-	return runSpecProgramIsolated(t, ctx, program, name)
+	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
 
 // runSpecProgramIsolated creates the real subtest and runs program inside it. Split out from
@@ -346,8 +399,8 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, na
 // escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
-func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, name string) (message, output string) {
-	t.Run(name, func(subT *testing.T) {
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string) {
+	t.Run(subtestName, func(subT *testing.T) {
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
@@ -366,13 +419,68 @@ func specEventName(plan *ExecutionPlan, i int) string {
 	return plan.Names[i]
 }
 
-// specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for
+// specSubtestName returns the Go subtest identity for plan spec i: its full Describe/When/It
+// breadcrumb (plan.FullNames[i]), not the leaf It name, so two specs sharing a leaf name under
+// different scopes stay independently selectable with `go test -run` instead of being told apart
+// only by testing's incidental "#01" suffix (#102). That holds whenever the two breadcrumbs differ
+// once testing has normalized them; see joinSubtestPath for the mapping's contract and for the
+// ambiguity it accepts and inherits from testing.T.Run.
+//
+// It falls back to plan.Names[i] for a plan built without breadcrumbs — a hand-built ExecutionPlan,
+// or a compiler with an empty name stack, where the leaf name already is the whole breadcrumb.
+//
+// The empty string doubles as the "no breadcrumb" sentinel, which It("") declared outside any scope
+// also produces. That case is deliberately not given a separate representation: both branches return
+// "" for it, so the sentinel is indistinguishable from the value it stands for only where the two
+// agree. Carrying a presence flag would cost a field on the exported ExecutionPlan — and a slice per
+// plan — to encode a distinction nothing can observe.
+func specSubtestName(plan *ExecutionPlan, i int) string {
+	if i >= 0 && i < len(plan.FullNames) && plan.FullNames[i] != "" {
+		return plan.FullNames[i]
+	}
+	return specEventName(plan, i)
+}
+
+// appendSpecPath records the scopes enclosing one spec and stores the window they occupy. Called
+// once per spec, in the same order as Names/FullNames. The spec's own name is not passed: Names
+// already holds it and specEventPath appends it.
+//
+// When scopes matches the window the previous spec was given — the common case, since every spec
+// declared in the same block sees the same enclosing scopes — that window is reused instead of
+// appending a second copy.
+//
+// Only the previous window is considered, deliberately: specs arrive in declaration order, so one
+// comparison against the tail catches every run of siblings without a per-chain lookup. It does not
+// catch a chain that recurs after an interruption, which then stores a second copy. See the
+// PathScopes field comment for what that trade is and is not.
+func appendSpecPath(plan *ExecutionPlan, scopes []string) {
+	start := len(plan.PathScopes) - len(scopes)
+	if start < 0 || !slices.Equal(plan.PathScopes[start:], scopes) {
+		start = len(plan.PathScopes)
+		plan.PathScopes = append(plan.PathScopes, scopes...)
+	}
+	plan.PathScopeStart = append(plan.PathScopeStart, start)
+	plan.PathScopeLen = append(plan.PathScopeLen, len(scopes))
+}
+
+// specEventPath returns spec i's enclosing scopes followed by its own name, for
 // SpecStartEvent.Path, or nil for a plan without per-spec metadata (see specEventName).
+//
+// The result is a fresh copy, never a window into plan.PathScopes: Path is handed to arbitrary
+// report.EventReporter implementations, and one that sorts or truncates it in place would
+// otherwise corrupt the plan for every later spec and every later run of the same CompiledSuite —
+// and now that scope windows are shared, for every sibling spec as well.
 func specEventPath(plan *ExecutionPlan, i int) []string {
-	if i < 0 || i >= len(plan.FullNames) || plan.FullNames[i] == "" {
+	if i < 0 || i >= len(plan.PathScopeStart) || i >= len(plan.PathScopeLen) || i >= len(plan.Names) {
 		return nil
 	}
-	return strings.Split(plan.FullNames[i], "/")
+	start, length := plan.PathScopeStart[i], plan.PathScopeLen[i]
+	if start < 0 || length < 0 || start+length > len(plan.PathScopes) {
+		return nil
+	}
+	path := make([]string, 0, length+1)
+	path = append(path, plan.PathScopes[start:start+length]...)
+	return append(path, plan.Names[i])
 }
 
 // reportSpecStarted emits SpecStarted and returns the event it sent, so reportSpecFinished can

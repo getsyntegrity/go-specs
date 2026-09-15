@@ -122,7 +122,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 	if cs < 1 {
 		cs = 1
 	}
-	r.runParallelWith(tb, workers, func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string) {
+	r.runParallelWith(tb, workers, func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure) {
 		runWorkerBatched(specs, backend, next, results, cs)
 	})
 }
@@ -130,7 +130,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 // runParallelWith holds the setup shared by RunParallel and RunParallelBatched: worker-count
 // clamping, per-worker backend/result state, goroutine dispatch, and deterministic failure
 // reporting. Only the per-spec claiming strategy (work) differs between the two callers.
-func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string)) {
+func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure)) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
 		return
 	}
@@ -146,7 +146,7 @@ func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work fu
 		workers = 1
 	}
 
-	results := make([]string, n)
+	results := make([]parallelFailure, n)
 	backends := make([]parallelBackend, workers)
 	for i := range backends {
 		backends[i].results = &results

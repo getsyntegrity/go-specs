@@ -31,16 +31,51 @@ type runnableBackend struct {
 	tb testing.TB
 }
 
-func (r *runnableBackend) Helper()                           { r.tb.Helper() }
-func (r *runnableBackend) FailNow()                          { r.tb.FailNow() }
-func (r *runnableBackend) Fatal(args ...any)                 { r.tb.Fatal(args...) }
-func (r *runnableBackend) Fatalf(format string, args ...any) { r.tb.Fatalf(format, args...) }
-func (r *runnableBackend) Error(args ...any)                 { r.tb.Error(args...) }
-func (r *runnableBackend) Errorf(format string, args ...any) { r.tb.Errorf(format, args...) }
-func (r *runnableBackend) Log(args ...any)                   { r.tb.Log(args...) }
-func (r *runnableBackend) Logf(format string, args ...any)   { r.tb.Logf(format, args...) }
-func (r *runnableBackend) Name() string                      { return r.tb.Name() }
-func (r *runnableBackend) Cleanup(fn func())                 { r.tb.Cleanup(fn) }
+// Helper exists to satisfy testBackend. It is useless for source attribution and no assertion
+// should call it: testing.T.Helper marks the function that called it, so this marks the
+// runnableBackend.Helper frame — which has already returned by the time the reporting call builds
+// its stack, and therefore never appears in it. On a backend not backed by a testing.TB
+// (parallelBackend) it is a no-op besides. A frame that wants to be transparent must call
+// tb.Helper() literally inside itself; see helperTB.
+func (r *runnableBackend) Helper()  { r.tb.Helper() }
+func (r *runnableBackend) FailNow() { r.tb.FailNow() }
+
+// The reporting methods below each call r.tb.Helper() before delegating. testing.T.Helper marks
+// the function that called it, so this is what makes the runnableBackend frame itself transparent;
+// without it Go attributes every go-specs failure to testing_backend.go. Callers must additionally
+// mark their own frame (see Context.helperTB) — one Helper() call can never mark two frames.
+func (r *runnableBackend) Fatal(args ...any) {
+	r.tb.Helper()
+	r.tb.Fatal(args...)
+}
+
+func (r *runnableBackend) Fatalf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Fatalf(format, args...)
+}
+
+func (r *runnableBackend) Error(args ...any) {
+	r.tb.Helper()
+	r.tb.Error(args...)
+}
+
+func (r *runnableBackend) Errorf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Errorf(format, args...)
+}
+
+func (r *runnableBackend) Log(args ...any) {
+	r.tb.Helper()
+	r.tb.Log(args...)
+}
+
+func (r *runnableBackend) Logf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Logf(format, args...)
+}
+
+func (r *runnableBackend) Name() string      { return r.tb.Name() }
+func (r *runnableBackend) Cleanup(fn func()) { r.tb.Cleanup(fn) }
 
 func (r *runnableBackend) Run(name string, fn func(testing.TB)) {
 	if t, ok := r.tb.(*testing.T); ok {
@@ -50,6 +85,32 @@ func (r *runnableBackend) Run(name string, fn func(testing.TB)) {
 		return
 	}
 	fn(r.tb)
+}
+
+// helperTB returns the concrete testing.TB behind b, or nil when b is not backed by one (fake
+// backends in unit tests, parallelBackend). It deliberately does NOT call Helper() itself: source
+// attribution depends on *which* function invokes testing.T.Helper, so the returned TB must be used
+// as a literal `tb.Helper()` inside the frame that wants to be marked transparent. Routing that call
+// through any wrapper marks the wrapper instead — that is the bug this accessor exists to avoid.
+//
+// Assertions do not call this: they read the already-resolved Context.tb, because calling this per
+// assertion put the two type assertions inside hot assertion bodies and cost ~10% on the passing
+// fast path (BenchmarkAssertion_GoSpecs_EqualTo) for code that only ever runs on failure. It
+// remains for the snapshot path, which has no Context in hand, and stays noinline for the same
+// code-size reason.
+//
+//go:noinline
+func helperTB(b testBackend) testing.TB {
+	if b == nil {
+		return nil
+	}
+	if r, ok := b.(*runnableBackend); ok {
+		return r.tb
+	}
+	if tb, ok := b.(testing.TB); ok {
+		return tb
+	}
+	return nil
 }
 
 func asTestBackend(tb testing.TB) testBackend {
