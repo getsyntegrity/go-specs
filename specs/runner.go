@@ -103,9 +103,9 @@ var _ specExecutionObserver = (*reporterObserver)(nil)
 // and after hooks (reverse order) as one unit — see runSpecWithHooks. Zero allocations in the loop
 // when Reporter is nil; deterministic.
 //
-// A panic in before, a spec, or an after hook is recovered instead of crashing the process — see
-// runSpecWithHooks for the exact contract (whether the rest of that spec still runs, whether its
-// after hooks still run).
+// A panic in before, a spec, or an after hook is recovered instead of crashing the process. A real
+// testing.T.Fatal/Fatalf/FailNow in before or the spec (runtime.Goexit) still guarantees after runs,
+// via a defer registered before before/body ever start — see runSpecWithHooks for the exact contract.
 func (r *Runner) Run(tb testing.TB) {
 	if r == nil || r.program == nil || tb == nil || len(r.program.Groups) == 0 {
 		return
@@ -297,6 +297,16 @@ func runSpecBody(ctx *Context, tb testing.TB, before []step, s step, after []ste
 // run exactly once per spec, not once for a whole group of coalesced specs — see runProgram in
 // execution_plan.go, which this mirrors.
 //
+// after runs via a defer registered before before/body ever run, not as a plain statement following
+// them: a real *testing.T.Fatal/Fatalf/FailNow inside before or the body calls runtime.Goexit, which
+// unwinds this goroutine without ever reaching a following statement — only deferred calls still run.
+// A plain "run before/body, then run after" sequence would silently skip after entirely in that case,
+// resurrecting the pre-#109 gap where a fatal teardown-relevant failure left resources uncleaned, and
+// diverging from execution_plan.go's runProgram, which guarantees after via the same defer technique.
+// recover() cannot observe Goexit (see runStepRecovered), so message/output stay "" for a Goexit-based
+// failure here exactly as they already do for a body panic — this only fixes after not running, not
+// that pre-existing, documented reporting gap.
+//
 // before and the body are recovered together, as one step passed to runStepRecovered: a panic
 // anywhere in before stops the remaining before hooks and the body (later before hooks, and the body
 // itself, may depend on setup that never completed), and is recorded with the same "panic: value"
@@ -304,13 +314,19 @@ func runSpecBody(ctx *Context, tb testing.TB, before []step, s step, after []ste
 // its own body. A panic in one spec's before never touches its siblings: the next spec in g.specs
 // gets its own fresh call to the same before hooks. FailFast is checked after every before hook, same
 // as between specs, so a non-panic failure with FailFast set also skips the body — but this spec's
-// after hooks still run regardless (via runAfterRecovered below), matching runGroup's original
-// "FailFast decides whether we run more, not whether we leave resources uncleaned" contract.
+// after hooks still run regardless (via the deferred runAfterRecovered below), matching runGroup's
+// original "FailFast decides whether we run more, not whether we leave resources uncleaned" contract.
 //
 // after hooks always run, each recovered individually by runAfterRecovered, so one panicking after
 // hook doesn't stop its siblings. message/output follow runProgram's first-write-wins contract: a
 // before/body panic's message wins over a later after-hook panic's, since it happened first.
 func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (message, output string) {
+	defer func() {
+		afterMessage, afterOutput := runAfterRecovered(ctx, after)
+		if message == "" {
+			message, output = afterMessage, afterOutput
+		}
+	}()
 	message, output = runStepRecovered(ctx, func(ctx *Context) {
 		for _, b := range before {
 			b(ctx)
@@ -320,10 +336,6 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 		}
 		s(ctx)
 	}, "panic")
-	afterMessage, afterOutput := runAfterRecovered(ctx, after)
-	if message == "" {
-		message, output = afterMessage, afterOutput
-	}
 	return
 }
 
