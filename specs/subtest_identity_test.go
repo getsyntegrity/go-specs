@@ -292,28 +292,20 @@ func assertPlanSelectedOnlyWhenB(t *testing.T, output string) {
 	}
 }
 
-// assertRunnerSelectedOnlyWhenB pins the Runner/Program model's hook behaviour, which diverges from
-// the plan model's above. This divergence is known and deliberately pinned, not an oversight in
-// either test: runGroup runs a group's before hooks and defers its after hooks around
-// runSpecsRecovered, which is what calls t.Run, so the hooks live *outside* the subtest. testing can
-// only discard what is inside a subtest, so a -run pattern narrows which spec bodies execute but not
-// which group hooks do — "when a"'s before and after still run even though its only spec does not.
+// assertRunnerSelectedOnlyWhenB pins the Runner/Program model's hook behaviour under -run selection,
+// now converged with the plan model's above (#109). runSpecWithHooks runs a spec's before/after
+// hooks inside its own subtest, as one unit with its body, so a -run pattern that discards a spec's
+// subtest discards its hooks with it exactly like the plan model — "when a"'s before/after never run
+// because -run never selects "when a"'s spec, and coalescing "when a"/"when b" into groups at compile
+// time (a memory optimization — see program.go) has no bearing on this, since each spec still runs
+// its own group's hooks for itself rather than sharing one run across the group.
 //
-// -run only makes the difference visible; it does not create it. The same placement means the two
-// models already disagree with no pattern at all: for a scope with three specs the plan model runs
-// its BeforeEach three times and the Runner runs it once, so BeforeEach does not carry per-spec
-// semantics in this model (#109).
-//
-// The two models therefore share the subtest identity mapping, not their behaviour under filtering.
-// Filed separately; #102 changed neither model's hook placement.
+// This used to diverge (before hooks ran once per group, outside any subtest, so -run could narrow
+// which spec bodies ran without narrowing which hooks did); the two models now share not just the
+// subtest identity mapping (#102) but behaviour under filtering too.
 func assertRunnerSelectedOnlyWhenB(t *testing.T, output string) {
 	t.Helper()
-	assertSelectedOnlyWhenB(t, output)
-	for _, want := range []string{"HOOK before a", "HOOK after a", "HOOK before b"} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected %q to run — group hooks sit outside the subtest in this model, got:\n%s", want, output)
-		}
-	}
+	assertPlanSelectedOnlyWhenB(t, output)
 }
 
 // TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim proves acceptance criterion 5 for the
