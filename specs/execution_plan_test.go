@@ -33,7 +33,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("pass resets context and reverses after hooks", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var order []string
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "case-1", []Instruction{
 			{Code: OpBeforeHook, Fn: func(ctx *Context) { order = append(order, "before") }},
 			{Code: OpBody, Fn: func(ctx *Context) { order = append(order, "body") }},
 			{Code: OpAfterHook, Fn: func(ctx *Context) { order = append(order, "after-inner") }},
@@ -53,7 +53,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("nonfatal assertion completes after hooks", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var afterRuns int
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "case-1", []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.Expect(false).ToEqual(true) }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
 		}, PathValues{}, nil)
@@ -65,7 +65,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("fatal preserves attribution and runs after once", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var bodyCompleted, afterRuns bool
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "case-1", []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.backend.FailNow(); bodyCompleted = true }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns = true }},
 		}, PathValues{}, nil)
@@ -77,7 +77,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("panic is retained and runs after once", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var afterRuns int
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "case-1", []Instruction{
 			{Code: OpBody, Fn: func(*Context) { panic("body panic") }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
 		}, PathValues{}, nil)
@@ -89,9 +89,9 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("shrink probe retains original values deterministically", func(t *testing.T) {
 		path := PathValues{values: []any{7}, present: []bool{true}, index: map[string]int{"value": 0}}
 		program := []Instruction{{Code: OpBody, Fn: func(*Context) {}}, {Code: OpAfterHook, Fn: func(*Context) {}}}
-		first := runIsolatedCase(&controlledBackend{}, program, path, nil)
+		first := runIsolatedCase(&controlledBackend{}, "case-1", program, path, nil)
 		path.values[0] = 9
-		second := runIsolatedCase(&controlledBackend{}, program, path, nil)
+		second := runIsolatedCase(&controlledBackend{}, "case-1", program, path, nil)
 		if first.Path.Int("value") != 7 || second.Path.Int("value") != 9 || first.Failed != second.Failed || first.Panic != second.Panic {
 			t.Fatalf("first = %#v, second = %#v", first, second)
 		}
@@ -494,5 +494,103 @@ func TestGeneratedFatalUsesRealSubtestBoundary(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "controller returned after=1") || strings.Contains(string(output), "second generated case ran") {
 		t.Fatalf("subtest isolation output = %s", output)
+	}
+}
+
+// TestGeneratedFailureOutputNamesTheCandidate proves `go test -v` failure output identifies WHICH
+// generated candidate failed (#103). Before candidate naming, every candidate ran as the literal
+// subtest "generated" and this same failure read "--- FAIL: .../generated#01", which named neither
+// the owning spec nor the value that broke it. Run in a subprocess because the assertion is about
+// the real testing package's own output for a genuinely failing subtest.
+func TestGeneratedFailureOutputNamesTheCandidate(t *testing.T) {
+	if os.Getenv("GO_SPECS_GENERATED_FAILURE_NAME_HELPER") == "1" {
+		Describe(t, "billing", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) { pb.Values("tier", []any{"basic", "pro"}) }).
+				It("accepts tier", func(ctx *Context) {
+					if ctx.Path().Value("tier") == "pro" {
+						ctx.T.Errorf("pro is not supported yet")
+					}
+				})
+		})
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGeneratedFailureOutputNamesTheCandidate$", "-test.v")
+	cmd.Env = append(os.Environ(), "GO_SPECS_GENERATED_FAILURE_NAME_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("failing generated candidate unexpectedly passed: %s", output)
+	}
+	text := string(output)
+	if strings.Contains(text, "generated#") {
+		t.Fatalf("output still uses the old undifferentiated 'generated' subtest name: %s", text)
+	}
+	// The whole identity, in one line: spec breadcrumb, executed ordinal, and the value that failed.
+	const wantFailure = "--- FAIL: TestGeneratedFailureOutputNamesTheCandidate/billing/accepts_tier/case-2-tier=pro"
+	if !strings.Contains(text, wantFailure) {
+		t.Fatalf("expected failure output to contain %q, got: %s", wantFailure, text)
+	}
+	if !strings.Contains(text, "case-1-tier=basic") {
+		t.Fatalf("expected the passing candidate to be named too, got: %s", text)
+	}
+}
+
+// TestGeneratedCandidateIsSelectableWithRun proves the naming contract's practical payoff: a name
+// copied verbatim out of `go test -v` works as a `go test -run` pattern and selects exactly ONE
+// Cartesian candidate (#103). It deliberately discovers the name from the child's own -v output
+// rather than hardcoding it, so the test fails if the printed name ever stops being a usable
+// pattern — which is the property candidateRuneAllowed exists to protect.
+func TestGeneratedCandidateIsSelectableWithRun(t *testing.T) {
+	if os.Getenv("GO_SPECS_RUN_SELECTION_HELPER") == "1" {
+		Describe(t, "catalog", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) { pb.Values("tier", []any{"basic", "pro", "gold"}) }).
+				It("prices tier", func(ctx *Context) {
+					fmt.Printf("BODY RAN tier=%v\n", ctx.Path().Value("tier"))
+				})
+		})
+		return
+	}
+
+	run := func(extra ...string) string {
+		args := append([]string{"-test.run=^TestGeneratedCandidateIsSelectableWithRun$", "-test.v"}, extra...)
+		cmd := exec.Command(os.Args[0], args...)
+		cmd.Env = append(os.Environ(), "GO_SPECS_RUN_SELECTION_HELPER=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("child run %v failed: %v\n%s", extra, err, output)
+		}
+		return string(output)
+	}
+
+	// 1. Discover the candidate names the way a human does: read them off -v output.
+	full := run()
+	var proName string
+	for _, line := range strings.Split(full, "\n") {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), "=== RUN   ")
+		if ok && strings.HasSuffix(name, "tier=pro") {
+			proName = name
+		}
+	}
+	if proName == "" {
+		t.Fatalf("no subtest named for the tier=pro candidate in:\n%s", full)
+	}
+	if got := strings.Count(full, "BODY RAN"); got != 3 {
+		t.Fatalf("expected all 3 candidates to run unfiltered, got %d:\n%s", got, full)
+	}
+
+	// 2. Anchor each "/"-separated element — exactly what `go test -run` matches element-wise — and
+	//    re-run. The pattern is built from the discovered name with no rewriting at all.
+	elements := strings.Split(proName, "/")
+	for idx, element := range elements {
+		elements[idx] = "^" + element + "$"
+	}
+	pattern := strings.Join(elements, "/")
+	selected := run("-test.run=" + pattern)
+
+	if got := strings.Count(selected, "BODY RAN"); got != 1 {
+		t.Fatalf("expected exactly 1 candidate body to run under %q, got %d:\n%s", pattern, got, selected)
+	}
+	if !strings.Contains(selected, "BODY RAN tier=pro") {
+		t.Fatalf("expected the tier=pro candidate to be the one selected, got:\n%s", selected)
 	}
 }

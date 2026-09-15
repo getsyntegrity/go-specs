@@ -258,6 +258,17 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 		// keeping Coverage out of proposalCandidate/proposalFeedback keeps the controller itself
 		// generic instead of coupling it to path-generation concerns.
 		var lastCoverage *Coverage
+		// Both per-candidate names are computed only when someone will actually read them, and the
+		// two predicates are hoisted out of the closure so the decision costs nothing per candidate.
+		// namesSubtests is false for a *testing.B or a fake backend, whose Run never opens a real
+		// subtest — there the name would be built and thrown away on the hot path (see
+		// runIsolatedCase). reports is false when the plan runs without a reporter.
+		namesSubtests := backendNamesSubtests(backend)
+		reports := rep != nil
+		specIdentity := ""
+		if namesSubtests {
+			specIdentity = specIdentityName(plan, i)
+		}
 		return newProposalController(proposalControllerConfig{
 			MaxAttempts:   maxAttempts,
 			MaxAccepted:   maxAccepted,
@@ -269,12 +280,25 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				// then-retried or intermediate Explore candidates would misrepresent how many
 				// executions actually happened, how long the suite really took, and where a
 				// failure occurred.
-				started := reportSpecStarted(rep, name, path)
+				//
+				// Each execution is identified by this candidate, not by a shared literal: the
+				// reporter gets the framework's own formatted values plus the executed ordinal,
+				// and the subtest gets the -run-safe form. See candidate_identity.go for the
+				// contract both names satisfy.
+				reportName := name
+				if reports {
+					reportName = generatedCaseReportName(gen, name, candidate)
+				}
+				started := reportSpecStarted(rep, reportName, path)
 				var cov *Coverage
 				if wantsCoverage {
 					cov = &Coverage{}
 				}
-				result := runIsolatedCase(backend, program, candidate.Values, cov)
+				caseName := ""
+				if namesSubtests {
+					caseName = generatedCaseName(gen, specIdentity, candidate)
+				}
+				result := runIsolatedCase(backend, caseName, program, candidate.Values, cov)
 				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
 				lastCoverage = cov
 				return !result.Failed
@@ -462,14 +486,34 @@ type isolatedCaseResult struct {
 	ContextReset bool
 }
 
+// backendNamesSubtests reports whether backend will actually open a named Go subtest, i.e. whether
+// a generated candidate's subtest name is going to be read by anyone. Only a runnableBackend over a
+// real *testing.T does; a *testing.B or a fake backend runs the case inline and discards the name
+// (see runnableBackend.Run and runIsolatedCase). Callers use this to skip building the name at all
+// on those paths, which is what keeps the benchmark backends' allocation profile unchanged.
+func backendNamesSubtests(backend testBackend) bool {
+	real, ok := backend.(*runnableBackend)
+	if !ok {
+		return false
+	}
+	_, isT := real.tb.(*testing.T)
+	return isT
+}
+
 // runIsolatedCase executes real generated cases in a subtest so Fatal and FailNow
 // terminate only that case while preserving the parent test's failure semantics. cov, when
 // non-nil, is wired into the Context so assertions executed by program record real coverage
 // into it (see Context.RecordCoverage) — the caller owns the pointer and reads it back directly,
 // nothing needs to be copied out before the Context is returned to the pool.
-func runIsolatedCase(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
+//
+// name identifies this one candidate (generatedCaseName; "" when backendNamesSubtests said nobody
+// would read it). It used to be the literal "generated" for every candidate of every spec, which
+// left `go test -v` showing an undifferentiated "generated#01" run and made a generated case
+// unselectable with -run (#103). As with the sequential path, the name is presentation only: it is
+// never read back from t.Name(), and reported identity comes from the plan and the generator.
+func runIsolatedCase(backend testBackend, name string, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
 	if real, ok := backend.(*runnableBackend); ok {
-		real.Run("generated", func(tb testing.TB) {
+		real.Run(name, func(tb testing.TB) {
 			caseBackend := asTestBackend(tb)
 			defer putTestBackend(caseBackend)
 			defer func() { result.Failed = result.Failed || tb.Failed() }()

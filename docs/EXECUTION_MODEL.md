@@ -118,3 +118,99 @@ The builder groups parallel specs into one step; the runner executes that step (
 `RunShard` splits a compiled `Program` across CI shards by hook group, not by individual spec: specs sharing a `BeforeEach`/`AfterEach` are compiled into one group, and whole groups are assigned to shards by `gi % shardCount == shardIndex`. If a suite has many specs under one shared hook, that entire group lands on a single shard.
 
 **Known limitation:** this can produce uneven shard runtimes when hook groups are large or unevenly sized, since balancing happens at the group level rather than the individual-spec level. Balancing by spec count is tracked separately and deferred post-v1.0.0.
+
+---
+
+## Generated candidate identity
+
+A `Paths()` spec does not run once: it runs once per generated candidate. Each executed candidate
+is a real Go subtest, and its name identifies which candidate it was.
+
+### Name shape
+
+```
+<spec breadcrumb>/case-<n>[-seed<s>][-<k=v,k=v...>]
+```
+
+| Part | Meaning |
+|------|---------|
+| `<spec breadcrumb>` | The owning spec's slash-joined `Describe`/`When`/`It` path. |
+| `case-<n>` | The 1-based ordinal of this candidate among the spec's *executed* candidates. |
+| `-seed<s>` | The exploration seed. Present only for `Sample`, `Explore`, `ExploreCoverage` and `ExploreSmart` — a Cartesian stream is fully determined by the declared variables, so it carries no seed. |
+| `-<k=v,...>` | The candidate's path values, in variable declaration order. Omitted when the candidate has no values. |
+
+Examples:
+
+```
+TestCheckout/Checkout/pricing/applies the tier/case-2-tier=pro
+TestCheckout/Checkout/pricing/samples the space/case-4-seed7-vip=true,price=8123
+TestCheckout/Checkout/pricing/explores the space/case-11-seed42-price=907
+```
+
+`go test` output shows these after `testing`'s own rewrite of the spec breadcrumb (spaces become
+`_`): `TestCheckout/Checkout/pricing/applies_the_tier/case-2-tier=pro`.
+
+The ordinal alone is unique within a spec, so two candidates that carry byte-identical values still
+get distinct names. That is also why bounding the values (below) can never make a name ambiguous.
+
+### Sanitization and bounding
+
+`go test -run` compiles each `/`-separated element of its pattern as a regular expression, so a name
+is only useful if it can be pasted back in as a pattern. The candidate part of the name therefore
+contains only ASCII letters, digits and `_ - . = , ~`. Every other rune — spaces, `/`, `[`, `]`,
+`(`, `)`, `*`, `+`, `?`, `^`, `$`, `\`, `{`, `}`, `|`, control characters and all non-ASCII — is
+replaced by `_`, and a run of them collapses into a single `_`.
+
+`.` is the one allowed rune that is also a regexp metacharacter, kept because version- and
+float-like values (`v1.2`, `3.5`) stay far more readable with it. As a pattern it still matches
+itself, so it can only ever over-match, never fail to match the candidate it came from.
+
+Names are bounded, not a blind serialization of whatever the values happen to be: each value
+contributes at most 16 runes and the whole values block at most 64. When anything is cut, the name
+ends with `~` plus 8 hex digits of a hash over the full untruncated values, so two long candidates
+with a common prefix stay visibly distinct in `-v` output.
+
+Only the candidate part is sanitized. The spec breadcrumb is the framework's own declared name and
+is passed through untouched, exactly as for a sequential spec.
+
+### Reproducing one candidate with `-run`
+
+| Strategy | `-run` selection of a single candidate |
+|----------|----------------------------------------|
+| Cartesian (`Paths(...).It`) | Supported |
+| `Sample(n)` | Supported |
+| `Explore(n)` / `ExploreCoverage(n)` / `ExploreSmart(n)` | **Not supported** |
+
+For the adaptive strategies, `testing` skips the bodies of the subtests that do not match the
+pattern, while the explorer derives each later candidate from the feedback of the earlier ones it
+then never receives — so the stream diverges from the one that produced the name.
+
+The protection is that the values are part of the name. A candidate that diverges under the
+filtered run simply does not match the pattern and does not run. A `-run` pattern can therefore
+under-select, but it can never silently execute a semantically different candidate under the name
+you asked for. To reproduce an adaptive failure, re-run the whole spec with the same seed.
+
+### Sensitive values
+
+Path values appear verbatim in test names, and test names travel: CI logs, `test2json`, IDE panes.
+A value type controls its own rendering by implementing `fmt.Stringer`, and that is the supported
+redaction hook:
+
+```go
+type apiKey struct{ raw string }
+
+func (apiKey) String() string { return "REDACTED" }
+```
+
+Values whose `%v` would embed a pointer address — pointers, funcs, channels, `uintptr`,
+`unsafe.Pointer`, and values containing them — render as a fixed kind word (`ptr`, `func`, `chan`,
+`uintptr`, `unsafeptr`) instead, because a name that changed between runs would make `-run` patterns
+rot. Maps and slices of ordinary values render normally: `fmt` prints map keys in sorted order, so
+their rendering is stable.
+
+### Reporter events
+
+Reported identity is not the subtest name. A reporter sees the framework's own formatting —
+`includes tier [tier=pro] #2` — carrying the same ordinal, so a report line and a `go test -v`
+subtest can be matched up, while reported names never inherit `testing`'s space rewriting or its
+`#01` duplicate suffixes.
