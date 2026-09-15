@@ -21,7 +21,7 @@ func TestExecutionPlanRecoversPanicAndContinues(t *testing.T) {
 		PathGens:     []*PathGenerator{nil, nil},
 	}
 	backend := &controlledBackend{}
-	runPlanFlatNoSubtests(context.Background(), backend, nil, plan)
+	runPlanSpecsInOrder(context.Background(), backend, nil, plan)
 
 	if !ranSpec2 {
 		t.Fatal("expected spec2 to run after spec1 panicked, but it didn't — the panic aborted the whole plan")

@@ -246,7 +246,7 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i])
 		}
-		message, output := runSpecRecovered(ctx, s, specName(g.names, i))
+		message, output := runSpecRecovered(ctx, s, g.subtestName(i))
 		failed := ctx.failed
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output})
@@ -267,11 +267,11 @@ func runSpecsRecovered(ctx *Context, g *group) {
 // closure per call even though it never ends up subtesting) to keep BenchmarkRunner_GoSpecs's
 // existing zero-alloc contract intact.
 //
-// name is the framework's own spec name (group.names[i], via specName — possibly ""), passed to
-// testing.T.Run purely for -v/IDE/test2json presentation. It is never read back from t.Name():
-// SpecStartEvent/SpecResultEvent's Name always comes from group.names, so Go's subtest sanitization
-// (spaces to "_") and duplicate-name "#01" suffixing never leak into reported spec identity.
-func runSpecRecovered(ctx *Context, s step, name string) (message, output string) {
+// subtestName is the spec's full Describe breadcrumb (group.subtestName — possibly ""), passed to
+// testing.T.Run purely for -v/-run/IDE/test2json identity (#102). It is never read back from
+// t.Name(): SpecStartEvent/SpecResultEvent's Name always comes from group.names, so Go's subtest
+// sanitization (spaces to "_") and duplicate-name "#01" suffixing never leak into reported identity.
+func runSpecRecovered(ctx *Context, s step, subtestName string) (message, output string) {
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		return runStepRecovered(ctx, s, "panic")
@@ -280,7 +280,7 @@ func runSpecRecovered(ctx *Context, s step, name string) (message, output string
 	if !ok {
 		return runStepRecovered(ctx, s, "panic")
 	}
-	return runSpecIsolated(ctx, t, name, s)
+	return runSpecIsolated(ctx, t, subtestName, s)
 }
 
 // runSpecIsolated creates the real subtest and runs s inside it. Split out from runSpecRecovered
@@ -289,8 +289,8 @@ func runSpecRecovered(ctx *Context, s step, name string) (message, output string
 // every call — including the *testing.B fast path above, which never reaches this line at all —
 // since escape analysis decides a variable's storage class for the whole function, not per branch.
 // Keeping the capture inside its own function scopes that heap allocation to the isolation path only.
-func runSpecIsolated(ctx *Context, t *testing.T, name string, s step) (message, output string) {
-	t.Run(name, func(subT *testing.T) {
+func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, s step) (message, output string) {
+	t.Run(subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, s)
 	})
 	return

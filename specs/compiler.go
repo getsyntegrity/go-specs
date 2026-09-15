@@ -1,9 +1,6 @@
 package specs
 
-import (
-	"strings"
-	"sync"
-)
+import "sync"
 
 // bytecodeCompiler emits instructions directly into an ExecutionPlan during Describe.
 // No NodeArena is allocated; BeforeEach/AfterEach/It append instructions immediately.
@@ -104,12 +101,11 @@ func (c *bytecodeCompiler) SetPathGen(gen *PathGenerator) {
 	c.pathGen = gen
 }
 
-// fullName returns the t.Run path (e.g. "Describe/When/It").
+// fullName returns the spec's breadcrumb (e.g. "Describe/When/It"). It feeds both SpecStartEvent.Path
+// and — via specSubtestName — the testing.T.Run identity, so it uses the shared joinSubtestPath
+// mapping.
 func (c *bytecodeCompiler) fullName(itName string) string {
-	if len(c.nameStack) == 0 {
-		return itName
-	}
-	return strings.Join(c.nameStack, "/") + "/" + itName
+	return joinSubtestPath(c.nameStack, itName)
 }
 
 // flattenHooks fills beforeFlat and afterFlat from stacks.

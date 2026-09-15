@@ -147,7 +147,14 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 	}
 }
 
-// DescribeFlat runs all specs in one test (no subtests). Lower allocations than Describe.
+// DescribeFlat runs a suite whose hooks are flattened into each spec's own instruction range rather
+// than resolved by walking a tree — that is what "flat" names. It does not mean "no subtests":
+// against a *testing.T every spec still runs in its own subtest, named by its full
+// Describe/When/It breadcrumb, exactly as Describe does (#102). Only a *testing.B backend runs
+// without subtests.
+//
+// The flat flag it records is not read by anything downstream, so this function is currently
+// behaviourally identical to Describe; the distinction is tracked separately.
 func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	if currentRegistry() == nil {
 		describeWithCompiler(tb, name, nil, fn, true)
@@ -174,7 +181,8 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	}
 }
 
-// DescribeFlatWithReporter is like DescribeFlat with a reporter.
+// DescribeFlatWithReporter is like DescribeFlat with a reporter: rep receives
+// SuiteStarted/SuiteFinished and SpecStarted/SpecFinished events for the run.
 func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
 		describeWithCompiler(tb, name, rep, fn, true)
@@ -201,15 +209,24 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 	}
 }
 
-// DescribeFast runs all specs inside one test (no testing.T.Run per spec).
-// Same behavior as DescribeFlat; use for maximum runner performance when subtest hierarchy is not needed.
-// Avoids closure, subtest, and name allocations per spec (e.g. allocs/op ~1500–2500 vs ~8000 with Describe).
+// DescribeFast is an alias for DescribeFlat and behaves identically to it — and, since the flat flag
+// is never read downstream, identically to Describe. It does not skip the per-spec testing.T.Run,
+// and it does not avoid closure, subtest or name allocations.
+//
+// BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast in the benchmarks package keeps that
+// claim checkable instead of asserted: all three declare and run the same suite and report the same
+// allocs/op. Run them together to confirm it — the claim is that the three agree, not that they cost
+// any particular amount, so no figure is quoted here to rot the next time an unrelated change moves
+// the allocation path. A change that wires the flag up separates them there first.
+//
+// Kept for compatibility. Prefer Describe.
 func DescribeFast(tb testing.TB, name string, fn func(*Spec)) {
 	DescribeFlat(tb, name, fn)
 }
 
 // DescribeFastWithReporter is like DescribeFast with a reporter: rep receives SuiteStarted/SuiteFinished
-// and SpecStarted/SpecFinished events for the run.
+// and SpecStarted/SpecFinished events for the run. Kept for compatibility; prefer
+// DescribeWithReporter.
 func DescribeFastWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	DescribeFlatWithReporter(tb, name, rep, fn)
 }
