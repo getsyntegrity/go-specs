@@ -633,9 +633,10 @@ func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
 func TestCandidateSubtestNameDuplicateValuesStayDistinct(t *testing.T) {
 	plan := &ExecutionPlan{Names: []string{"case"}, FullNames: []string{"suite/case"}}
 	values := PathValues{index: map[string]int{"n": 0}, values: []any{7}, present: []bool{true}}
+	fingerprint := uint32(values.Hash())
 
-	first := candidateSubtestName(plan, 0, proposalCandidate{Values: values, AttemptIndex: 1, AcceptedIndex: 1})
-	second := candidateSubtestName(plan, 0, proposalCandidate{Values: values, AttemptIndex: 2, AcceptedIndex: 2})
+	first := candidateSubtestName(plan, 0, report.CandidateIdentity{AttemptIndex: 1, AcceptedIndex: 1, Fingerprint: fingerprint})
+	second := candidateSubtestName(plan, 0, report.CandidateIdentity{AttemptIndex: 2, AcceptedIndex: 2, Fingerprint: fingerprint})
 	if first == second {
 		t.Fatalf("expected two candidates with equal Values but distinct AttemptIndex to get distinct names, both were %q", first)
 	}
@@ -659,9 +660,94 @@ func TestCandidateSubtestNameDuplicateValuesStayDistinct(t *testing.T) {
 // with no leading "/" left dangling from a missing owner.
 func TestCandidateSubtestNameFallsBackWithoutBreadcrumb(t *testing.T) {
 	plan := &ExecutionPlan{}
-	got := candidateSubtestName(plan, 0, proposalCandidate{Values: PathValues{}, AttemptIndex: 5})
+	got := candidateSubtestName(plan, 0, report.CandidateIdentity{AttemptIndex: 5})
 	if !strings.HasPrefix(got, "generated#5_") {
 		t.Fatalf("expected a bare generated#N_hash name for a plan without breadcrumbs, got %q", got)
+	}
+}
+
+// TestCandidateSubtestNameOmitsSeedForCartesian pins #103's AC2 distinction between Cartesian and
+// every other strategy: Cartesian's odometer order is a pure function of the declared dimensions and
+// filters, with no RNG to pin down, so its candidate names never grow a "_seed..." segment even
+// though CandidateIdentity always has a Seed field.
+func TestCandidateSubtestNameOmitsSeedForCartesian(t *testing.T) {
+	plan := &ExecutionPlan{Names: []string{"case"}, FullNames: []string{"suite/case"}}
+	got := candidateSubtestName(plan, 0, report.CandidateIdentity{Strategy: "cartesian", AttemptIndex: 1, Fingerprint: 0xdeadbeef})
+	if strings.Contains(got, "_seed") {
+		t.Fatalf("expected no seed segment for cartesian, got %q", got)
+	}
+}
+
+// TestCandidateSubtestNameIncludesSeedWhenPresent pins #103's AC2/AC3: every strategy but Cartesian
+// draws its candidates from one RNG seeded once from CandidateIdentity.Seed, so that seed must be
+// visible directly in the Go subtest name — the one place a bare `go test -v` transcript (no
+// reporter attached) carries any information at all — for the candidate to be reproducible from -v
+// output alone.
+func TestCandidateSubtestNameIncludesSeedWhenPresent(t *testing.T) {
+	plan := &ExecutionPlan{Names: []string{"case"}, FullNames: []string{"suite/case"}}
+	got := candidateSubtestName(plan, 0, report.CandidateIdentity{
+		Strategy: "sample", Seed: 42, HasSeed: true, AttemptIndex: 3, Fingerprint: 0xabc,
+	})
+	if !strings.Contains(got, "_seed42_") {
+		t.Fatalf("expected a seed42 segment, got %q", got)
+	}
+}
+
+// TestCandidateSubtestNameIncludesAcceptedIndexForAdaptiveStrategies pins #103's AC3: the three
+// ExplorationGuided strategies (Explore/ExploreCoverage/ExploreSmart) name their AcceptedIndex
+// explicitly, since Accept is public API a future strategy could use to make it diverge from
+// AttemptIndex. Cartesian (never rejects) and Sample (whose internal filter retries never surface as
+// a separate accepted/rejected proposal) omit it — it would just repeat AttemptIndex today.
+func TestCandidateSubtestNameIncludesAcceptedIndexForAdaptiveStrategies(t *testing.T) {
+	plan := &ExecutionPlan{Names: []string{"case"}, FullNames: []string{"suite/case"}}
+	for _, strategy := range []string{"explore", "explore-coverage", "explore-smart"} {
+		id := report.CandidateIdentity{Strategy: strategy, Seed: 9, HasSeed: true, AttemptIndex: 4, AcceptedIndex: 3, Fingerprint: 0x1}
+		got := candidateSubtestName(plan, 0, id)
+		if !strings.Contains(got, "_accepted3_") {
+			t.Fatalf("%s: expected an accepted3 segment, got %q", strategy, got)
+		}
+	}
+	for _, strategy := range []string{"cartesian", "sample"} {
+		id := report.CandidateIdentity{Strategy: strategy, Seed: 9, HasSeed: strategy == "sample", AttemptIndex: 4, AcceptedIndex: 3, Fingerprint: 0x1}
+		got := candidateSubtestName(plan, 0, id)
+		if strings.Contains(got, "_accepted") {
+			t.Fatalf("%s: expected no accepted segment, got %q", strategy, got)
+		}
+	}
+}
+
+// TestCandidatePathIdentityStrategyAndSeed pins candidatePathIdentity's mapping from a PathGenerator's
+// own mode/strategy/explorationSeed to the CandidateIdentity every strategy reports (#103): Cartesian
+// carries no seed at all (HasSeed false), and every other strategy carries the exact seed the
+// generator resolved (explicit via .Seed, since every case below sets hasSeed true).
+func TestCandidatePathIdentityStrategyAndSeed(t *testing.T) {
+	oneVar := []PathVar{{Name: "n", Values: []any{1, 2}}}
+	cases := []struct {
+		name         string
+		gen          *PathGenerator
+		wantStrategy string
+		wantHasSeed  bool
+		wantSeed     int64
+	}{
+		{"cartesian", newPathGenerator(oneVar, nil, 0, 0, false, 0, 0, 0), "cartesian", false, 0},
+		{"sample", newPathGenerator(oneVar, nil, 3, 42, true, 0, 0, 0), "sample", true, 42},
+		{"explore", newPathGenerator(oneVar, nil, 0, 7, true, 5, 0, 0), "explore", true, 7},
+		{"explore-coverage", newPathGenerator(oneVar, nil, 0, 11, true, 0, 5, 0), "explore-coverage", true, 11},
+		{"explore-smart", newPathGenerator(oneVar, nil, 0, 13, true, 0, 0, 5), "explore-smart", true, 13},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := candidatePathIdentity(tc.gen, proposalCandidate{AttemptIndex: 3, AcceptedIndex: 3})
+			if id.Strategy != tc.wantStrategy {
+				t.Fatalf("expected strategy %q, got %q", tc.wantStrategy, id.Strategy)
+			}
+			if id.HasSeed != tc.wantHasSeed {
+				t.Fatalf("expected HasSeed=%v, got %v", tc.wantHasSeed, id.HasSeed)
+			}
+			if tc.wantHasSeed && id.Seed != tc.wantSeed {
+				t.Fatalf("expected seed %d, got %d", tc.wantSeed, id.Seed)
+			}
+		})
 	}
 }
 
@@ -728,12 +814,98 @@ func TestSpecRunGeneratedCandidateSubtestIdentityRealProcess(t *testing.T) {
 	}
 }
 
-// TestSpecRunGeneratedCandidateReporterIdentityUnaffected extends
-// TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim to path-generated candidates: giving
+// pathsSampleIdentityHelperSuite declares a Paths-generated spec using the Sample strategy with an
+// explicit seed, so TestSpecRunSampleCandidateSubtestIdentityRealProcess below can check that the
+// seed itself — not just the attempt index — shows up in a genuine `go test -v` transcript (#103 AC2:
+// enough stable information to reproduce the selected case from -v output alone, with no reporter
+// attached).
+func pathsSampleIdentityHelperSuite(s *Spec) {
+	s.When("checkout", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Int("qty", []int{1, 2, 3, 4, 5})
+		}).Sample(3).Seed(7).It("computes a total", func(ctx *Context) {
+			fmt.Printf("RAN qty=%v\n", ctx.Path().Int("qty"))
+		})
+	})
+}
+
+// TestSpecRunSampleCandidateSubtestIdentityRealProcess proves #103's AC2/AC3 for the Sample strategy
+// against a genuine `go test -v` run: since Sample draws its candidates from an RNG seeded once from
+// PathSpec.Seed, every candidate's own subtest name must carry that seed — not just its attempt index
+// — so the exact sequence of candidates can be reproduced by rerunning with the same .Seed(7) alone,
+// without any replay/resumption machinery (explicitly out of scope for #103).
+func TestSpecRunSampleCandidateSubtestIdentityRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SAMPLE_IDENTITY_HELPER") == "1" {
+		Describe(t, "suite", pathsSampleIdentityHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestSpecRunSampleCandidateSubtestIdentityRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_SAMPLE_IDENTITY_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	transcript := string(output)
+
+	for i := 1; i <= 3; i++ {
+		want := fmt.Sprintf("/suite/checkout/computes_a_total/generated#%d_seed7_", i)
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected candidate %d's subtest to contain %q, got:\n%s", i, want, transcript)
+		}
+	}
+}
+
+// pathsExploreIdentityHelperSuite declares a Paths-generated spec using the Explore (adaptive,
+// ExplorationGuided) strategy with an explicit seed, so the real-process test below can check that
+// both the seed and the accepted index show up in a genuine `go test -v` transcript (#103 AC3:
+// adaptive strategies must expose seed + attempt/accepted identity).
+func pathsExploreIdentityHelperSuite(s *Spec) {
+	s.When("checkout", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Int("qty", []int{1, 2, 3, 4, 5})
+		}).Explore(3).Seed(11).It("computes a total", func(ctx *Context) {
+			fmt.Printf("RAN qty=%v\n", ctx.Path().Int("qty"))
+		})
+	})
+}
+
+// TestSpecRunExploreCandidateSubtestIdentityRealProcess proves #103's AC3 for the Explore
+// (ExplorationGuided) strategy against a genuine `go test -v` run: every candidate's own subtest name
+// must carry both its seed and its accepted index, since every candidate reaching execution here was
+// accepted by the guided controller, not just enumerated like Cartesian.
+func TestSpecRunExploreCandidateSubtestIdentityRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_EXPLORE_IDENTITY_HELPER") == "1" {
+		Describe(t, "suite", pathsExploreIdentityHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestSpecRunExploreCandidateSubtestIdentityRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_EXPLORE_IDENTITY_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	transcript := string(output)
+
+	for i := 1; i <= 3; i++ {
+		want := fmt.Sprintf("/suite/checkout/computes_a_total/generated#%d_seed11_accepted%d_", i, i)
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected candidate %d's subtest to carry both seed and accepted index, wanted %q in:\n%s", i, want, transcript)
+		}
+	}
+}
+
+// TestSpecRunGeneratedCandidateReporterIdentityCarriesCandidate extends
+// TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim to path-generated candidates. Giving
 // each candidate its own breadcrumb-qualified Go subtest name (#103) must not change what the
 // reporter is told a candidate's Name is — every accepted candidate still reports the plain declared
 // leaf name, never the generated#<attempt>_<hash> suffix that exists purely for testing.T.Run.
-func TestSpecRunGeneratedCandidateReporterIdentityUnaffected(t *testing.T) {
+//
+// But #103's AC6 requires more than that: go test -v, test2json, and reporter events must all be able
+// to identify the same logical candidate. A reporter that only ever saw the constant leaf Name could
+// not do that — every one of a spec's candidates would look identical to it. So SpecStartEvent.Candidate
+// must carry the same AttemptIndex (and, for Cartesian, Strategy/HasSeed) that candidateSubtestName
+// wove into the Go subtest name for that very candidate.
+func TestSpecRunGeneratedCandidateReporterIdentityCarriesCandidate(t *testing.T) {
 	var rep recordingReporter
 	DescribeWithReporter(t, "suite", &rep, pathsIdentityHelperSuite)
 
@@ -744,29 +916,45 @@ func TestSpecRunGeneratedCandidateReporterIdentityUnaffected(t *testing.T) {
 		if started.Name != "computes a total" {
 			t.Fatalf("event %d: expected the reported Name to stay the declared leaf name, got %q", i, started.Name)
 		}
+		if started.Candidate == nil {
+			t.Fatalf("event %d: expected a non-nil Candidate for a Paths()-generated spec", i)
+		}
+		if started.Candidate.Strategy != "cartesian" {
+			t.Fatalf("event %d: expected strategy %q, got %q", i, "cartesian", started.Candidate.Strategy)
+		}
+		if started.Candidate.HasSeed {
+			t.Fatalf("event %d: expected HasSeed=false for cartesian, got true", i)
+		}
+		wantAttempt := i + 1
+		if started.Candidate.AttemptIndex != wantAttempt {
+			t.Fatalf("event %d: expected AttemptIndex %d, got %d", i, wantAttempt, started.Candidate.AttemptIndex)
+		}
+		if started.Candidate.AcceptedIndex != started.Candidate.AttemptIndex {
+			t.Fatalf("event %d: expected AcceptedIndex to equal AttemptIndex (%d), got %d", i, started.Candidate.AttemptIndex, started.Candidate.AcceptedIndex)
+		}
 	}
 }
 
-// BenchmarkCandidateSubtestName measures #103's per-candidate cost end to end: one Hash call plus
-// the fmt.Sprintf and string concatenation candidateSubtestName does for every executed generated
-// case, against a realistic breadcrumb and a five-var PathValues.
+// BenchmarkCandidateSubtestName measures #103's per-candidate cost end to end: the fmt.Fprintf and
+// strings.Builder work candidateSubtestName does for every executed generated case, against a
+// realistic breadcrumb and identity.
 func BenchmarkCandidateSubtestName(b *testing.B) {
 	plan := &ExecutionPlan{
 		Names:     []string{"computes a total"},
 		FullNames: []string{"suite/checkout/computes a total"},
 	}
-	candidate := proposalCandidate{
-		Values: PathValues{
-			index:   map[string]int{"sku": 0, "region": 1, "qty": 2, "price": 3, "vip": 4},
-			values:  []any{"SKU-0042-DELUXE", "us-east", 7, 199, true},
-			present: []bool{true, true, true, true, true},
-		},
-		AttemptIndex:  42,
-		AcceptedIndex: 40,
+	values := PathValues{
+		index:   map[string]int{"sku": 0, "region": 1, "qty": 2, "price": 3, "vip": 4},
+		values:  []any{"SKU-0042-DELUXE", "us-east", 7, 199, true},
+		present: []bool{true, true, true, true, true},
+	}
+	id := report.CandidateIdentity{
+		Strategy: "explore", Seed: 99, HasSeed: true,
+		AttemptIndex: 42, AcceptedIndex: 40, Fingerprint: uint32(values.Hash()),
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = candidateSubtestName(plan, 0, candidate)
+		_ = candidateSubtestName(plan, 0, id)
 	}
 }

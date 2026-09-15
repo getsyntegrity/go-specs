@@ -332,12 +332,13 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				// then-retried or intermediate Explore candidates would misrepresent how many
 				// executions actually happened, how long the suite really took, and where a
 				// failure occurred.
-				started := reportSpecStarted(rep, name, path)
+				identity := candidatePathIdentity(gen, candidate)
+				started := reportSpecStarted(rep, name, path, &identity)
 				var cov *Coverage
 				if wantsCoverage {
 					cov = &Coverage{}
 				}
-				subtestName := candidateSubtestName(plan, i, candidate)
+				subtestName := candidateSubtestName(plan, i, identity)
 				result := runIsolatedCase(backend, subtestName, program, candidate.Values, cov)
 				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
 				lastCoverage = cov
@@ -350,7 +351,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	}
 	ctx, release := acquireContext(backend)
 	defer release()
-	started := reportSpecStarted(rep, name, path)
+	started := reportSpecStarted(rep, name, path, nil)
 	message, output := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 	return proposalControllerResult{}
@@ -433,49 +434,106 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 	return specEventName(plan, i)
 }
 
+// candidatePathIdentity builds the report.CandidateIdentity for one executed generated candidate
+// (#103) from the PathGenerator that proposed it and the accepted proposalCandidate itself. This is
+// the single source both candidateSubtestName (the Go subtest name) and reportSpecStarted (the
+// SpecStartEvent reporters see) build from, so a -v transcript, test2json, and reporter events all
+// identify the same logical candidate by the same AttemptIndex/Fingerprint (#103's AC6) instead of
+// each computing their own view of it.
+//
+// gen is nil only when called defensively outside plan.PathGens' own nil check; every real call site
+// already guards that, but candidatePathIdentity stays safe either way — it just leaves
+// Strategy/Seed/HasSeed at their zero values, and every strategy string comparison below fails
+// open (no case matches "").
+func candidatePathIdentity(gen *PathGenerator, candidate proposalCandidate) report.CandidateIdentity {
+	id := report.CandidateIdentity{
+		AttemptIndex:  candidate.AttemptIndex,
+		AcceptedIndex: candidate.AcceptedIndex,
+		Fingerprint:   uint32(candidate.Values.Hash()),
+	}
+	if gen == nil {
+		return id
+	}
+	switch gen.mode {
+	case CartesianMode:
+		id.Strategy = "cartesian"
+	case SamplingMode:
+		id.Strategy = "sample"
+		id.Seed, id.HasSeed = gen.explorationSeed, true
+	case ExplorationGuided:
+		id.Seed, id.HasSeed = gen.explorationSeed, true
+		switch gen.strategy {
+		case strategyCoverage:
+			id.Strategy = "explore-coverage"
+		case strategySmart:
+			id.Strategy = "explore-smart"
+		default:
+			id.Strategy = "explore"
+		}
+	}
+	return id
+}
+
+// candidateAdaptive reports whether id came from one of the three ExplorationGuided strategies
+// (Explore/ExploreCoverage/ExploreSmart) — the only strategies where a proposal's AcceptedIndex can
+// ever diverge from its AttemptIndex if a future Accept callback starts rejecting proposals (see
+// CandidateIdentity's doc comment). Cartesian never rejects, and Sample's internal filter retries
+// (nextSample) never surface as a separate accepted/rejected proposal either, so surfacing
+// AcceptedIndex in their names today would just repeat AttemptIndex for no benefit.
+func candidateAdaptive(id report.CandidateIdentity) bool {
+	return id.Strategy == "explore" || id.Strategy == "explore-coverage" || id.Strategy == "explore-smart"
+}
+
 // candidateSubtestName returns the Go subtest identity for one executed generated candidate (#103):
 // spec i's own breadcrumb (specSubtestName), joined via the same "/" convention joinSubtestPath uses
 // for Describe/When/It scopes (#102), with a trailing element identifying this one candidate among
-// every other candidate the same spec executes.
+// every other candidate the same spec executes and carrying enough of id to reproduce it from a bare
+// `go test -v` transcript alone, with no reporter attached (#103's AC2/AC3 — go-specs' own
+// report.EventReporter is a side channel `-v` output never carries).
 //
-// That trailing element is "generated#<attempt>_<hash>":
+// That trailing element is "generated#<attempt>[_seed<seed>][_accepted<n>]_<fingerprint>":
 //
-//   - attempt is candidate.AttemptIndex, proposalController's own count of proposals made so far for
-//     this spec's run. It is assigned once, in generation order, and never reused (Run increments
-//     result.Attempts before building the candidate — see exploration_controller.go) — so it alone
-//     already rules out two candidates ever colliding on Go subtest identity, for every strategy
-//     (Cartesian, Sample, Explore, ExploreCoverage, ExploreSmart) and regardless of how many
-//     candidates propose equal PathValues. Two candidates with identical values still get distinct
-//     names, because they necessarily have distinct attempt indices.
-//   - hash is candidate.Values.Hash() truncated to 32 bits: a content fingerprint, not an identity
-//     guarantee. It exists so a developer scanning `go test -v` output, or diffing two runs with the
-//     same seed, can tell at a glance whether two candidates proposed the same inputs, without this
-//     name ever containing a raw value. Hash defines which types it is safe to fold into that
-//     fingerprint by content (see its own doc comment) and falls back to a position-only contribution
-//     for everything else, so a map, a pointer, or any other type whose formatting could depend on
-//     memory layout never ends up encoded here even indirectly.
-//
-// Deliberately absent from the name: the generator's seed, and — for the three ExplorationGuided
-// strategies — whether this candidate was also rejected before being accepted (AcceptedIndex).
-// Both are facts about the spec's run as a whole, or require executing the whole sequence again to
-// reconstruct, not facts a single candidate's identity needs to carry; embedding them in every
-// candidate's name would repeat the same information on every line of `-v` output for no
-// disambiguating benefit. They belong in the fuller reproduction context a failure already has
-// available through the spec's own configuration (.Seed, .Explore/.ExploreCoverage/.ExploreSmart)
-// and through proposalCandidate itself, not repeated into a name whose job is identity, not a full
-// dump.
+//   - attempt (id.AttemptIndex) is always present and alone already rules out two candidates ever
+//     colliding on Go subtest identity, for every strategy and regardless of how many candidates
+//     propose equal PathValues — see CandidateIdentity's doc comment for why. Two candidates with
+//     identical values still get distinct names, because they necessarily have distinct attempts.
+//   - seed<seed> (id.Seed) appears whenever id.HasSeed: every strategy but Cartesian draws its
+//     candidates from one RNG seeded once from this value and nothing else (see
+//     CandidateIdentity's doc comment on reproducing a candidate), so this is what turns "attempt 7"
+//     into a reproducible instruction rather than an opaque count. Cartesian omits it: its
+//     enumeration order is a pure function of the declared dimensions and filters, with no RNG to
+//     pin down.
+//   - accepted<n> (id.AcceptedIndex) appears only for the three ExplorationGuided strategies
+//     (candidateAdaptive) — always equal to attempt in this build (see CandidateIdentity's doc
+//     comment on why), but named explicitly per #103's AC3 rather than left implicit, since Accept
+//     is public API a future strategy could use to make the two diverge.
+//   - fingerprint (id.Fingerprint, hex) is a content fingerprint of the candidate's path values, not
+//     an identity guarantee (attempt already is one). It exists so a developer scanning `go test -v`
+//     output, or diffing two runs with the same seed, can tell at a glance whether two candidates
+//     proposed the same inputs, without this name ever containing a raw value. PathValues.Hash
+//     defines which types it is safe to fold into that fingerprint by content and falls back to a
+//     position-only contribution for everything else, so a map, a pointer, or any other type whose
+//     formatting could depend on memory layout never ends up encoded here even indirectly.
 //
 // The name never embeds a raw PathValues entry, so it carries no risk of a long string, a secret- or
 // PII-shaped value, or an unstable formatted address ending up somewhere `go test -v` output and CI
-// systems retain indefinitely — see Hash's doc comment for exactly which types even reach the digest
-// by content.
-func candidateSubtestName(plan *ExecutionPlan, i int, candidate proposalCandidate) string {
-	suffix := fmt.Sprintf("generated#%d_%08x", candidate.AttemptIndex, uint32(candidate.Values.Hash()))
+// systems retain indefinitely — see PathValues.Hash's doc comment for exactly which types even reach
+// the digest by content.
+func candidateSubtestName(plan *ExecutionPlan, i int, id report.CandidateIdentity) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "generated#%d", id.AttemptIndex)
+	if id.HasSeed {
+		fmt.Fprintf(&b, "_seed%d", id.Seed)
+	}
+	if candidateAdaptive(id) {
+		fmt.Fprintf(&b, "_accepted%d", id.AcceptedIndex)
+	}
+	fmt.Fprintf(&b, "_%08x", id.Fingerprint)
 	owner := specSubtestName(plan, i)
 	if owner == "" {
-		return suffix
+		return b.String()
 	}
-	return owner + subtestSeparator + suffix
+	return owner + subtestSeparator + b.String()
 }
 
 // appendSpecPath records the scopes enclosing one spec and stores the window they occupy. Called
@@ -523,11 +581,15 @@ func specEventPath(plan *ExecutionPlan, i int) []string {
 // reportSpecStarted emits SpecStarted and returns the event it sent, so reportSpecFinished can
 // reuse its Time — SpecResultEvent embeds SpecStartEvent, and that Time means when the spec
 // started, not when it finished.
-func reportSpecStarted(rep report.EventReporter, name string, path []string) report.SpecStartEvent {
+//
+// candidate is this event's report.CandidateIdentity for a Paths()-generated spec (#103) — the same
+// value candidateSubtestName built the Go subtest name from, so the two stay correlatable — or nil
+// for a spec that doesn't use Paths().
+func reportSpecStarted(rep report.EventReporter, name string, path []string, candidate *report.CandidateIdentity) report.SpecStartEvent {
 	if rep == nil {
 		return report.SpecStartEvent{}
 	}
-	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now(), Candidate: candidate}
 	rep.SpecStarted(e)
 	return e
 }

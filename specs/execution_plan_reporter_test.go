@@ -234,7 +234,7 @@ func TestRunProgramReportsPanicMessageAndOutput(t *testing.T) {
 		{Code: OpBody, Fn: func(*Context) { panic("boom") }},
 	}
 
-	started := reportSpecStarted(rep, "panics", nil)
+	started := reportSpecStarted(rep, "panics", nil, nil)
 	message, output := runProgram(program, ctx, nil)
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 

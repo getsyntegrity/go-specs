@@ -35,9 +35,10 @@ func TestPathValuesHashDistinguishesStringContent(t *testing.T) {
 
 // TestPathValuesHashDistinguishesLongStringsSharingAPrefix proves the byte-by-byte string hashing
 // added for #103 does not truncate: two long strings that agree on a long shared prefix and differ
-// only in their last byte must still hash differently, since a truncated comparison is exactly the
-// kind of "looks the same, isn't" collision candidateSubtestName's identity guarantee depends on
-// never happening for its diagnostic hash.
+// only in their last byte must still hash differently. candidateSubtestName's actual identity
+// guarantee (collision-free names) depends solely on AttemptIndex, never on this hash — but a hash
+// that quietly truncated would make the Fingerprint segment a poor diagnostic aid, silently equating
+// two candidates whose values genuinely differ.
 func TestPathValuesHashDistinguishesLongStringsSharingAPrefix(t *testing.T) {
 	prefix := strings.Repeat("the quick brown fox jumps over the lazy dog. ", 20)
 	index := map[string]int{"name": 0}
