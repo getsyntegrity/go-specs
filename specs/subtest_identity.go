@@ -43,12 +43,22 @@ const subtestSeparator = "/"
 // mapping.
 //
 // Breadcrumbs that normalize to the same string stay ambiguous, and testing disambiguates them with
-// its usual "#01" suffix. That is accepted and inherited, not a defect awaiting a fix: it is exactly
-// what testing.T.Run does on its own, where t.Run("a/b") and a nested t.Run("a")/t.Run("b") are
-// likewise indistinguishable, and where t.Run("when a") and t.Run("when_a") likewise collide.
-// Escaping the separator or the spaces here would buy uniqueness at the cost of the whole feature:
-// `go test -run 'TestX/suite/when_a/does_it'` — a pattern a developer types by reading the declared
-// names — would stop matching.
+// its usual "#01" suffix. That is a consequence of a deliberate design choice, not a limitation
+// testing imposes: go-specs flattens the declared tree into a single t.Run per spec. The compiler
+// emits one linear instruction stream, coalesces groups by hookKey, and flattens each scope's hooks
+// into the spec's own instruction range, so a whole spec is one unit of execution with exactly one
+// subtest to name — and the breadcrumb has to be encoded into that one name, where "/" and " " stop
+// being separable from the segments around them.
+//
+// The alternative is not escaping, it is nesting: a real t.Run per Describe/When scope, so each
+// segment is its own subtest and "a/b" can never be mistaken for "a" then "b". That would undo the
+// execution model — a live *testing.T per scope, hooks re-resolved per level instead of flattened
+// per spec, a goroutine per scope rather than per spec, and group coalescing losing its meaning. The
+// flat stream is what keeps the runner allocation-free without a reporter; nesting trades that away
+// to remove a collision only deliberately confusable names can reach.
+//
+// Escaping was rejected for a smaller reason: `go test -run 'TestX/suite/when_a/does_it'` — a
+// pattern a developer types by reading the declared names — would stop matching.
 //
 // Only Go subtest identity is derived this way. Reporter events keep the framework's own
 // unsanitized Name and Path values, so nothing testing does here leaks back into a report.

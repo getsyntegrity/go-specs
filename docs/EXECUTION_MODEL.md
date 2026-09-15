@@ -134,16 +134,66 @@ s.When("when c", func(s *specs.Spec) { s.It("does that", ...) })  // suite/when_
 s.When("when_c", func(s *specs.Spec) { s.It("does that", ...) })  // suite/when_c/does_that#01
 ```
 
-A bare `t.Run("a/b")` is indistinguishable from a nested `t.Run("a")`/`t.Run("b")` for the same
-reason, and `t.Run("when c")` collides with `t.Run("when_c")` for the other. Escaping `/` or spaces
-would remove the ambiguity, but it would also break `go test -run 'TestCart/Cart/empty/has_no_items'`
-— a pattern you type by reading the declared names — which is the whole point of the mapping. Only
-execution is never ambiguous: both colliding specs still run, and both are still reported.
+The ambiguity is a consequence of a design choice, not a limitation `testing` imposes. go-specs
+flattens the declared tree into a single `t.Run` per spec: the compiler emits one linear instruction
+stream, coalesces groups by `hookKey`, and flattens each scope's hooks into the spec's own
+instruction range. A whole spec is one unit of execution, so there is one subtest to name, and the
+breadcrumb has to be encoded into that one name — which is where `/` and ` ` stop being separable
+from the segments around them.
+
+The alternative is not escaping, it is **nesting**: emitting a real `t.Run` per `Describe`/`When`
+scope, so each segment is its own subtest and `a/b` can never be mistaken for `a` then `b`. That was
+not chosen because it would undo the execution model this document describes. Nesting means a live
+`*testing.T` per scope, hooks re-resolved per level instead of flattened per spec, a goroutine per
+scope rather than per spec, and group coalescing losing its meaning. The flat stream is what makes
+the runner allocation-free without a reporter; nesting trades that away to remove a collision only
+two specs with deliberately confusable names can hit. Escaping was rejected for a smaller reason: it
+would break `go test -run 'TestCart/Cart/empty/has_no_items'`, a pattern you type by reading the
+declared names, which is the whole point of the mapping.
+
+Only execution is never ambiguous: both colliding specs still run, and both are still reported.
+
+### Scope
 
 This affects Go subtest identity only. Reporter events keep the framework's own values —
-`SpecStartEvent.Name` is the unsanitized leaf name and `Path` is the unsanitized breadcrumb — so
-nothing `testing` does here leaks into a report. `DescribeFlat`, `DescribeFast`, and runs against a
-`*testing.B` create no subtests at all and are unaffected.
+`SpecStartEvent.Name` is the unsanitized leaf name and, in the `Describe`/`Spec` model, `Path` is the
+unsanitized breadcrumb — so nothing `testing` does here leaks into a report.
+
+`DescribeFlat` and `DescribeFast` are covered by all of the above. Their names are about the
+compiled plan, not about subtests: "flat" means hooks are flattened into each spec's instruction
+range instead of resolved by walking a tree. Against a `*testing.T` they create one subtest per spec
+exactly like `Describe` does.
+
+A `*testing.B` backend creates no subtests, which is what keeps benchmarks allocation-free, so
+breadcrumbs never reach `testing` there.
+
+Parallel specs have no subtest identity, before this change or after it. `ItParallel` bodies run
+under `parallelBackend` on the scheduler's own goroutines and never reach `t.Run` at all; they are
+addressable through reporter events, not through a `-run` pattern.
+
+### Hooks under a narrow `-run` pattern
+
+The two sequential models do not behave identically when `-run` discards a spec, and the difference
+is in the hooks, not the names.
+
+The `Describe`/`Spec` model compiles each scope's `BeforeEach`/`AfterEach` into the selected spec's
+own instruction range, and that range runs *inside* the subtest. Discarding the subtest discards the
+hooks with it.
+
+The `Builder`/`Runner` model runs a group's `before` hooks and defers its `after` hooks around the
+loop that calls `t.Run` — so they sit *outside* the subtest. `testing` can only discard what is
+inside a subtest, which means a narrow `-run` pattern narrows which spec bodies execute but not
+which group hooks do: the hooks of a scope whose specs were all filtered out still run.
+
+Neither model changed here; the divergence predates breadcrumbs and is tracked separately. It
+matters more now only because `-run` has become a documented way to select a single behaviour.
+
+### Reporting of filtered specs
+
+In either model, a spec whose subtest a `-run` pattern discarded is still reported to an attached
+reporter as started and finished without failing — it appears as passed although its body never ran.
+`t.Run`'s boolean return, which is `false` exactly when the filter discarded the subtest, is not
+inspected. This predates breadcrumbs too, and is tracked separately.
 
 ---
 
