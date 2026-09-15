@@ -1,24 +1,29 @@
 package specs
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
 
 func newPathValues(t *testing.T, kv map[string]any) PathValues {
 	t.Helper()
+	names := make([]string, 0, len(kv))
+	for name := range kv {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	index := make(map[string]int, len(kv))
 	pv := PathValues{
 		values:  make([]any, len(kv)),
 		present: make([]bool, len(kv)),
 		index:   index,
 	}
-	i := 0
-	for name, val := range kv {
+	for i, name := range names {
 		index[name] = i
-		pv.values[i] = val
+		pv.values[i] = kv[name]
 		pv.present[i] = true
-		i++
 	}
 	return pv
 }
