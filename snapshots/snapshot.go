@@ -17,6 +17,12 @@ type Backend interface {
 	Fatalf(format string, args ...any)
 }
 
+// helperBackend is the optional Helper() half of testing.TB. RunFromFile marks itself through it so
+// snapshot mismatches are attributed to the caller's ctx.Snapshot line, not to snapshot.go.
+type helperBackend interface {
+	Helper()
+}
+
 // fileLocks serializes RunFromFile's load-mutate-save cycle per snapshot file, keyed by absolute
 // path. Without it, two specs sharing a snapshot file (e.g. parallel specs in the same test file,
 // each snapshotting under a different name) race: both Load the same on-disk contents, each mutates
@@ -36,6 +42,9 @@ func lockFor(path string) *sync.Mutex {
 // RunFromFile compares value to the stored snapshot for name, or creates/updates it.
 // callerFile is the path to the test file (e.g. from runtime.Caller(1) in Context.Snapshot).
 func RunFromFile(backend Backend, callerFile string, name string, value any) {
+	if h, ok := backend.(helperBackend); ok {
+		h.Helper()
+	}
 	if name == "" {
 		backend.Fatalf("snapshot name cannot be empty")
 		return

@@ -43,8 +43,14 @@ type Fixture func(*Context)
 
 // Context is the execution context passed to It and hooks.
 type Context struct {
-	backend    testBackend
-	T          *testing.T
+	backend testBackend
+	T       *testing.T
+	// tb is the concrete testing.TB behind backend, or nil when there is none (fake backends,
+	// parallelBackend). Resolved once per spec in Reset rather than per assertion: assertions read
+	// it on the failure path only, and a plain field load there keeps the passing fast path's code
+	// size — and therefore its speed — unchanged. See the assertion failure branches for why the
+	// Helper() call it feeds cannot be delegated to a wrapper.
+	tb         testing.TB
 	pathValues PathValues
 	rng        *rand.Rand
 	// coverage is set by the runner during coverage-guided exploration; assertions record edges here.
@@ -62,7 +68,7 @@ type Context struct {
 
 // NewContext builds a context for the given test/bench. Use *testing.T or *testing.B.
 func NewContext(tb testing.TB) *Context {
-	c := &Context{backend: asTestBackend(tb)}
+	c := &Context{backend: asTestBackend(tb), tb: tb}
 	if t, ok := tb.(*testing.T); ok {
 		c.T = t
 	}
@@ -79,6 +85,7 @@ func (c *Context) Reset(backend testBackend) {
 	c.pathValues = PathValues{}
 	c.rng = nil
 	c.T = nil
+	c.tb = nil
 	c.coverage = nil
 	c.failed = false
 	c.failFast = false
@@ -86,10 +93,12 @@ func (c *Context) Reset(backend testBackend) {
 	if backend != nil {
 		// runnableBackend wraps the subtest T; unwrap so ctx.T points to the current subtest.
 		if r, ok := backend.(*runnableBackend); ok {
+			c.tb = r.tb
 			if t, ok := r.tb.(*testing.T); ok {
 				c.T = t
 			}
 		} else if tb, ok := backend.(testing.TB); ok {
+			c.tb = tb
 			if t, ok := tb.(*testing.T); ok {
 				c.T = t
 			}
@@ -168,6 +177,9 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		return
 	}
 	c.recordFailure()
+	if c.tb != nil {
+		c.tb.Helper()
+	}
 	c.backend.Helper()
 	c.backend.Fatalf("expected %v to equal %v", actual, expected)
 }
@@ -199,19 +211,42 @@ func (x expectT[T]) ToEqual(expected T) {
 	actual, ok := e.actual.(T)
 	if !ok {
 		e.ctx.recordFailure()
-		e.ctx.backend.Helper()
-		e.ctx.backend.Fatalf("expected %v to equal %v (type mismatch)", e.actual, expected)
+		if e.ctx.tb != nil {
+			e.ctx.tb.Helper()
+		}
+		e.reportNotEqual("expected %v to equal %v (type mismatch)", e.actual, expected)
 		return
 	}
 	if actual != expected {
 		e.ctx.recordFailure()
-		e.ctx.backend.Helper()
-		e.ctx.backend.Fatalf("expected %v to equal %v", actual, expected)
+		if e.ctx.tb != nil {
+			e.ctx.tb.Helper()
+		}
+		e.reportNotEqual("expected %v to equal %v", actual, expected)
 		return
 	}
 	if e.ctx.coverage != nil {
 		e.ctx.RecordCoverage(coverageEdgeHash(2, actual, expected))
 	}
+}
+
+// reportNotEqual builds and reports an equality failure. Like reportMatcherFailure it is split out
+// and marked noinline to keep the reporting code and its variadic Fatalf setup out of the caller's
+// body; here it also keeps that tail out of every generic instantiation of expectT[T].ToEqual.
+// Boxing expected into an any allocates, but only on the failure path, where the spec is ending
+// anyway — the passing fast path still allocates nothing.
+//
+// It marks its own frame as a test helper, and the caller marks itself: one Helper() call marks
+// only the function that made it, so both frames must opt out before Go attributes the failure to
+// the user's assertion line.
+//
+//go:noinline
+func (e *Expectation) reportNotEqual(format string, actual, expected any) {
+	if e.ctx.tb != nil {
+		e.ctx.tb.Helper()
+	}
+	e.ctx.backend.Helper()
+	e.ctx.backend.Fatalf(format, actual, expected)
 }
 
 // To asserts that the value matches the matcher (interface path; use ToEqual for comparable T). Helper() only on failure.
@@ -230,8 +265,10 @@ func (x expectT[T]) To(m Matcher) {
 		}
 		return
 	}
-	e.ctx.backend.Helper()
-	e.ctx.backend.Fatalf("%s", m.FailureMessage(e.actual))
+	if e.ctx.tb != nil {
+		e.ctx.tb.Helper()
+	}
+	e.reportMatcherFailure(m)
 }
 
 // Snapshot serializes value as JSON and compares it to the stored snapshot named name.
@@ -240,6 +277,12 @@ func (x expectT[T]) To(m Matcher) {
 func (c *Context) Snapshot(name string, value any) {
 	if c == nil || c.backend == nil {
 		return
+	}
+	// Snapshot already performs caller discovery to locate __snapshots__, so marking this frame
+	// unconditionally costs nothing extra; the mismatch verdict is decided deeper in the snapshots
+	// package, which is why the mark cannot be deferred to the failure branch as elsewhere.
+	if c.tb != nil {
+		c.tb.Helper()
 	}
 	_, callerFile, _, ok := runtime.Caller(1)
 	if !ok {
@@ -283,6 +326,26 @@ func (e *Expectation) To(m Matcher) {
 		return
 	}
 	e.ctx.recordFailure()
+	if e.ctx.tb != nil {
+		e.ctx.tb.Helper()
+	}
+	e.reportMatcherFailure(m)
+}
+
+// reportMatcherFailure builds and reports a matcher failure message. It is split out of To and
+// marked noinline so the matcher fast path carries only the branch, not the reporting code and its
+// variadic Fatalf setup — inlining that tail back into To costs ~5% on BenchmarkMatcher_GoSpecs for
+// code that never runs when a matcher passes.
+//
+// It marks its own frame as a test helper. The caller must mark itself too: one Helper() call marks
+// only the function that made it, so both frames have to opt out before Go will attribute the
+// failure to the user's assertion line.
+//
+//go:noinline
+func (e *Expectation) reportMatcherFailure(m Matcher) {
+	if e.ctx.tb != nil {
+		e.ctx.tb.Helper()
+	}
 	e.ctx.backend.Helper()
 	e.ctx.backend.Fatalf("%s", m.FailureMessage(e.actual))
 }
@@ -302,83 +365,64 @@ func (e *Expectation) ToEqual(expected any) {
 	if e.ctx == nil {
 		return
 	}
+	// The switch only decides equality; reporting happens once at the bottom so that exactly one
+	// frame (this one) marks itself as a test helper on the failure path.
+	equal, handled := false, true
 	switch a := e.actual.(type) {
 	case int:
 		if b, ok := expected.(int); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
 	case string:
 		if b, ok := expected.(string); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
 	case bool:
 		if b, ok := expected.(bool); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
 	case int64:
 		if b, ok := expected.(int64); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
 	case float64:
 		if b, ok := expected.(float64); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
 	case uint:
 		if b, ok := expected.(uint); ok {
-			if a != b {
-				e.ctx.recordFailure()
-				e.ctx.backend.Helper()
-				e.ctx.backend.Fatalf("expected %v to equal %v", a, b)
-			} else if e.ctx.coverage != nil {
-				e.ctx.RecordCoverage(coverageEdgeHash(2, a, b))
-			}
-			return
+			equal = a == b
+		} else {
+			handled = false
 		}
+	default:
+		handled = false
 	}
-	if !reflect.DeepEqual(e.actual, expected) {
-		e.ctx.recordFailure()
-		e.ctx.backend.Helper()
-		e.ctx.backend.Fatalf("expected %v to equal %v", e.actual, expected)
+	if !handled {
+		equal = reflect.DeepEqual(e.actual, expected)
+	}
+	if equal {
+		if e.ctx.coverage != nil {
+			e.ctx.RecordCoverage(coverageEdgeHash(2, e.actual, expected))
+		}
 		return
 	}
-	if e.ctx.coverage != nil {
-		e.ctx.RecordCoverage(coverageEdgeHash(2, e.actual, expected))
+	e.ctx.recordFailure()
+	if e.ctx.tb != nil {
+		e.ctx.tb.Helper()
 	}
+	e.ctx.backend.Helper()
+	e.ctx.backend.Fatalf("expected %v to equal %v", e.actual, expected)
 }
 
 func (c *Context) randomInt64() int64 {

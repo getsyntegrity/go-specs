@@ -296,22 +296,28 @@ func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, s step) (me
 	return
 }
 
-// runSpecBody runs s against ctx with ctx.backend/ctx.T temporarily swapped to tb's own backend (tb
-// is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so every assertion helper —
-// all of which read c.backend/e.ctx.backend at call time, never cache it — fails tb, not the parent.
-// That is what makes the Goexit land in this subtest's goroutine instead of the parent's. Restored
-// before returning so the next spec in this group (back in the parent's goroutine) sees the parent's
-// backend/T again, exactly as Context.Reset already does for the analogous runIsolatedCase case.
+// runSpecBody runs s against ctx with ctx.backend/ctx.T/ctx.tb temporarily swapped to tb's own
+// backend (tb is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so every
+// assertion helper — all of which read c.backend/e.ctx.backend at call time, never cache it — fails
+// tb, not the parent. That is what makes the Goexit land in this subtest's goroutine instead of the
+// parent's. Restored before returning so the next spec in this group (back in the parent's
+// goroutine) sees the parent's backend/T/tb again, exactly as Context.Reset already does for the
+// analogous runIsolatedCase case.
+//
+// ctx.tb must be swapped alongside ctx.backend: it is the only field assertion failure paths use to
+// mark themselves as test helpers, so leaving it pointing at the parent (or at nil) sends the
+// failure location back to a go-specs frame instead of the user's assertion line.
 func runSpecBody(ctx *Context, tb testing.TB, s step) (message, output string) {
 	subBackend := asTestBackend(tb)
 	defer putTestBackend(subBackend)
-	prevBackend, prevT := ctx.backend, ctx.T
+	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
 	ctx.backend = subBackend
+	ctx.tb = tb
 	if t, ok := tb.(*testing.T); ok {
 		ctx.T = t
 	}
 	defer func() {
-		ctx.backend, ctx.T = prevBackend, prevT
+		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
 	}()
 	return runStepRecovered(ctx, s, "panic")
 }
