@@ -106,11 +106,19 @@ func TestGroupSubtestNameFallsBackToLeaf(t *testing.T) {
 // deliberately contains every shape acceptance criterion 4 calls out: the same leaf It name under
 // two different When scopes (the duplicate that used to collapse into "#01"), a name with spaces, a
 // name containing a slash, and an empty name.
+//
+// Each scope's BeforeEach/AfterEach prints its own marker so the selection tests can observe not
+// just which spec bodies ran under a -run pattern, but which group hooks ran around them — the one
+// place the two sequential execution models do not agree (see assertPlanSelectedOnlyWhenB and
+// assertRunnerSelectedOnlyWhenB).
 func identityHelperSuite(s *Spec) {
 	s.When("when a", func(s *Spec) {
+		s.BeforeEach(func(*Context) { fmt.Println("HOOK before a") })
+		s.AfterEach(func(*Context) { fmt.Println("HOOK after a") })
 		s.It("does a thing", func(*Context) { fmt.Println("RAN a/does a thing") })
 	})
 	s.When("when b", func(s *Spec) {
+		s.BeforeEach(func(*Context) { fmt.Println("HOOK before b") })
 		s.It("does a thing", func(*Context) { fmt.Println("RAN b/does a thing") })
 		s.It("slash/inside", func(*Context) { fmt.Println("RAN b/slash inside") })
 		s.It("", func(*Context) { fmt.Println("RAN b/empty") })
@@ -123,9 +131,12 @@ func identityHelperProgram() *Program {
 	b := NewBuilder()
 	b.Describe("suite", func() {
 		b.Describe("when a", func() {
+			b.BeforeEach(func(*Context) { fmt.Println("HOOK before a") })
+			b.AfterEach(func(*Context) { fmt.Println("HOOK after a") })
 			b.It("does a thing", func(*Context) { fmt.Println("RAN a/does a thing") })
 		})
 		b.Describe("when b", func() {
+			b.BeforeEach(func(*Context) { fmt.Println("HOOK before b") })
 			b.It("does a thing", func(*Context) { fmt.Println("RAN b/does a thing") })
 			b.It("slash/inside", func(*Context) { fmt.Println("RAN b/slash inside") })
 			b.It("", func(*Context) { fmt.Println("RAN b/empty") })
@@ -218,7 +229,7 @@ func TestSpecRunSubtestSelectionByContextRealProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper run failed: %v\n%s", err, output)
 	}
-	assertSelectedOnlyWhenB(t, string(output))
+	assertPlanSelectedOnlyWhenB(t, string(output))
 }
 
 // TestRunnerRunSubtestSelectionByContextRealProcess is the -run selection proof for the
@@ -237,11 +248,13 @@ func TestRunnerRunSubtestSelectionByContextRealProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper run failed: %v\n%s", err, output)
 	}
-	assertSelectedOnlyWhenB(t, string(output))
+	assertRunnerSelectedOnlyWhenB(t, string(output))
 }
 
 // assertSelectedOnlyWhenB checks a context-scoped -run pattern executed the "when b" spec body and
-// left its identically-named "when a" sibling — and every other spec — unrun.
+// left its identically-named "when a" sibling — and every other spec — unrun. This part of the
+// contract is shared by both sequential execution models; what differs is the hooks around it, which
+// the two callers below assert for themselves.
 func assertSelectedOnlyWhenB(t *testing.T, output string) {
 	t.Helper()
 	if !strings.Contains(output, "RAN b/does a thing") {
@@ -250,6 +263,42 @@ func assertSelectedOnlyWhenB(t *testing.T, output string) {
 	for _, unwanted := range []string{"RAN a/does a thing", "RAN b/slash inside", "RAN b/empty"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("expected %q not to run under a context-scoped -run pattern, got:\n%s", unwanted, output)
+		}
+	}
+}
+
+// assertPlanSelectedOnlyWhenB adds the Spec/ExecutionPlan model's hook behaviour to the shared
+// selection contract: the compiler flattens each scope's BeforeEach/AfterEach into the selected
+// spec's own instruction range, and that range runs inside the subtest, so a -run pattern that
+// discards a spec's subtest discards its hooks with it. Only "when b"'s before hook runs.
+func assertPlanSelectedOnlyWhenB(t *testing.T, output string) {
+	t.Helper()
+	assertSelectedOnlyWhenB(t, output)
+	if !strings.Contains(output, "HOOK before b") {
+		t.Fatalf("expected the selected spec's own before hook to run, got:\n%s", output)
+	}
+	for _, unwanted := range []string{"HOOK before a", "HOOK after a"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("expected %q not to run for a spec no -run pattern selected, got:\n%s", unwanted, output)
+		}
+	}
+}
+
+// assertRunnerSelectedOnlyWhenB pins the Runner/Program model's hook behaviour, which diverges from
+// the plan model's above. This divergence is known and deliberately pinned, not an oversight in
+// either test: runGroup runs a group's before hooks and defers its after hooks around
+// runSpecsRecovered, which is what calls t.Run, so the hooks live *outside* the subtest. testing can
+// only discard what is inside a subtest, so a -run pattern narrows which spec bodies execute but not
+// which group hooks do — "when a"'s before and after still run even though its only spec does not.
+//
+// The two models therefore share the subtest identity mapping, not their behaviour under filtering.
+// Filed separately; #102 changed neither model's hook placement.
+func assertRunnerSelectedOnlyWhenB(t *testing.T, output string) {
+	t.Helper()
+	assertSelectedOnlyWhenB(t, output)
+	for _, want := range []string{"HOOK before a", "HOOK after a", "HOOK before b"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q to run — group hooks sit outside the subtest in this model, got:\n%s", want, output)
 		}
 	}
 }
@@ -335,14 +384,17 @@ func collisionHelperProgram() *Program {
 // because the consequence — the "#01" — is what a developer actually meets.
 func assertNormalizedCollisionFallsBackToSuffix(t *testing.T, output string) {
 	t.Helper()
+	// Anchored on the newline that ends the "=== RUN" line: "/suite/a/b/does_it" on its own is a
+	// substring of "/suite/a/b/does_it#01", so an unanchored check would pass on the suffixed name
+	// alone and prove nothing about the plain one.
 	for _, want := range []string{
-		"/suite/a/b/does_it",
-		"/suite/a/b/does_it#01",
-		"/suite/when_c/does_that",
-		"/suite/when_c/does_that#01",
+		"/suite/a/b/does_it\n",
+		"/suite/a/b/does_it#01\n",
+		"/suite/when_c/does_that\n",
+		"/suite/when_c/does_that#01\n",
 	} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("expected -v output to name the subtest %q, got:\n%s", want, output)
+			t.Fatalf("expected -v output to name the subtest %q on its own line, got:\n%s", want, output)
 		}
 	}
 	for _, want := range []string{
@@ -396,4 +448,127 @@ func TestRunnerRunNormalizedBreadcrumbCollisionRealProcess(t *testing.T) {
 		t.Fatalf("helper run failed: %v\n%s", err, output)
 	}
 	assertNormalizedCollisionFallsBackToSuffix(t, string(output))
+}
+
+// TestDescribeFlatSubtestIdentityRealProcess pins what DescribeFlat actually does, which is not what
+// its name or its doc comment suggested: it creates one subtest per spec, named by the full
+// Describe/When/It breadcrumb, exactly like Describe.
+//
+// The "flat" in DescribeFlat refers to the compiled plan — hooks are flattened into each spec's own
+// instruction range instead of being resolved by walking a tree — not to the absence of subtests.
+// Spec.flat is recorded at declaration time and never read again; CompiledSuite does not carry it,
+// and runSpecProgram's only gate is whether the backend wraps a real *testing.T. A *testing.B does
+// not, which is why benchmarks genuinely run without subtests; a *testing.T always does.
+//
+// This test exists so that claim is checked rather than asserted in prose: it failed against no
+// version of this package, because no version of this package ever skipped the subtest for a
+// DescribeFlat run under go test.
+func TestDescribeFlatSubtestIdentityRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_FLAT_HELPER") == "1" {
+		DescribeFlat(t, "suite", identityHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestDescribeFlatSubtestIdentityRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_FLAT_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	assertVerboseIdentity(t, string(output))
+}
+
+// TestDescribeFastSubtestIdentityRealProcess is TestDescribeFlatSubtestIdentityRealProcess for
+// DescribeFast, which delegates to DescribeFlat and therefore inherits its subtests too.
+func TestDescribeFastSubtestIdentityRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_FAST_HELPER") == "1" {
+		DescribeFast(t, "suite", identityHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestDescribeFastSubtestIdentityRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_FAST_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	assertVerboseIdentity(t, string(output))
+}
+
+// TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim is
+// TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim for the Runner/Program model, which
+// reaches the reporter through a different path — reporterObserver.specStarted(g.names[i]) — and so
+// needs its own proof that hierarchical subtest names did not leak into reported identity.
+//
+// The two models report different things, and both are pinned here on purpose. The plan model
+// carries a Path built from the breadcrumb; the Runner model has never carried one, so Path stays
+// empty and Name is the bare leaf It name. What #102 had to preserve is that neither field picks up
+// the breadcrumb or testing's rewrite of it.
+func TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
+	b := NewBuilder()
+	b.Describe("suite", func() {
+		b.Describe("when a", func() {
+			b.It("does a thing", func(*Context) {})
+		})
+	})
+	var rep recordingReporter
+	NewRunnerWithReporter(b.Build(), "suite", &rep).Run(t)
+
+	if len(rep.specStarted) != 1 {
+		t.Fatalf("expected 1 SpecStarted, got %d", len(rep.specStarted))
+	}
+	if got := rep.specStarted[0].Name; got != "does a thing" {
+		t.Fatalf("expected the reported Name to stay the unsanitized leaf name, got %q", got)
+	}
+	if got := rep.specStarted[0].Path; len(got) != 0 {
+		t.Fatalf("expected the Runner model to report no Path, got %q", got)
+	}
+}
+
+// TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess pins a defect, not a guarantee: when a -run
+// pattern discards a spec's subtest, the reporter is still told the spec started and finished
+// without failing, so a spec whose body never executed is counted as passed.
+//
+// Neither runSpecProgramIsolated nor runSpecIsolated inspects testing.T.Run's bool return, which is
+// false exactly when the filter discarded the subtest, and the SpecStarted/SpecFinished pair is
+// emitted around that call with ctx.failed still at its reset value. The behaviour predates #102 —
+// it arrived with the per-spec isolation of #74 — but #102 turns -run into a documented way to
+// select specs, so it is now reachable on first use rather than latent. Pinned so the fix, when it
+// lands, has to change this test deliberately.
+func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_FILTER_REPORT_HELPER") == "1" {
+		var rep recordingReporter
+		DescribeWithReporter(t, "suite", &rep, identityHelperSuite)
+		for i, started := range rep.specStarted {
+			finished := rep.specFinished[i]
+			fmt.Printf("REPORTED name=%q failed=%v skipped=%v\n", started.Name, finished.Failed, finished.Skipped)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0],
+		"-test.v",
+		"-test.run=^TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess$/^suite$/^when_b$/^does_a_thing$",
+	)
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_FILTER_REPORT_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	transcript := string(output)
+
+	// Exactly one body ran, but all four specs were reported, none of them failed, and none of them
+	// was marked skipped.
+	if strings.Count(transcript, "RAN ") != 1 {
+		t.Fatalf("expected exactly one spec body to run under the -run pattern, got:\n%s", transcript)
+	}
+	for _, want := range []string{
+		`REPORTED name="does a thing" failed=false skipped=false`,
+		`REPORTED name="slash/inside" failed=false skipped=false`,
+		`REPORTED name="" failed=false skipped=false`,
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected the reporter to emit %s, got:\n%s", want, transcript)
+		}
+	}
+	if got := strings.Count(transcript, "REPORTED "); got != 4 {
+		t.Fatalf("expected 4 reported specs for 4 declared specs, got %d in:\n%s", got, transcript)
+	}
 }
