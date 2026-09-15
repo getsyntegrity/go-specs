@@ -214,8 +214,10 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 // and it does not avoid closure, subtest or name allocations.
 //
 // BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast in the benchmarks package keeps that
-// claim checkable instead of asserted: all three declare and run the same 200-spec suite and report
-// the same 625 allocs/op. A change that wires the flag up will separate them there first.
+// claim checkable instead of asserted: all three declare and run the same suite and report the same
+// allocs/op. Run them together to confirm it — the claim is that the three agree, not that they cost
+// any particular amount, so no figure is quoted here to rot the next time an unrelated change moves
+// the allocation path. A change that wires the flag up separates them there first.
 //
 // Kept for compatibility. Prefer Describe.
 func DescribeFast(tb testing.TB, name string, fn func(*Spec)) {
