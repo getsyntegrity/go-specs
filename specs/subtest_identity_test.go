@@ -340,20 +340,20 @@ func TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
 	}
 }
 
-// TestSpecRunReportedPathSplitsNamesContainingSeparator pins a defect, not a guarantee.
-// SpecStartEvent.Path is rebuilt by splitting the joined breadcrumb on "/" (specEventPath), so a "/"
-// inside a single declared name is indistinguishable from a scope boundary. It("slash/inside") — a
-// spec identityHelperSuite has declared since this file was written — therefore reports four Path
-// segments, and its last segment is not the spec's Name.
+// TestSpecRunReportedPathKeepsNamesContainingSeparator asserts the guarantee that replaced the
+// defect this test used to pin (#113).
 //
-// The fixture always contained the case and no test looked at it, which is how the claim that Path
-// is "the unsanitized breadcrumb" survived. Name is asserted alongside Path here precisely because
-// the two disagree: Name is verbatim, Path is not.
+// SpecStartEvent.Path was rebuilt by splitting the joined breadcrumb on "/", so a "/" inside a
+// single declared name was indistinguishable from a scope boundary: It("slash/inside") — a spec
+// identityHelperSuite has declared since this file was written — reported four segments for three
+// declared scopes, and its last segment was not the spec's Name. specEventPath now reads the scopes
+// the compiler recorded and appends Names[i], so the join is never round-tripped.
 //
-// This predates the subtest identity mapping — specEventPath is byte-identical before and after it —
-// and is not fixed here. The fix is to carry the segments from the compiler's name stack instead of
-// round-tripping them through a joined string.
-func TestSpecRunReportedPathSplitsNamesContainingSeparator(t *testing.T) {
+// Name is still asserted alongside Path, for the opposite reason it used to be: the two must now
+// agree on the leaf. This stays here, next to the subtest identity tests, because the two
+// derivations are easy to conflate — FullNames is joined and normalized for `go test -run`, Path is
+// not — and this is where that distinction is under test.
+func TestSpecRunReportedPathKeepsNamesContainingSeparator(t *testing.T) {
 	var rep recordingReporter
 	DescribeWithReporter(t, "suite", &rep, identityHelperSuite)
 
@@ -367,13 +367,13 @@ func TestSpecRunReportedPathSplitsNamesContainingSeparator(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected a reported spec named %q, got %d events", "slash/inside", len(rep.specStarted))
 	}
-	// The declared breadcrumb has three segments; the reported Path has four.
-	wantPath := []string{"suite", "when b", "slash", "inside"}
+	// Three declared scopes, three reported segments: the "/" inside the leaf is not a boundary.
+	wantPath := []string{"suite", "when b", "slash/inside"}
 	if strings.Join(got.Path, "|") != strings.Join(wantPath, "|") {
-		t.Fatalf("expected the split-on-slash Path %q, got %q", wantPath, got.Path)
+		t.Fatalf("expected the declared Path %q, got %q", wantPath, got.Path)
 	}
-	if got.Path[len(got.Path)-1] == got.Name {
-		t.Fatalf("expected Path's last segment to disagree with Name — that is the defect being pinned; got %q for both", got.Name)
+	if got.Path[len(got.Path)-1] != got.Name {
+		t.Fatalf("expected Path's last segment to be the spec's Name %q, got %q", got.Name, got.Path[len(got.Path)-1])
 	}
 }
 

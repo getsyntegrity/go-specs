@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,30 @@ type ExecutionPlan struct {
 	Names        []string
 	FullNames    []string
 	PathGens     []*PathGenerator
+	// PathScopes is the shared backing array holding the declared scope names that enclose each
+	// spec, laid out the same way Instructions is: PathScopeStart[i] and PathScopeLen[i] delimit
+	// spec i's window. The spec's own name is not repeated here — Names[i] already holds it, and
+	// SpecStartEvent.Path is the window followed by Names[i].
+	//
+	// The scopes are stored rather than recovered from FullNames because joining with "/" is not
+	// injective — a declared name that itself contains "/" is indistinguishable from a scope
+	// boundary once joined, so splitting the breadcrumb back apart invents scopes that were never
+	// declared. FullNames stays as-is: it is the subtest identity, a different derivation.
+	//
+	// Consecutive specs sharing the same scopes share one window instead of each storing a copy.
+	// Storing a private copy per spec is O(specs × depth) string headers, and Go grows a large slice
+	// by ~1.25x, so the discarded intermediate arrays cost several times the final size again. On
+	// 50k sibling specs that shape measured +91% build memory; sharing the window removes it.
+	//
+	// The sharing is by adjacency, not by set: appendSpecPath reuses only the window it handed the
+	// previous spec (see there). Every spec in one block shares a window, which is the shape suites
+	// have, but an interleaved tree — When("a"){It}, When("b"){It}, When("a"){It} — reuses nothing
+	// and degrades back to a copy per spec. That is a size trade, never a correctness one: the
+	// reported Path is identical either way. Deduplicating across the whole plan would need a lookup
+	// keyed on the chain, which costs more than it saves for the tree shapes seen in practice.
+	PathScopes     []string
+	PathScopeStart []int
+	PathScopeLen   []int
 }
 
 func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
@@ -34,6 +59,11 @@ func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
 		Names:        make([]string, 0, estimatedSpecs),
 		FullNames:    make([]string, 0, estimatedSpecs),
 		PathGens:     make([]*PathGenerator, 0, estimatedSpecs),
+		// PathScopes is sized for distinct scope chains, not for one copy per spec: sibling specs
+		// share a window, so this grows with the shape of the tree rather than with the spec count.
+		PathScopes:     make([]string, 0, 16),
+		PathScopeStart: make([]int, 0, estimatedSpecs),
+		PathScopeLen:   make([]int, 0, estimatedSpecs),
 	}
 }
 
@@ -120,6 +150,14 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 		plan.Names = append(plan.Names, name)
 		plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
 		plan.PathGens = append(plan.PathGens, node.PathGen)
+		// scratch.path already has this spec's own name pushed as its last element (an ItNode is
+		// not a SuiteNode, so the push above applies to it too); the scopes are everything before
+		// it. An unnamed spec was never pushed, so for it the whole of scratch.path is scopes.
+		scopes := scratch.path
+		if name != "" {
+			scopes = scopes[:len(scopes)-1]
+		}
+		appendSpecPath(plan, scopes)
 	}
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
@@ -247,7 +285,13 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	}
 	program := plan.Instructions[start : start+length]
 	name := specEventName(plan, i)
-	path := specEventPath(plan, i)
+	// path feeds reportSpecStarted and nothing else, and that returns a zero event when rep is nil.
+	// Building it unconditionally would cost one allocation per spec per run on the reporter-less
+	// path — the one this package advertises as allocation-free.
+	var path []string
+	if rep != nil {
+		path = specEventPath(plan, i)
+	}
 	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
@@ -373,19 +417,46 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 	return specEventName(plan, i)
 }
 
-// specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for
+// appendSpecPath records the scopes enclosing one spec and stores the window they occupy. Called
+// once per spec, in the same order as Names/FullNames. The spec's own name is not passed: Names
+// already holds it and specEventPath appends it.
+//
+// When scopes matches the window the previous spec was given — the common case, since every spec
+// declared in the same block sees the same enclosing scopes — that window is reused instead of
+// appending a second copy.
+//
+// Only the previous window is considered, deliberately: specs arrive in declaration order, so one
+// comparison against the tail catches every run of siblings without a per-chain lookup. It does not
+// catch a chain that recurs after an interruption, which then stores a second copy. See the
+// PathScopes field comment for what that trade is and is not.
+func appendSpecPath(plan *ExecutionPlan, scopes []string) {
+	start := len(plan.PathScopes) - len(scopes)
+	if start < 0 || !slices.Equal(plan.PathScopes[start:], scopes) {
+		start = len(plan.PathScopes)
+		plan.PathScopes = append(plan.PathScopes, scopes...)
+	}
+	plan.PathScopeStart = append(plan.PathScopeStart, start)
+	plan.PathScopeLen = append(plan.PathScopeLen, len(scopes))
+}
+
+// specEventPath returns spec i's enclosing scopes followed by its own name, for
 // SpecStartEvent.Path, or nil for a plan without per-spec metadata (see specEventName).
 //
-// The split is lossy and predates the subtest identity mapping: a "/" inside a single declared name
-// is indistinguishable from a scope boundary here, so It("slash/inside") yields four segments whose
-// last one is not the spec's Name. Pinned by TestSpecRunReportedPathSplitsNamesContainingSeparator.
-// Fixing it means carrying the segments from the compiler's name stack rather than rebuilding them
-// from the joined string.
+// The result is a fresh copy, never a window into plan.PathScopes: Path is handed to arbitrary
+// report.EventReporter implementations, and one that sorts or truncates it in place would
+// otherwise corrupt the plan for every later spec and every later run of the same CompiledSuite —
+// and now that scope windows are shared, for every sibling spec as well.
 func specEventPath(plan *ExecutionPlan, i int) []string {
-	if i < 0 || i >= len(plan.FullNames) || plan.FullNames[i] == "" {
+	if i < 0 || i >= len(plan.PathScopeStart) || i >= len(plan.PathScopeLen) || i >= len(plan.Names) {
 		return nil
 	}
-	return strings.Split(plan.FullNames[i], "/")
+	start, length := plan.PathScopeStart[i], plan.PathScopeLen[i]
+	if start < 0 || length < 0 || start+length > len(plan.PathScopes) {
+		return nil
+	}
+	path := make([]string, 0, length+1)
+	path = append(path, plan.PathScopes[start:start+length]...)
+	return append(path, plan.Names[i])
 }
 
 // reportSpecStarted emits SpecStarted and returns the event it sent, so reportSpecFinished can

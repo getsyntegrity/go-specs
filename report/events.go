@@ -21,6 +21,12 @@ type SuiteEndEvent struct {
 // SpecStartEvent captures the start of an individual spec (It/Then).
 type SpecStartEvent struct {
 	Name string
+	// Path is the declared scope names enclosing this spec, outermost first, with Name as the last
+	// element. Each element is exactly one declared Describe/When/It name, verbatim — a name that
+	// itself contains "/" stays one element, so len(Path) always equals the number of scopes that
+	// were actually declared. Reporters may treat Path[:len(Path)-1] as the spec's scopes.
+	//
+	// Path is freshly allocated per event and safe to retain or modify.
 	Path []string
 	Time time.Time
 }

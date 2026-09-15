@@ -149,6 +149,10 @@ func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	c.plan.Names = append(c.plan.Names, name)
 	c.plan.FullNames = append(c.plan.FullNames, c.fullName(name))
 	c.plan.PathGens = append(c.plan.PathGens, c.pathGen)
+	// Record the enclosing scopes themselves: fullName's join is not injective, so a name containing
+	// "/" cannot be recovered from the breadcrumb afterwards. Only the scopes are stored — the plan
+	// already holds name in Names — and nameStack is passed as-is, never pushed to and popped from.
+	appendSpecPath(c.plan, c.nameStack)
 	c.pathGen = nil
 }
 
