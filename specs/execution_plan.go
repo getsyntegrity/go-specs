@@ -21,6 +21,16 @@ type ExecutionPlan struct {
 	Names        []string
 	FullNames    []string
 	PathGens     []*PathGenerator
+	// PathSegments is the shared backing array holding every spec's declared scope names, laid out
+	// the same way Instructions is: PathStart[i] and PathLen[i] delimit spec i's own window.
+	//
+	// The segments are stored rather than recovered from FullNames because joining with "/" is not
+	// injective — a declared name that itself contains "/" is indistinguishable from a scope
+	// boundary once joined, so splitting the breadcrumb back apart invents scopes that were never
+	// declared. FullNames stays as-is: it is the subtest identity, a different derivation.
+	PathSegments []string
+	PathStart    []int
+	PathLen      []int
 }
 
 func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
@@ -34,6 +44,9 @@ func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
 		Names:        make([]string, 0, estimatedSpecs),
 		FullNames:    make([]string, 0, estimatedSpecs),
 		PathGens:     make([]*PathGenerator, 0, estimatedSpecs),
+		PathSegments: make([]string, 0, estimatedSpecs*4),
+		PathStart:    make([]int, 0, estimatedSpecs),
+		PathLen:      make([]int, 0, estimatedSpecs),
 	}
 }
 
@@ -120,6 +133,7 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 		plan.Names = append(plan.Names, name)
 		plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
 		plan.PathGens = append(plan.PathGens, node.PathGen)
+		appendSpecPath(plan, scratch.path)
 	}
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
@@ -373,19 +387,31 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 	return specEventName(plan, i)
 }
 
-// specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for
-// SpecStartEvent.Path, or nil for a plan without per-spec metadata (see specEventName).
+// appendSpecPath records one spec's declared scope names into the plan's shared backing array and
+// stores the window they occupy. Called once per spec, in the same order as Names/FullNames.
+func appendSpecPath(plan *ExecutionPlan, path []string) {
+	plan.PathStart = append(plan.PathStart, len(plan.PathSegments))
+	plan.PathLen = append(plan.PathLen, len(path))
+	plan.PathSegments = append(plan.PathSegments, path...)
+}
+
+// specEventPath returns spec i's declared scope names for SpecStartEvent.Path, or nil for a plan
+// without per-spec metadata (see specEventName).
 //
-// The split is lossy and predates the subtest identity mapping: a "/" inside a single declared name
-// is indistinguishable from a scope boundary here, so It("slash/inside") yields four segments whose
-// last one is not the spec's Name. Pinned by TestSpecRunReportedPathSplitsNamesContainingSeparator.
-// Fixing it means carrying the segments from the compiler's name stack rather than rebuilding them
-// from the joined string.
+// The result is a fresh copy, never a window into plan.PathSegments: Path is handed to arbitrary
+// report.EventReporter implementations, and one that sorts or truncates it in place would
+// otherwise corrupt the plan for every later spec and every later run of the same CompiledSuite.
 func specEventPath(plan *ExecutionPlan, i int) []string {
-	if i < 0 || i >= len(plan.FullNames) || plan.FullNames[i] == "" {
+	if i < 0 || i >= len(plan.PathStart) || i >= len(plan.PathLen) {
 		return nil
 	}
-	return strings.Split(plan.FullNames[i], "/")
+	start, length := plan.PathStart[i], plan.PathLen[i]
+	if length <= 0 || start < 0 || start+length > len(plan.PathSegments) {
+		return nil
+	}
+	path := make([]string, length)
+	copy(path, plan.PathSegments[start:start+length])
+	return path
 }
 
 // reportSpecStarted emits SpecStarted and returns the event it sent, so reportSpecFinished can

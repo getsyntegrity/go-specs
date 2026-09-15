@@ -23,13 +23,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   not escaping, which would break `-run` patterns typed from the declared names. The mapping is an
   internal detail and is not exported.
 
-  Reporter `Name` and `Path` values are unchanged: `specEventPath` is byte-identical before and after
-  this change. `Name` stays the declared leaf name verbatim. `Path`, however, is not simply "the
-  breadcrumb", and was not before either — the `Describe`/`Spec` model rebuilds it by splitting the
-  joined breadcrumb on `/`, so `It("slash/inside")` reports four segments whose last one is not the
-  `Name`, and the `Builder`/`Runner` model reports no `Path` at all. Both pre-date this change and
-  are tracked in [#112](https://github.com/getsyntegrity/go-specs/issues/112) and
-  [#113](https://github.com/getsyntegrity/go-specs/issues/113).
+  Reporter `Name` and `Path` values are unchanged by *this* entry: `specEventPath` is byte-identical
+  before and after it. `Name` stays the declared leaf name verbatim. `Path` was separately broken —
+  the `Describe`/`Spec` model rebuilt it by splitting the joined breadcrumb on `/`, so
+  `It("slash/inside")` reported four segments whose last one was not the `Name`; that is fixed below
+  ([#113](https://github.com/getsyntegrity/go-specs/issues/113)). The `Builder`/`Runner` model still
+  reports no `Path` at all, tracked in
+  [#112](https://github.com/getsyntegrity/go-specs/issues/112).
 
   This applies to every run whose backend is a real `*testing.T`, including `DescribeFlat` and
   `DescribeFast`: despite their names, both create one subtest per spec exactly like `Describe`, so
@@ -59,6 +59,19 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `DescribeFast`, and the Builder/Runner path. The passing fast path is unchanged: caller discovery
   still happens only on failure, and assertions still allocate nothing when they pass.
   ([#101](https://github.com/getsyntegrity/go-specs/issues/101))
+
+- `report.SpecStartEvent.Path` no longer splits a declared name that contains `/`. It was rebuilt by
+  splitting the slash-joined breadcrumb, so `It("slash/inside")` arrived as two segments: the event
+  reported more scopes than were declared and its last segment was not `Name`, which made a reporter
+  rendering a tree, or deriving a JUnit `classname` from all but the last segment, invent a scope
+  nobody wrote. The compiler now carries the declared segments through to the event
+  ([#113](https://github.com/getsyntegrity/go-specs/issues/113)).
+
+### Added
+
+- `ExecutionPlan.PathSegments`, `ExecutionPlan.PathStart` and `ExecutionPlan.PathLen` hold each
+  spec's declared scope names, laid out like `Instructions`/`ProgramStart`/`ProgramLen`. `FullNames`
+  is unchanged and still carries the subtest identity.
 
 ### Known issues
 
