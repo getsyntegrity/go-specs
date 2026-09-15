@@ -135,9 +135,13 @@ func TestSpecPlanSharesScopeWindowBetweenSiblingSpecs(t *testing.T) {
 		t.Fatalf("expected %d per-spec windows, got %d", siblings, len(plan.PathScopeStart))
 	}
 	// One chain declared, so one chain stored: "suite", "outer scope", "inner condition".
+	// The count alone is reported, not the contents: without sharing this is siblings*3 entries, and
+	// dumping 1500 repeated strings buries the one number that explains the failure.
 	if want := 3; len(plan.PathScopes) != want {
-		t.Fatalf("expected %d shared scope segments for %d sibling specs, got %d: %q",
-			want, siblings, len(plan.PathScopes), plan.PathScopes)
+		t.Fatalf("expected %d shared scope segments for %d sibling specs, got %d (%d per spec — "+
+			"the window is not being reused); first chain %q",
+			want, siblings, len(plan.PathScopes), len(plan.PathScopes)/siblings,
+			plan.PathScopes[:min(want, len(plan.PathScopes))])
 	}
 	for i := range plan.PathScopeStart {
 		if plan.PathScopeStart[i] != 0 || plan.PathScopeLen[i] != 3 {
@@ -177,8 +181,18 @@ func TestSpecPlanFromArenaReportsDeclaredScopes(t *testing.T) {
 	if len(plan.Names) != 2 {
 		t.Fatalf("expected two specs in the plan, got %q", plan.Names)
 	}
-	// This producer does not treat the suite name as a path scope, so the breadcrumb starts at
-	// "when b". The separator inside "slash/inside" stays in one segment either way.
+	// The breadcrumb starts at "when b" because node 0 is the arena's synthetic root, not a scope
+	// anybody declared: registry.go builds every arena with a hardcoded
+	// ArenaNode{Name: "suite", Type: SuiteNode} at index 0, and the user's own top-level Describe
+	// becomes a DescribeNode beneath it. The `node.Type != SuiteNode` guard in
+	// buildExecutionPlanFromArenaRec drops that synthetic node alone.
+	//
+	// So this is NOT a producer disagreeing with the compiler about declared names — the fixture
+	// above just mirrors the real arena, synthetic root included. In production both producers
+	// report the same scopes; the compiler's nameStack starts at the user's Describe, which is
+	// exactly what survives the guard here.
+	//
+	// The separator inside "slash/inside" stays in one segment either way, which is the point.
 	wants := [][]string{
 		{"when b", "slash/inside"},
 		{"when b", "sibling"},

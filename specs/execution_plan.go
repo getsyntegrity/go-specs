@@ -32,11 +32,17 @@ type ExecutionPlan struct {
 	// boundary once joined, so splitting the breadcrumb back apart invents scopes that were never
 	// declared. FullNames stays as-is: it is the subtest identity, a different derivation.
 	//
-	// Specs declared under the same scopes share one window instead of each storing its own copy.
-	// Storing a private copy per spec is O(specs × depth) string headers for what is almost always
-	// a handful of distinct chains, and Go grows a large slice by ~1.25x, so the discarded
-	// intermediate arrays cost several times the final size again. On 50k sibling specs that shape
-	// measured +91% build memory; sharing the window brings it back to the noise floor.
+	// Consecutive specs sharing the same scopes share one window instead of each storing a copy.
+	// Storing a private copy per spec is O(specs × depth) string headers, and Go grows a large slice
+	// by ~1.25x, so the discarded intermediate arrays cost several times the final size again. On
+	// 50k sibling specs that shape measured +91% build memory; sharing the window removes it.
+	//
+	// The sharing is by adjacency, not by set: appendSpecPath reuses only the window it handed the
+	// previous spec (see there). Every spec in one block shares a window, which is the shape suites
+	// have, but an interleaved tree — When("a"){It}, When("b"){It}, When("a"){It} — reuses nothing
+	// and degrades back to a copy per spec. That is a size trade, never a correctness one: the
+	// reported Path is identical either way. Deduplicating across the whole plan would need a lookup
+	// keyed on the chain, which costs more than it saves for the tree shapes seen in practice.
 	PathScopes     []string
 	PathScopeStart []int
 	PathScopeLen   []int
@@ -417,8 +423,12 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 //
 // When scopes matches the window the previous spec was given — the common case, since every spec
 // declared in the same block sees the same enclosing scopes — that window is reused instead of
-// appending a second copy. That is what keeps PathScopes proportional to the number of distinct
-// scope chains rather than to the number of specs.
+// appending a second copy.
+//
+// Only the previous window is considered, deliberately: specs arrive in declaration order, so one
+// comparison against the tail catches every run of siblings without a per-chain lookup. It does not
+// catch a chain that recurs after an interruption, which then stores a second copy. See the
+// PathScopes field comment for what that trade is and is not.
 func appendSpecPath(plan *ExecutionPlan, scopes []string) {
 	start := len(plan.PathScopes) - len(scopes)
 	if start < 0 || !slices.Equal(plan.PathScopes[start:], scopes) {
