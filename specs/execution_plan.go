@@ -375,6 +375,12 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 
 // specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for
 // SpecStartEvent.Path, or nil for a plan without per-spec metadata (see specEventName).
+//
+// The split is lossy and predates the subtest identity mapping: a "/" inside a single declared name
+// is indistinguishable from a scope boundary here, so It("slash/inside") yields four segments whose
+// last one is not the spec's Name. Pinned by TestSpecRunReportedPathSplitsNamesContainingSeparator.
+// Fixing it means carrying the segments from the compiler's name stack rather than rebuilding them
+// from the joined string.
 func specEventPath(plan *ExecutionPlan, i int) []string {
 	if i < 0 || i >= len(plan.FullNames) || plan.FullNames[i] == "" {
 		return nil

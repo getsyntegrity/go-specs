@@ -155,9 +155,21 @@ Only execution is never ambiguous: both colliding specs still run, and both are 
 
 ### Scope
 
-This affects Go subtest identity only. Reporter events keep the framework's own values —
-`SpecStartEvent.Name` is the unsanitized leaf name and, in the `Describe`/`Spec` model, `Path` is the
-unsanitized breadcrumb — so nothing `testing` does here leaks into a report.
+This affects Go subtest identity only. `SpecStartEvent.Name` stays the declared leaf name verbatim,
+so `testing`'s rewrite of spaces and its `#01` suffixing never leak into a report.
+
+`SpecStartEvent.Path` carries a weaker guarantee, and it predates this mapping. In the
+`Describe`/`Spec` model it is rebuilt by splitting the joined breadcrumb on `/`, so a `/` inside one
+declared name is indistinguishable from a scope boundary:
+
+| Declared | Reported `Name` | Reported `Path` |
+|---|---|---|
+| `It("does a thing")` under `suite`/`when b` | `does a thing` | `["suite" "when b" "does a thing"]` |
+| `It("slash/inside")` under `suite`/`when b` | `slash/inside` | `["suite" "when b" "slash" "inside"]` |
+
+Four segments, and the last one is not the `Name`. `Path` is the breadcrumb only for names
+containing no separator. The `Builder`/`Runner` model reports no `Path` at all. Both are tracked
+separately; neither is changed here.
 
 `DescribeFlat` and `DescribeFast` are covered by all of the above. Their names are about the
 compiled plan, not about subtests: "flat" means hooks are flattened into each spec's instruction
@@ -171,10 +183,21 @@ Parallel specs have no subtest identity, before this change or after it. `ItPara
 under `parallelBackend` on the scheduler's own goroutines and never reach `t.Run` at all; they are
 addressable through reporter events, not through a `-run` pattern.
 
-### Hooks under a narrow `-run` pattern
+### Hooks: the two models disagree, with or without `-run`
 
-The two sequential models do not behave identically when `-run` discards a spec, and the difference
-is in the hooks, not the names.
+The two sequential models do not run hooks the same way, and the difference is in the hooks, not the
+names. `-run` makes it visible; it does not create it.
+
+The plainest form needs no pattern at all. For one scope declaring a `BeforeEach` and three specs:
+
+| Model | `BeforeEach` runs |
+|---|---|
+| `Describe` / `Spec` | 3 times — once per spec |
+| `Builder` / `Runner` | 1 time — once per group |
+
+So `BeforeEach` does not carry per-spec semantics in the `Builder`/`Runner` model. Setup that a spec
+mutates is not restored for the next spec in the same group. That is the substance of the
+divergence, tracked in #109; everything below is the same placement seen through a filter.
 
 The `Describe`/`Spec` model compiles each scope's `BeforeEach`/`AfterEach` into the selected spec's
 own instruction range, and that range runs *inside* the subtest. Discarding the subtest discards the

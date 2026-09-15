@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/pablogore/go-specs/report"
 )
 
 // TestJoinSubtestPath pins the package-internal mapping from a declared Describe/When/It breadcrumb
@@ -127,6 +129,12 @@ func identityHelperSuite(s *Spec) {
 
 // identityHelperProgram is identityHelperSuite's Builder/Program equivalent, so both sequential
 // execution models are proven against the same shapes (acceptance criterion 6).
+//
+// The hook counts of "when a" (one BeforeEach, one AfterEach) and "when b" (one BeforeEach) must NOT
+// be made equal. Builder.hookKey degrades to (depth, hook counts) because sibling Describe scopes
+// reuse the same backing-array slot and so share a pointer (#109); two siblings at equal depth with
+// equal hook counts coalesce into one group and the second's hooks are discarded. Equalising them
+// here would leave these tests passing while measuring a collapsed tree rather than two scopes.
 func identityHelperProgram() *Program {
 	b := NewBuilder()
 	b.Describe("suite", func() {
@@ -291,6 +299,11 @@ func assertPlanSelectedOnlyWhenB(t *testing.T, output string) {
 // only discard what is inside a subtest, so a -run pattern narrows which spec bodies execute but not
 // which group hooks do — "when a"'s before and after still run even though its only spec does not.
 //
+// -run only makes the difference visible; it does not create it. The same placement means the two
+// models already disagree with no pattern at all: for a scope with three specs the plan model runs
+// its BeforeEach three times and the Runner runs it once, so BeforeEach does not carry per-spec
+// semantics in this model (#109).
+//
 // The two models therefore share the subtest identity mapping, not their behaviour under filtering.
 // Filed separately; #102 changed neither model's hook placement.
 func assertRunnerSelectedOnlyWhenB(t *testing.T, output string) {
@@ -324,6 +337,43 @@ func TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
 	wantPath := []string{"suite", "when a", "does a thing"}
 	if strings.Join(rep.specStarted[0].Path, "|") != strings.Join(wantPath, "|") {
 		t.Fatalf("expected the reported Path to stay %q, got %q", wantPath, rep.specStarted[0].Path)
+	}
+}
+
+// TestSpecRunReportedPathSplitsNamesContainingSeparator pins a defect, not a guarantee.
+// SpecStartEvent.Path is rebuilt by splitting the joined breadcrumb on "/" (specEventPath), so a "/"
+// inside a single declared name is indistinguishable from a scope boundary. It("slash/inside") — a
+// spec identityHelperSuite has declared since this file was written — therefore reports four Path
+// segments, and its last segment is not the spec's Name.
+//
+// The fixture always contained the case and no test looked at it, which is how the claim that Path
+// is "the unsanitized breadcrumb" survived. Name is asserted alongside Path here precisely because
+// the two disagree: Name is verbatim, Path is not.
+//
+// This predates the subtest identity mapping — specEventPath is byte-identical before and after it —
+// and is not fixed here. The fix is to carry the segments from the compiler's name stack instead of
+// round-tripping them through a joined string.
+func TestSpecRunReportedPathSplitsNamesContainingSeparator(t *testing.T) {
+	var rep recordingReporter
+	DescribeWithReporter(t, "suite", &rep, identityHelperSuite)
+
+	var got *report.SpecStartEvent
+	for i := range rep.specStarted {
+		if rep.specStarted[i].Name == "slash/inside" {
+			got = &rep.specStarted[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a reported spec named %q, got %d events", "slash/inside", len(rep.specStarted))
+	}
+	// The declared breadcrumb has three segments; the reported Path has four.
+	wantPath := []string{"suite", "when b", "slash", "inside"}
+	if strings.Join(got.Path, "|") != strings.Join(wantPath, "|") {
+		t.Fatalf("expected the split-on-slash Path %q, got %q", wantPath, got.Path)
+	}
+	if got.Path[len(got.Path)-1] == got.Name {
+		t.Fatalf("expected Path's last segment to disagree with Name — that is the defect being pinned; got %q for both", got.Name)
 	}
 }
 

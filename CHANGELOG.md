@@ -23,9 +23,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   not escaping, which would break `-run` patterns typed from the declared names. The mapping is an
   internal detail and is not exported.
 
-  Reporter `Name` and `Path` values are unchanged. Note that they already differed between the two
-  models and still do: the `Describe`/`Spec` model reports a `Path`, and the `Builder`/`Runner` model
-  has never populated one. Tracked in [#112](https://github.com/getsyntegrity/go-specs/issues/112).
+  Reporter `Name` and `Path` values are unchanged: `specEventPath` is byte-identical before and after
+  this change. `Name` stays the declared leaf name verbatim. `Path`, however, is not simply "the
+  breadcrumb", and was not before either — the `Describe`/`Spec` model rebuilds it by splitting the
+  joined breadcrumb on `/`, so `It("slash/inside")` reports four segments whose last one is not the
+  `Name`, and the `Builder`/`Runner` model reports no `Path` at all. Both pre-date this change and
+  are tracked in [#112](https://github.com/getsyntegrity/go-specs/issues/112) and
+  [#113](https://github.com/getsyntegrity/go-specs/issues/113).
 
   This applies to every run whose backend is a real `*testing.T`, including `DescribeFlat` and
   `DescribeFast`: despite their names, both create one subtest per spec exactly like `Describe`, so

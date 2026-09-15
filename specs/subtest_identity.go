@@ -60,8 +60,17 @@ const subtestSeparator = "/"
 // Escaping was rejected for a smaller reason: `go test -run 'TestX/suite/when_a/does_it'` — a
 // pattern a developer types by reading the declared names — would stop matching.
 //
-// Only Go subtest identity is derived this way. Reporter events keep the framework's own
-// unsanitized Name and Path values, so nothing testing does here leaks back into a report.
+// Only Go subtest identity is derived this way. Reporter events are not re-derived from the subtest
+// name: SpecStartEvent.Name stays the declared leaf name verbatim, so testing's rewrite of spaces
+// and its "#01" suffixing never leak back into a report.
+//
+// SpecStartEvent.Path is a weaker guarantee, and it predates this mapping. specEventPath rebuilds it
+// by splitting the same joined string on "/", so a "/" inside one declared name is indistinguishable
+// from a scope boundary: It("slash/inside") under Describe("suite")/When("when b") reports the four
+// segments ["suite" "when b" "slash" "inside"], and its last segment is not the spec's Name. Path is
+// therefore the breadcrumb only for names that contain no separator. Tracked in #113; the fix is
+// to carry the segments from the compiler's name stack instead of round-tripping them through a
+// joined string.
 //
 // The result is built into one exactly-sized buffer rather than through `strings.Join(...) + sep +
 // leaf`, which would allocate the joined prefix and then the concatenation. This runs once per
