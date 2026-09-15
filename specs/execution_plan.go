@@ -351,7 +351,7 @@ func specEventName(plan *ExecutionPlan, i int) string {
 // breadcrumb (plan.FullNames[i]), not the leaf It name, so two specs sharing a leaf name under
 // different scopes stay independently selectable with `go test -run` instead of being told apart
 // only by testing's incidental "#01" suffix (#102). That holds whenever the two breadcrumbs differ
-// once testing has normalized them; see joinSubtestName for the mapping's contract and for the
+// once testing has normalized them; see joinSubtestPath for the mapping's contract and for the
 // ambiguity it accepts and inherits from testing.T.Run.
 //
 // It falls back to plan.Names[i] for a plan built without breadcrumbs — a hand-built ExecutionPlan,

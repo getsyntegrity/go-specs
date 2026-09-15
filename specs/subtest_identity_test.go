@@ -8,27 +8,31 @@ import (
 	"testing"
 )
 
-// TestJoinSubtestName pins the package-internal mapping from a declared Describe/When/It breadcrumb
+// TestJoinSubtestPath pins the package-internal mapping from a declared Describe/When/It breadcrumb
 // to the Go subtest identity go-specs hands testing.T.Run (#102): a plain join on "/", never a
-// rewrite. The cases for spaces, slashes and empty names document what the mapping itself does; what
-// testing then makes of those names is proven end-to-end by the real-process tests below.
-func TestJoinSubtestName(t *testing.T) {
+// rewrite. It exercises joinSubtestPath because that is the function both compilers actually call —
+// compiler.fullName and Builder.fullName — so the contract is pinned on the executed code path. The
+// cases for spaces, slashes and empty names document what the mapping itself does; what testing then
+// makes of those names is proven end-to-end by the real-process tests below.
+func TestJoinSubtestPath(t *testing.T) {
 	cases := []struct {
-		name string
-		path []string
-		want string
+		name   string
+		scopes []string
+		leaf   string
+		want   string
 	}{
-		{name: "nested breadcrumb", path: []string{"Cart", "when empty", "has no items"}, want: "Cart/when empty/has no items"},
-		{name: "leaf only", path: []string{"has no items"}, want: "has no items"},
-		{name: "no path at all", path: nil, want: ""},
-		{name: "spaces are preserved by the mapping", path: []string{"a b", "c d"}, want: "a b/c d"},
-		{name: "a slash inside a name is not escaped", path: []string{"D", "a/b"}, want: "D/a/b"},
-		{name: "an empty name keeps its element", path: []string{"D", ""}, want: "D/"},
+		{name: "nested breadcrumb", scopes: []string{"Cart", "when empty"}, leaf: "has no items", want: "Cart/when empty/has no items"},
+		{name: "leaf only", scopes: nil, leaf: "has no items", want: "has no items"},
+		{name: "no path at all", scopes: nil, leaf: "", want: ""},
+		{name: "spaces are preserved by the mapping", scopes: []string{"a b"}, leaf: "c d", want: "a b/c d"},
+		{name: "a slash inside a name is not escaped", scopes: []string{"D"}, leaf: "a/b", want: "D/a/b"},
+		{name: "an empty leaf keeps its element", scopes: []string{"D"}, leaf: "", want: "D/"},
+		{name: "an empty scope keeps its element", scopes: []string{"D", ""}, leaf: "it", want: "D//it"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := joinSubtestName(tc.path...); got != tc.want {
-				t.Fatalf("joinSubtestName(%q) = %q, want %q", tc.path, got, tc.want)
+			if got := joinSubtestPath(tc.scopes, tc.leaf); got != tc.want {
+				t.Fatalf("joinSubtestPath(%q, %q) = %q, want %q", tc.scopes, tc.leaf, got, tc.want)
 			}
 		})
 	}
@@ -162,7 +166,7 @@ func assertVerboseIdentity(t *testing.T, output string) {
 // Spec/ExecutionPlan model against a genuine `go test -v` run: every spec's subtest carries its full
 // Describe/When/It breadcrumb, two specs sharing only a leaf name — and so normalizing to different
 // breadcrumbs — stay distinct without "#01", and spaces, slashes and empty names land exactly where
-// joinSubtestName's contract says they do.
+// joinSubtestPath's contract says they do.
 //
 // A subprocess is required, not incidental: the assertions are about this process's own -v
 // transcript, which only a child re-exec can produce and read back.
@@ -276,7 +280,7 @@ func TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
 
 // collisionHelperSuite declares two pairs of specs whose declared breadcrumbs are different but
 // whose *normalized* breadcrumbs — what testing.T.Run makes of them — are identical, so they are the
-// exact shapes joinSubtestName's contract says stay ambiguous:
+// exact shapes joinSubtestPath's contract says stay ambiguous:
 //
 //   - "suite/a/b/does it" reached through a single When("a/b") and through Describe("a")/When("b"),
 //     because a "/" inside one declared name is not escaped and simply adds a pattern element;

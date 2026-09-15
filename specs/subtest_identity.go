@@ -8,9 +8,10 @@ import "strings"
 // subtest separator, so every declared scope becomes its own element of a `go test -run` pattern.
 const subtestSeparator = "/"
 
-// joinSubtestName returns the Go subtest name go-specs gives a sequential spec declared under path,
-// with the outermost Describe first and the It name last. Both sequential execution models —
-// Describe/Spec/ExecutionPlan and Builder/Program/Runner — use this mapping, so a spec declared as
+// joinSubtestPath returns the Go subtest name go-specs gives a sequential spec declared under
+// scopes (outermost Describe first) with the leaf It name last. Both sequential execution models —
+// Describe/Spec/ExecutionPlan and Builder/Program/Runner — build their breadcrumbs through it, so a
+// spec declared as
 //
 //	Describe(t, "Cart", func(s *specs.Spec) {
 //		s.When("empty", func(s *specs.Spec) {
@@ -51,15 +52,24 @@ const subtestSeparator = "/"
 //
 // Only Go subtest identity is derived this way. Reporter events keep the framework's own
 // unsanitized Name and Path values, so nothing testing does here leaks back into a report.
-func joinSubtestName(path ...string) string {
-	return strings.Join(path, subtestSeparator)
-}
-
-// joinSubtestPath is joinSubtestName for a scope stack plus one leaf name, without the intermediate
-// slice a variadic call would need. Both compilers build their breadcrumbs through it.
+//
+// The result is built into one exactly-sized buffer rather than through `strings.Join(...) + sep +
+// leaf`, which would allocate the joined prefix and then the concatenation. This runs once per
+// declared It on both build paths, so the saved allocation is per spec, not per suite.
 func joinSubtestPath(scopes []string, leaf string) string {
 	if len(scopes) == 0 {
 		return leaf
 	}
-	return strings.Join(scopes, subtestSeparator) + subtestSeparator + leaf
+	n := len(leaf) + len(scopes)*len(subtestSeparator)
+	for _, s := range scopes {
+		n += len(s)
+	}
+	var b strings.Builder
+	b.Grow(n)
+	for _, s := range scopes {
+		b.WriteString(s)
+		b.WriteString(subtestSeparator)
+	}
+	b.WriteString(leaf)
+	return b.String()
 }
