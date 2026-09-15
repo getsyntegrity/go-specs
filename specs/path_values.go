@@ -1,6 +1,9 @@
 package specs
 
-import "sync"
+import (
+	"math"
+	"sync"
+)
 
 // pathValuesPool recycles PathValues during path execution to reduce allocations.
 // New pre-sizes values/present so FillPathValues(reset) often reuses buffers without allocating.
@@ -180,6 +183,15 @@ func (pv PathValues) Hash() uint64 {
 			h ^= uint64(x)
 		case uint64:
 			h ^= x
+		case string:
+			for j := 0; j < len(x); j++ {
+				h ^= uint64(x[j])
+				h *= 1099511628211
+			}
+		case float64:
+			h ^= math.Float64bits(x)
+		case float32:
+			h ^= uint64(math.Float32bits(x))
 		default:
 			h ^= uint64(i) * 31
 		}
