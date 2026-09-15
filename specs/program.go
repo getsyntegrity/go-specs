@@ -147,7 +147,7 @@ func parallelStep(steps []step, names []string) step {
 		}
 		pathValues := ctx.Path()
 		obs := ctx.execObserver
-		results := make([]string, len(steps))
+		results := make([]parallelFailure, len(steps))
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
@@ -171,12 +171,12 @@ func parallelStep(steps []step, names []string) step {
 					case parallelAbort{}:
 						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
 					default:
-						if results[i] == "" {
-							results[i] = fmt.Sprintf("panic: %v", r)
+						if results[i].Message == "" {
+							results[i] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
 						}
 					}
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i] != "", Message: results[i]})
+						obs.specFinished(started, specResult{Failed: results[i].Message != "", Message: results[i].Message})
 					}
 					release()
 				}()
@@ -184,8 +184,8 @@ func parallelStep(steps []step, names []string) step {
 			}()
 		}
 		wg.Wait()
-		for _, msg := range results {
-			if msg != "" {
+		for _, r := range results {
+			if r.Message != "" {
 				ctx.recordFailure()
 				break
 			}

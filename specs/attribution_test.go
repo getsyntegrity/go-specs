@@ -25,13 +25,16 @@ import (
 // The fixture lives in testdata/attribution so `go test ./...` never runs it directly; every spec
 // in it fails on purpose.
 //
-// SCOPE: the fixture covers the sequential backends only. ItParallel is deliberately absent, and
-// not as an oversight — the parallel path has no source attribution to assert. parallelBackend
-// records a failure as a formatted string into a results slice (see scheduler.go) and the scheduler
-// surfaces it later from a different goroutine and a different frame, so testing.T.Helper's frame
-// bookkeeping — the entire mechanism this file pins — never applies. Context.tb is nil there and
-// parallelBackend.Helper is a no-op. Giving parallel specs a real source location is a separate
-// change: it needs the location captured where the assertion runs, not marked for testing to find.
+// SCOPE: the fixture covers the sequential backends only. ItParallel is deliberately absent — not
+// because it has no source attribution at all, but because the mechanism this file pins
+// (testing.T.Helper's frame bookkeeping) never applies there: Context.tb is nil on the parallel
+// path and parallelBackend.Helper is a no-op, since the worker goroutine that ran the assertion is
+// gone by the time the failure is reported from a different goroutine and frame. ItParallel's own
+// attribution is proved separately, by parallel_attribution_test.go: the user's file:line is
+// captured while the worker's frame is still live (parallelCallerLocation in scheduler.go) and
+// embedded in the failure message text, since there is no live frame left to mark for testing to
+// find — see #108. Go's own primary-decorated location still names an internal go-specs frame
+// there, unlike here; that file documents it as a known, accepted limitation.
 
 const (
 	attributionFixtureDir  = "testdata/attribution"
