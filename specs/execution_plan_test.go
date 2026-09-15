@@ -33,7 +33,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("pass resets context and reverses after hooks", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var order []string
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "generated", []Instruction{
 			{Code: OpBeforeHook, Fn: func(ctx *Context) { order = append(order, "before") }},
 			{Code: OpBody, Fn: func(ctx *Context) { order = append(order, "body") }},
 			{Code: OpAfterHook, Fn: func(ctx *Context) { order = append(order, "after-inner") }},
@@ -53,7 +53,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("nonfatal assertion completes after hooks", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var afterRuns int
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "generated", []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.Expect(false).ToEqual(true) }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
 		}, PathValues{}, nil)
@@ -65,7 +65,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("fatal preserves attribution and runs after once", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var bodyCompleted, afterRuns bool
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "generated", []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.backend.FailNow(); bodyCompleted = true }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns = true }},
 		}, PathValues{}, nil)
@@ -77,7 +77,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("panic is retained and runs after once", func(t *testing.T) {
 		backend := &controlledBackend{}
 		var afterRuns int
-		result := runIsolatedCase(backend, []Instruction{
+		result := runIsolatedCase(backend, "generated", []Instruction{
 			{Code: OpBody, Fn: func(*Context) { panic("body panic") }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
 		}, PathValues{}, nil)
@@ -89,9 +89,9 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("shrink probe retains original values deterministically", func(t *testing.T) {
 		path := PathValues{values: []any{7}, present: []bool{true}, index: map[string]int{"value": 0}}
 		program := []Instruction{{Code: OpBody, Fn: func(*Context) {}}, {Code: OpAfterHook, Fn: func(*Context) {}}}
-		first := runIsolatedCase(&controlledBackend{}, program, path, nil)
+		first := runIsolatedCase(&controlledBackend{}, "generated", program, path, nil)
 		path.values[0] = 9
-		second := runIsolatedCase(&controlledBackend{}, program, path, nil)
+		second := runIsolatedCase(&controlledBackend{}, "generated", program, path, nil)
 		if first.Path.Int("value") != 7 || second.Path.Int("value") != 9 || first.Failed != second.Failed || first.Panic != second.Panic {
 			t.Fatalf("first = %#v, second = %#v", first, second)
 		}

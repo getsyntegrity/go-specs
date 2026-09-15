@@ -305,6 +305,21 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 		// (see its doc comment: "no parallel execution option"), so a closure variable is safe —
 		// keeping Coverage out of proposalCandidate/proposalFeedback keeps the controller itself
 		// generic instead of coupling it to path-generation concerns.
+		// -run and the adaptive strategies (ExploreCoverage/ExploreSmart): Propose/Execute/
+		// AdmitFeedback above are ordinary Go code, not gated by testing's -run matcher — only the
+		// function passed to runIsolatedCase's real.Run is. So every candidate a seed would propose
+		// still gets proposed, executed here, and fed back to seq.admitFeedback exactly as it would
+		// without -run; what a non-matching -run pattern skips is purely the inner subtest body,
+		// which makes tb.Failed() read false and Execute report !result.Failed == true regardless of
+		// what the candidate's assertions would have done. For CoverageExplorer/SmartExplorer, whose
+		// corpus growth depends on that Passed/Coverage feedback (see admitFeedback), this means a
+		// -run pattern that targets one candidate deep in an adaptive run does not reproduce "what
+		// would have happened had only that candidate executed" — every earlier candidate's skipped
+		// body still contributes an artificial "passed" to the explorer's state exactly as it did in
+		// the original run, because that state is seed-deterministic and -run cannot see it to alter
+		// it. Cartesian/Sample/plain Explore are unaffected: nothing here feeds AcceptedIndex/
+		// AttemptIndex-derived identity back into what gets proposed next, so selecting one candidate
+		// by name always reproduces it faithfully. Changing this contract is out of scope for #103.
 		var lastCoverage *Coverage
 		return newProposalController(proposalControllerConfig{
 			MaxAttempts:   maxAttempts,
@@ -322,7 +337,8 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				if wantsCoverage {
 					cov = &Coverage{}
 				}
-				result := runIsolatedCase(backend, program, candidate.Values, cov)
+				subtestName := candidateSubtestName(plan, i, candidate)
+				result := runIsolatedCase(backend, subtestName, program, candidate.Values, cov)
 				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
 				lastCoverage = cov
 				return !result.Failed
@@ -415,6 +431,51 @@ func specSubtestName(plan *ExecutionPlan, i int) string {
 		return plan.FullNames[i]
 	}
 	return specEventName(plan, i)
+}
+
+// candidateSubtestName returns the Go subtest identity for one executed generated candidate (#103):
+// spec i's own breadcrumb (specSubtestName), joined via the same "/" convention joinSubtestPath uses
+// for Describe/When/It scopes (#102), with a trailing element identifying this one candidate among
+// every other candidate the same spec executes.
+//
+// That trailing element is "generated#<attempt>_<hash>":
+//
+//   - attempt is candidate.AttemptIndex, proposalController's own count of proposals made so far for
+//     this spec's run. It is assigned once, in generation order, and never reused (Run increments
+//     result.Attempts before building the candidate — see exploration_controller.go) — so it alone
+//     already rules out two candidates ever colliding on Go subtest identity, for every strategy
+//     (Cartesian, Sample, Explore, ExploreCoverage, ExploreSmart) and regardless of how many
+//     candidates propose equal PathValues. Two candidates with identical values still get distinct
+//     names, because they necessarily have distinct attempt indices.
+//   - hash is candidate.Values.Hash() truncated to 32 bits: a content fingerprint, not an identity
+//     guarantee. It exists so a developer scanning `go test -v` output, or diffing two runs with the
+//     same seed, can tell at a glance whether two candidates proposed the same inputs, without this
+//     name ever containing a raw value. Hash defines which types it is safe to fold into that
+//     fingerprint by content (see its own doc comment) and falls back to a position-only contribution
+//     for everything else, so a map, a pointer, or any other type whose formatting could depend on
+//     memory layout never ends up encoded here even indirectly.
+//
+// Deliberately absent from the name: the generator's seed, and — for the three ExplorationGuided
+// strategies — whether this candidate was also rejected before being accepted (AcceptedIndex).
+// Both are facts about the spec's run as a whole, or require executing the whole sequence again to
+// reconstruct, not facts a single candidate's identity needs to carry; embedding them in every
+// candidate's name would repeat the same information on every line of `-v` output for no
+// disambiguating benefit. They belong in the fuller reproduction context a failure already has
+// available through the spec's own configuration (.Seed, .Explore/.ExploreCoverage/.ExploreSmart)
+// and through proposalCandidate itself, not repeated into a name whose job is identity, not a full
+// dump.
+//
+// The name never embeds a raw PathValues entry, so it carries no risk of a long string, a secret- or
+// PII-shaped value, or an unstable formatted address ending up somewhere `go test -v` output and CI
+// systems retain indefinitely — see Hash's doc comment for exactly which types even reach the digest
+// by content.
+func candidateSubtestName(plan *ExecutionPlan, i int, candidate proposalCandidate) string {
+	suffix := fmt.Sprintf("generated#%d_%08x", candidate.AttemptIndex, uint32(candidate.Values.Hash()))
+	owner := specSubtestName(plan, i)
+	if owner == "" {
+		return suffix
+	}
+	return owner + subtestSeparator + suffix
 }
 
 // appendSpecPath records the scopes enclosing one spec and stores the window they occupy. Called
@@ -575,9 +636,17 @@ type isolatedCaseResult struct {
 // non-nil, is wired into the Context so assertions executed by program record real coverage
 // into it (see Context.RecordCoverage) — the caller owns the pointer and reads it back directly,
 // nothing needs to be copied out before the Context is returned to the pool.
-func runIsolatedCase(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
+//
+// name is the candidate's own subtest identity — candidateSubtestName's result, not the literal
+// "generated" this used to hand testing.T.Run unconditionally (#103). Every accepted candidate
+// still gets its own subtest either way; what changed is only what it is called and therefore
+// how it appears in `go test -v`, is matched by `go test -run`, and is told apart from a sibling
+// that shares its owning spec. See candidateSubtestName's doc comment for the identity contract,
+// and runExecutionContext's PathGens branch for how `-run` interacts with the adaptive strategies
+// (ExploreCoverage/ExploreSmart) that feed a candidate's outcome back into their own state.
+func runIsolatedCase(backend testBackend, name string, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
 	if real, ok := backend.(*runnableBackend); ok {
-		real.Run("generated", func(tb testing.TB) {
+		real.Run(name, func(tb testing.TB) {
 			caseBackend := asTestBackend(tb)
 			defer putTestBackend(caseBackend)
 			defer func() { result.Failed = result.Failed || tb.Failed() }()

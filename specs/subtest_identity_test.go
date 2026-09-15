@@ -622,3 +622,151 @@ func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
 		t.Fatalf("expected 4 reported specs for 4 declared specs, got %d in:\n%s", got, transcript)
 	}
 }
+
+// TestCandidateSubtestNameDuplicateValuesStayDistinct proves acceptance criterion 4 of #103 directly
+// against candidateSubtestName: two candidates whose PathValues are byte-for-byte equal must still
+// get distinct Go subtest names, because the guarantee rests on AttemptIndex — proposalController's
+// own monotonically increasing count (exploration_controller.go), unique for the whole run — not on
+// the values themselves. It also pins that equal Values still produce an equal hash fingerprint,
+// which is the point of carrying one: a developer can tell two differently-numbered candidates
+// proposed the same inputs.
+func TestCandidateSubtestNameDuplicateValuesStayDistinct(t *testing.T) {
+	plan := &ExecutionPlan{Names: []string{"case"}, FullNames: []string{"suite/case"}}
+	values := PathValues{index: map[string]int{"n": 0}, values: []any{7}, present: []bool{true}}
+
+	first := candidateSubtestName(plan, 0, proposalCandidate{Values: values, AttemptIndex: 1, AcceptedIndex: 1})
+	second := candidateSubtestName(plan, 0, proposalCandidate{Values: values, AttemptIndex: 2, AcceptedIndex: 2})
+	if first == second {
+		t.Fatalf("expected two candidates with equal Values but distinct AttemptIndex to get distinct names, both were %q", first)
+	}
+	if !strings.HasPrefix(first, "suite/case/generated#1_") {
+		t.Fatalf("expected the owning breadcrumb and attempt index in the name, got %q", first)
+	}
+	if !strings.HasPrefix(second, "suite/case/generated#2_") {
+		t.Fatalf("expected the owning breadcrumb and attempt index in the name, got %q", second)
+	}
+
+	firstHash := first[strings.LastIndex(first, "_")+1:]
+	secondHash := second[strings.LastIndex(second, "_")+1:]
+	if firstHash != secondHash {
+		t.Fatalf("expected equal PathValues to produce equal hash fingerprints, got %q and %q", firstHash, secondHash)
+	}
+}
+
+// TestCandidateSubtestNameFallsBackWithoutBreadcrumb proves candidateSubtestName degrades the same
+// way specSubtestName already does for a plan without breadcrumbs (a hand-built ExecutionPlan, or a
+// compiler with an empty name stack): the candidate's own generated#<attempt>_<hash> element alone,
+// with no leading "/" left dangling from a missing owner.
+func TestCandidateSubtestNameFallsBackWithoutBreadcrumb(t *testing.T) {
+	plan := &ExecutionPlan{}
+	got := candidateSubtestName(plan, 0, proposalCandidate{Values: PathValues{}, AttemptIndex: 5})
+	if !strings.HasPrefix(got, "generated#5_") {
+		t.Fatalf("expected a bare generated#N_hash name for a plan without breadcrumbs, got %q", got)
+	}
+}
+
+// pathsIdentityHelperSuite declares a Paths-generated spec with four Cartesian combinations, so the
+// real-process tests below can check every generated candidate's own subtest identity (#103) against
+// a genuine `go test -v` transcript.
+func pathsIdentityHelperSuite(s *Spec) {
+	s.When("checkout", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Bool("vip")
+			pb.Bool("giftWrap")
+		}).It("computes a total", func(ctx *Context) {
+			fmt.Printf("RAN vip=%v giftWrap=%v\n", ctx.Path().Bool("vip"), ctx.Path().Bool("giftWrap"))
+		})
+	})
+}
+
+// TestSpecRunGeneratedCandidateSubtestIdentityRealProcess proves acceptance criteria 1, 2 and 4 of
+// #103 against a genuine `go test -v` run: every path-generated candidate's subtest now carries its
+// owning It's full Describe/When/It breadcrumb — not the bare literal "generated" every candidate
+// used to share regardless of which spec proposed it — followed by its own stable
+// generated#<attempt>_<hash> element, so distinct candidates never need testing's own "#01"
+// disambiguation suffix.
+//
+// A subprocess is required, not incidental: the assertions are about this process's own -v
+// transcript, which only a child re-exec can produce and read back — the same reason
+// TestSpecRunNestedSubtestIdentityRealProcess above needs one.
+func TestSpecRunGeneratedCandidateSubtestIdentityRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_GENERATED_IDENTITY_HELPER") == "1" {
+		Describe(t, "suite", pathsIdentityHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestSpecRunGeneratedCandidateSubtestIdentityRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_GENERATED_IDENTITY_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	transcript := string(output)
+
+	for _, want := range []string{
+		"RAN vip=true giftWrap=true",
+		"RAN vip=true giftWrap=false",
+		"RAN vip=false giftWrap=true",
+		"RAN vip=false giftWrap=false",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected every combination to run, missing %q in:\n%s", want, transcript)
+		}
+	}
+	// Every candidate's subtest starts with the owning It's full breadcrumb, followed by
+	// generated#<attempt>_<hash> — never the bare "generated" every candidate used to share.
+	for i := 1; i <= 4; i++ {
+		want := fmt.Sprintf("/suite/checkout/computes_a_total/generated#%d_", i)
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected candidate %d's subtest to start with %q, got:\n%s", i, want, transcript)
+		}
+	}
+	// Go's own "#01" duplicate-name suffix can only appear if two subtests were handed the exact
+	// same literal name — the defect #103 fixes. It never should here, since every candidate's own
+	// attempt index already makes its name unique.
+	if strings.Contains(transcript, "generated#01") {
+		t.Fatalf("did not expect testing's own duplicate-name suffix once candidates carry their own identity, got:\n%s", transcript)
+	}
+}
+
+// TestSpecRunGeneratedCandidateReporterIdentityUnaffected extends
+// TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim to path-generated candidates: giving
+// each candidate its own breadcrumb-qualified Go subtest name (#103) must not change what the
+// reporter is told a candidate's Name is — every accepted candidate still reports the plain declared
+// leaf name, never the generated#<attempt>_<hash> suffix that exists purely for testing.T.Run.
+func TestSpecRunGeneratedCandidateReporterIdentityUnaffected(t *testing.T) {
+	var rep recordingReporter
+	DescribeWithReporter(t, "suite", &rep, pathsIdentityHelperSuite)
+
+	if len(rep.specStarted) != 4 {
+		t.Fatalf("expected 4 SpecStarted events, one per Cartesian combination, got %d", len(rep.specStarted))
+	}
+	for i, started := range rep.specStarted {
+		if started.Name != "computes a total" {
+			t.Fatalf("event %d: expected the reported Name to stay the declared leaf name, got %q", i, started.Name)
+		}
+	}
+}
+
+// BenchmarkCandidateSubtestName measures #103's per-candidate cost end to end: one Hash call plus
+// the fmt.Sprintf and string concatenation candidateSubtestName does for every executed generated
+// case, against a realistic breadcrumb and a five-var PathValues.
+func BenchmarkCandidateSubtestName(b *testing.B) {
+	plan := &ExecutionPlan{
+		Names:     []string{"computes a total"},
+		FullNames: []string{"suite/checkout/computes a total"},
+	}
+	candidate := proposalCandidate{
+		Values: PathValues{
+			index:   map[string]int{"sku": 0, "region": 1, "qty": 2, "price": 3, "vip": 4},
+			values:  []any{"SKU-0042-DELUXE", "us-east", 7, 199, true},
+			present: []bool{true, true, true, true, true},
+		},
+		AttemptIndex:  42,
+		AcceptedIndex: 40,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = candidateSubtestName(plan, 0, candidate)
+	}
+}

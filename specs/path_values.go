@@ -1,6 +1,9 @@
 package specs
 
-import "sync"
+import (
+	"math"
+	"sync"
+)
 
 // pathValuesPool recycles PathValues during path execution to reduce allocations.
 // New pre-sizes values/present so FillPathValues(reset) often reuses buffers without allocating.
@@ -155,7 +158,19 @@ func (pv PathValues) len() int {
 	return count
 }
 
-// Hash returns a deterministic hash of the path values for coverage tracking.
+// Hash returns a deterministic hash of the path values, stable across processes and runs for the
+// same seed (#103): it depends only on each value's own content and its fixed position in index —
+// never on map iteration order (values/present is a plain slice, populated once at generator
+// construction) and never on a pointer address.
+//
+// Only types with a content that is itself stable to hash by value are read that way: the fixed-size
+// numeric kinds, bool, and string (hashed byte-by-byte, so distinct strings — including two long
+// ones that share a prefix — reliably produce distinct hashes; there is no length cap, since the
+// output stays a fixed-size digest regardless of input length). Anything else — maps, pointers,
+// slices, structs, funcs, or any type whose fmt-formatted form could depend on memory layout rather
+// than content — falls back to a position-only contribution, exactly as before this fix. That keeps
+// the guarantee this method exists for: callers that embed the hash in something long-lived (a
+// generated subtest's name, see candidateSubtestName) never risk a value's address leaking into it.
 func (pv PathValues) Hash() uint64 {
 	var h uint64 = 14695981039346656037 // FNV-1a offset
 	for i := 0; i < len(pv.values) && i < len(pv.present); i++ {
@@ -164,8 +179,7 @@ func (pv PathValues) Hash() uint64 {
 		}
 		h ^= uint64(i)
 		h *= 1099511628211
-		v := pv.values[i]
-		switch x := v.(type) {
+		switch x := pv.values[i].(type) {
 		case int:
 			h ^= uint64(x)
 		case int64:
@@ -180,6 +194,15 @@ func (pv PathValues) Hash() uint64 {
 			h ^= uint64(x)
 		case uint64:
 			h ^= x
+		case string:
+			for j := 0; j < len(x); j++ {
+				h ^= uint64(x[j])
+				h *= 1099511628211
+			}
+		case float64:
+			h ^= math.Float64bits(x)
+		case float32:
+			h ^= uint64(math.Float32bits(x))
 		default:
 			h ^= uint64(i) * 31
 		}
