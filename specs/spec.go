@@ -210,9 +210,12 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 }
 
 // DescribeFast is an alias for DescribeFlat and behaves identically to it — and, since the flat flag
-// is never read downstream, identically to Describe: declaring and running the same 200-spec suite
-// through Describe and through DescribeFlat allocates the same 625 allocs/op. It does not skip the
-// per-spec testing.T.Run, and it does not avoid closure, subtest or name allocations.
+// is never read downstream, identically to Describe. It does not skip the per-spec testing.T.Run,
+// and it does not avoid closure, subtest or name allocations.
+//
+// BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast in the benchmarks package keeps that
+// claim checkable instead of asserted: all three declare and run the same 200-spec suite and report
+// the same 625 allocs/op. A change that wires the flag up will separate them there first.
 //
 // Kept for compatibility. Prefer Describe.
 func DescribeFast(tb testing.TB, name string, fn func(*Spec)) {
