@@ -102,7 +102,8 @@ func (c *bytecodeCompiler) SetPathGen(gen *PathGenerator) {
 }
 
 // fullName returns the spec's breadcrumb (e.g. "Describe/When/It"). It feeds both SpecStartEvent.Path
-// and — via specSubtestName — the testing.T.Run identity, so it uses the shared SubtestName mapping.
+// and — via specSubtestName — the testing.T.Run identity, so it uses the shared joinSubtestName
+// mapping.
 func (c *bytecodeCompiler) fullName(itName string) string {
 	return joinSubtestPath(c.nameStack, itName)
 }

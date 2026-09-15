@@ -103,19 +103,42 @@ go test -run 'TestCart/Cart/empty/has_no_items'
 ```
 
 Both sequential execution models use this mapping — `Describe`/`Spec`/`ExecutionPlan` and
-`Builder`/`Program`/`Runner` — and `specs.SubtestName` exposes it. The mapping is a plain join; the
-`testing` package then applies its own presentation rules on top, and those are what a `-run`
-pattern must match:
+`Builder`/`Program`/`Runner`. It is an internal detail, not public API: go-specs exports no function
+for it, so the mapping stays free to follow whatever `testing` does. The mapping is a plain join; the
+`testing` package then applies its own presentation rules on top — call the result the spec's
+**normalized** breadcrumb — and the normalized form is what a `-run` pattern must match:
 
 | Declared name | In the `-run` pattern | Why |
 |---|---|---|
 | `has no items` | `has_no_items` | `testing` rewrites spaces to `_` |
 | `a/b` | `a/b` (two elements) | `/` is not escaped; it adds a level |
 | `` (empty) | trailing empty element | an empty name does not collapse |
-| same breadcrumb twice | `…#01` on the second | `testing`'s usual disambiguation |
+| same normalized breadcrumb twice | `…#01` on the second | `testing`'s usual disambiguation |
 
-Two specs that share only a leaf `It` name under different `When` scopes have different breadcrumbs,
-so they no longer collide and are never told apart by an incidental `#01`.
+The guarantee is therefore stated over the normalized form: **two specs are independently
+identifiable whenever their normalized breadcrumbs differ.** Two specs that share only a leaf `It`
+name under different `When` scopes satisfy that — they have different breadcrumbs, so they never
+collide and are never told apart by an incidental `#01`.
+
+Breadcrumbs that normalize to the *same* string stay ambiguous, and `testing` numbers them with its
+usual `#01`. That is accepted and inherited, not a defect waiting on a fix — it is exactly what
+`testing.T.Run` does on its own:
+
+```go
+s.When("a/b", func(s *specs.Spec) { s.It("does it", ...) })   // suite/a/b/does_it
+s.Describe("a", func(s *specs.Spec) {                          // suite/a/b/does_it#01
+    s.When("b", func(s *specs.Spec) { s.It("does it", ...) })
+})
+
+s.When("when c", func(s *specs.Spec) { s.It("does that", ...) })  // suite/when_c/does_that
+s.When("when_c", func(s *specs.Spec) { s.It("does that", ...) })  // suite/when_c/does_that#01
+```
+
+A bare `t.Run("a/b")` is indistinguishable from a nested `t.Run("a")`/`t.Run("b")` for the same
+reason, and `t.Run("when c")` collides with `t.Run("when_c")` for the other. Escaping `/` or spaces
+would remove the ambiguity, but it would also break `go test -run 'TestCart/Cart/empty/has_no_items'`
+— a pattern you type by reading the declared names — which is the whole point of the mapping. Only
+execution is never ambiguous: both colliding specs still run, and both are still reported.
 
 This affects Go subtest identity only. Reporter events keep the framework's own values —
 `SpecStartEvent.Name` is the unsanitized leaf name and `Path` is the unsanitized breadcrumb — so

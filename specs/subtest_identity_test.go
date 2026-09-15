@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// TestSubtestName pins the public mapping from a declared Describe/When/It breadcrumb to the Go
-// subtest identity go-specs hands testing.T.Run (#102): a plain join on "/", never a rewrite. The
-// cases for spaces, slashes and empty names document what the mapping itself does; what testing
-// then makes of those names is proven end-to-end by the real-process tests below.
-func TestSubtestName(t *testing.T) {
+// TestJoinSubtestName pins the package-internal mapping from a declared Describe/When/It breadcrumb
+// to the Go subtest identity go-specs hands testing.T.Run (#102): a plain join on "/", never a
+// rewrite. The cases for spaces, slashes and empty names document what the mapping itself does; what
+// testing then makes of those names is proven end-to-end by the real-process tests below.
+func TestJoinSubtestName(t *testing.T) {
 	cases := []struct {
 		name string
 		path []string
@@ -27,8 +27,8 @@ func TestSubtestName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := SubtestName(tc.path...); got != tc.want {
-				t.Fatalf("SubtestName(%q) = %q, want %q", tc.path, got, tc.want)
+			if got := joinSubtestName(tc.path...); got != tc.want {
+				t.Fatalf("joinSubtestName(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
 	}
@@ -143,7 +143,9 @@ var wantVerboseSubtests = []string{
 }
 
 // assertVerboseIdentity checks a `go test -v` transcript names every spec by its full breadcrumb and
-// never falls back to testing's duplicate-name numbering.
+// never falls back to testing's duplicate-name numbering. Every breadcrumb in the helper suite
+// normalizes to a distinct string, which is the condition the guarantee is stated over; the
+// collision tests at the end of this file pin what happens when it does not hold.
 func assertVerboseIdentity(t *testing.T, output string) {
 	t.Helper()
 	for _, want := range wantVerboseSubtests {
@@ -158,8 +160,9 @@ func assertVerboseIdentity(t *testing.T, output string) {
 
 // TestSpecRunNestedSubtestIdentityRealProcess proves acceptance criteria 1, 2 and 4 for the
 // Spec/ExecutionPlan model against a genuine `go test -v` run: every spec's subtest carries its full
-// Describe/When/It breadcrumb, two specs sharing only a leaf name stay distinct without "#01", and
-// spaces, slashes and empty names land exactly where SubtestName's contract says they do.
+// Describe/When/It breadcrumb, two specs sharing only a leaf name — and so normalizing to different
+// breadcrumbs — stay distinct without "#01", and spaces, slashes and empty names land exactly where
+// joinSubtestName's contract says they do.
 //
 // A subprocess is required, not incidental: the assertions are about this process's own -v
 // transcript, which only a child re-exec can produce and read back.
@@ -269,4 +272,124 @@ func TestSpecRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T) {
 	if strings.Join(rep.specStarted[0].Path, "|") != strings.Join(wantPath, "|") {
 		t.Fatalf("expected the reported Path to stay %q, got %q", wantPath, rep.specStarted[0].Path)
 	}
+}
+
+// collisionHelperSuite declares two pairs of specs whose declared breadcrumbs are different but
+// whose *normalized* breadcrumbs — what testing.T.Run makes of them — are identical, so they are the
+// exact shapes joinSubtestName's contract says stay ambiguous:
+//
+//   - "suite/a/b/does it" reached through a single When("a/b") and through Describe("a")/When("b"),
+//     because a "/" inside one declared name is not escaped and simply adds a pattern element;
+//   - "suite/when c/does that" and "suite/when_c/does that", because testing rewrites spaces to "_".
+//
+// Each body prints a distinct marker, so a test can tell "both specs ran" (execution is never
+// ambiguous) apart from "both specs are separately addressable" (identity is).
+func collisionHelperSuite(s *Spec) {
+	s.When("a/b", func(s *Spec) {
+		s.It("does it", func(*Context) { fmt.Println("RAN slash-in-one-name") })
+	})
+	s.Describe("a", func(s *Spec) {
+		s.When("b", func(s *Spec) {
+			s.It("does it", func(*Context) { fmt.Println("RAN two-nested-scopes") })
+		})
+	})
+	s.When("when c", func(s *Spec) {
+		s.It("does that", func(*Context) { fmt.Println("RAN spaced-scope") })
+	})
+	s.When("when_c", func(s *Spec) {
+		s.It("does that", func(*Context) { fmt.Println("RAN underscored-scope") })
+	})
+}
+
+// collisionHelperProgram is collisionHelperSuite's Builder/Program equivalent, so the accepted
+// ambiguity is pinned for both sequential execution models, exactly as the non-colliding identity
+// contract already is.
+func collisionHelperProgram() *Program {
+	b := NewBuilder()
+	b.Describe("suite", func() {
+		b.Describe("a/b", func() {
+			b.It("does it", func(*Context) { fmt.Println("RAN slash-in-one-name") })
+		})
+		b.Describe("a", func() {
+			b.Describe("b", func() {
+				b.It("does it", func(*Context) { fmt.Println("RAN two-nested-scopes") })
+			})
+		})
+		b.Describe("when c", func() {
+			b.It("does that", func(*Context) { fmt.Println("RAN spaced-scope") })
+		})
+		b.Describe("when_c", func() {
+			b.It("does that", func(*Context) { fmt.Println("RAN underscored-scope") })
+		})
+	})
+	return b.Build()
+}
+
+// assertNormalizedCollisionFallsBackToSuffix checks a `go test -v` transcript for the two accepted
+// collisions: each colliding pair is named once plainly and once with testing's own "#01" suffix,
+// and every body still ran. It asserts the observable consequence rather than the mapping's output,
+// because the consequence — the "#01" — is what a developer actually meets.
+func assertNormalizedCollisionFallsBackToSuffix(t *testing.T, output string) {
+	t.Helper()
+	for _, want := range []string{
+		"/suite/a/b/does_it",
+		"/suite/a/b/does_it#01",
+		"/suite/when_c/does_that",
+		"/suite/when_c/does_that#01",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected -v output to name the subtest %q, got:\n%s", want, output)
+		}
+	}
+	for _, want := range []string{
+		"RAN slash-in-one-name",
+		"RAN two-nested-scopes",
+		"RAN spaced-scope",
+		"RAN underscored-scope",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected every colliding spec to still run, missing %q in:\n%s", want, output)
+		}
+	}
+}
+
+// TestSpecRunNormalizedBreadcrumbCollisionRealProcess pins the limitation go-specs accepts for the
+// Spec/ExecutionPlan model: the identity guarantee holds for breadcrumbs that *normalize* to
+// different strings, and two specs whose breadcrumbs normalize to the same string are told apart
+// only by testing's own "#01" suffix — the same ambiguity a bare testing.T.Run has, since t.Run("a/b")
+// and a nested t.Run("a")/t.Run("b") are indistinguishable there too. This is pinned as accepted
+// behaviour, not as a known defect: escaping "/" or " " would remove the collision but break the
+// readable `go test -run 'TestX/suite/when_a/does_it'` pattern the mapping exists to provide.
+//
+// A subprocess is required, not incidental: the claim is about this process's own -v transcript,
+// which only a child re-exec can produce and read back.
+func TestSpecRunNormalizedBreadcrumbCollisionRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_COLLISION_HELPER") == "1" {
+		Describe(t, "suite", collisionHelperSuite)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestSpecRunNormalizedBreadcrumbCollisionRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_COLLISION_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	assertNormalizedCollisionFallsBackToSuffix(t, string(output))
+}
+
+// TestRunnerRunNormalizedBreadcrumbCollisionRealProcess is
+// TestSpecRunNormalizedBreadcrumbCollisionRealProcess for the Runner/Program model: both sequential
+// execution models share one mapping, so both accept the same inherited ambiguity.
+func TestRunnerRunNormalizedBreadcrumbCollisionRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_COLLISION_RUNNER_HELPER") == "1" {
+		NewRunner(collisionHelperProgram()).Run(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestRunnerRunNormalizedBreadcrumbCollisionRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_COLLISION_RUNNER_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	assertNormalizedCollisionFallsBackToSuffix(t, string(output))
 }
