@@ -1,5 +1,8 @@
-// program.go defines the compiled execution graph: groups of (before, specs, after) for hook reuse.
-// No reflection; minimal layout. Large suites (100k+ specs) share before/after slices per group.
+// program.go defines the compiled execution graph: groups of (before, specs, after) that share a
+// before/after slice at compile time. No reflection; minimal layout. Large suites (100k+ specs)
+// share before/after slices per group to reduce memory — but every spec still runs its group's
+// before/after once for itself at execution time (see runner.go's runSpecWithHooks, #109); sharing
+// the slice is a memory optimization, not a change in how often the hooks run.
 package specs
 
 import (
@@ -12,9 +15,12 @@ import (
 // step is a single executable step (hook or spec body). Same signature as RunSpec.Fn.
 type step func(*Context)
 
-// group is one execution unit: run before once, then all specs, then after once (reverse order).
-// Before/after slices are shared across all specs in the group to reduce memory and improve locality.
-// hookKey is the builder's scope key for coalescing; not used by the runner.
+// group is one execution unit: specs that declared the same before/after hooks (same Describe scope
+// layout), compiled together so their before/after slices can be shared. Each spec still runs its
+// own before, its own body, then its own after (reverse order) — see runner.go's runSpecWithHooks —
+// so sharing the slices is purely a compile-time memory/locality optimization, not a change in
+// execution frequency (#109). hookKey is the builder's scope key for coalescing; not used by the
+// runner.
 //
 // fullNames parallels names, holding each spec's Describe breadcrumb (see Builder.fullName). It is
 // used only as the spec's testing.T.Run identity (#102) — never as reported identity, which always
@@ -135,8 +141,9 @@ type specExecutionObserver interface {
 	specSkipped(name string, path []string)
 }
 
-// Program is a compiled execution program. Groups run in order; within a group: before once, all specs, after once (reverse).
-// Built by Builder; executed by Runner.
+// Program is a compiled execution program. Groups run in order; within a group, every spec runs its
+// own before, body, and after (reverse order) — see runSpecWithHooks. Built by Builder; executed by
+// Runner.
 type Program struct {
 	Groups []group
 }

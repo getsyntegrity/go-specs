@@ -52,7 +52,9 @@ func TestProgram_DescribeBeforeEachIt(t *testing.T) {
 	}
 }
 
-// TestProgram_GroupingBehavior verifies that multiple specs sharing the same hooks are compiled into one group.
+// TestProgram_GroupingBehavior verifies that multiple specs sharing the same hooks are compiled into
+// one group (a compile-time memory/locality optimization — see program.go's group doc comment), but
+// each spec still runs the shared before hook once for itself (#109), not once for the whole group.
 func TestProgram_GroupingBehavior(t *testing.T) {
 	var order []string
 	setup := func(*Context) { order = append(order, "setup") }
@@ -75,9 +77,57 @@ func TestProgram_GroupingBehavior(t *testing.T) {
 	}
 	r := NewRunner(prog)
 	r.Run(t)
-	want := []string{"setup", "testAdd", "testSub"}
-	if len(order) != 3 || order[0] != "setup" || order[1] != "testAdd" || order[2] != "testSub" {
-		t.Errorf("order=%v, want %v", order, want)
+	want := []string{"setup", "testAdd", "setup", "testSub"}
+	if len(order) != len(want) {
+		t.Fatalf("order=%v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("order[%d]=%q, want %q", i, order[i], want[i])
+		}
+	}
+}
+
+// TestProgram_SiblingScopesWithSameHookCountDoNotCoalesce is the regression test for #109: two
+// sibling Describe scopes at the same nesting depth, each declaring exactly one BeforeEach and one
+// AfterEach (matching hook counts) but with different hook bodies, must compile into two separate
+// groups and keep their own hooks — not be silently coalesced into one shared group.
+//
+// b.scopes is a slice with push/pop semantics: Describe appends a scope, runs its body, then pops it
+// back off via defer. Once "when a"'s Describe returns, "when b"'s push reuses the exact same
+// backing-array slot — &b.scopes[0] is identical for both — so a hookKey keyed on that address (the
+// pre-fix behavior) produced the same key for both scopes whenever their hook counts also matched,
+// and finalize's coalescing logic merged "when b"'s spec into "when a"'s group, discarding "when b"'s
+// own BeforeEach/AfterEach entirely and running "when a"'s hooks against "when b"'s spec instead.
+func TestProgram_SiblingScopesWithSameHookCountDoNotCoalesce(t *testing.T) {
+	var order []string
+	b := NewBuilder()
+	b.Describe("when a", func() {
+		b.BeforeEach(func(*Context) { order = append(order, "beforeA") })
+		b.AfterEach(func(*Context) { order = append(order, "afterA") })
+		b.It("it", func(*Context) { order = append(order, "specA") })
+	})
+	b.Describe("when b", func() {
+		b.BeforeEach(func(*Context) { order = append(order, "beforeB") })
+		b.AfterEach(func(*Context) { order = append(order, "afterB") })
+		b.It("it", func(*Context) { order = append(order, "specB") })
+	})
+	prog := b.Build()
+
+	if len(prog.Groups) != 2 {
+		t.Fatalf("expected 2 groups (one per sibling scope), got %d — sibling scopes coalesced (#109)", len(prog.Groups))
+	}
+
+	NewRunner(prog).Run(t)
+
+	want := []string{"beforeA", "specA", "afterA", "beforeB", "specB", "afterB"}
+	if len(order) != len(want) {
+		t.Fatalf("order=%v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("order[%d]=%q, want %q", i, order[i], want[i])
+		}
 	}
 }
 
@@ -97,9 +147,11 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 	prog := b.Build()
 	r := NewRunner(prog)
 	r.Run(t)
-	// Grouped: before once, all specs, after once (reverse)
+	// Each spec runs its own before/after (#109): coalescing into one group is a compile-time
+	// optimization only, not a change in how often the hooks run.
 	want := []string{
-		"beforeOuter", "beforeInner", "it1", "it2", "afterOuter", "afterInner",
+		"beforeOuter", "beforeInner", "it1", "afterOuter", "afterInner",
+		"beforeOuter", "beforeInner", "it2", "afterOuter", "afterInner",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("order len=%d, want %d", len(order), len(want))
@@ -122,9 +174,11 @@ func TestProgram_FlatAddBeforeAddSpecOrder(t *testing.T) {
 	b.It("", func(*Context) { order = append(order, "spec2") })
 	runner := NewRunner(b.Build())
 	runner.Run(t)
-	// Grouped: before once, all specs, after once (reverse)
+	// Each spec runs its own before/after (#109): coalescing into one group is a compile-time
+	// optimization only, not a change in how often the hooks run.
 	want := []string{
-		"before1", "before2", "spec1", "spec2", "after2", "after1",
+		"before1", "before2", "spec1", "after2", "after1",
+		"before1", "before2", "spec2", "after2", "after1",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("order len=%d, want %d", len(order), len(want))
@@ -513,7 +567,8 @@ func TestParallelMixedWithSequential(t *testing.T) {
 	}
 }
 
-// TestProgramGrouping verifies that specs sharing the same hooks are compiled into one group.
+// TestProgramGrouping verifies that specs sharing the same hooks are compiled into one group, but
+// each still runs the shared before hook once for itself (#109) — grouping only shares the slice.
 func TestProgramGrouping(t *testing.T) {
 	var order []string
 	b := NewBuilder()
@@ -528,9 +583,14 @@ func TestProgramGrouping(t *testing.T) {
 	}
 	r := NewRunner(prog)
 	r.Run(t)
-	want := []string{"setup", "testAdd", "testSub"}
-	if len(order) != 3 || order[0] != "setup" || order[1] != "testAdd" || order[2] != "testSub" {
-		t.Errorf("order=%v, want %v", order, want)
+	want := []string{"setup", "testAdd", "setup", "testSub"}
+	if len(order) != len(want) {
+		t.Fatalf("order=%v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("order[%d]=%q, want %q", i, order[i], want[i])
+		}
 	}
 }
 

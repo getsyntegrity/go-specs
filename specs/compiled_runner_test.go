@@ -21,9 +21,11 @@ func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 	runner := NewRunner(prog)
 	runner.Run(t)
 
-	// Grouped execution: before once, all specs, after once (reverse)
+	// Each spec runs its own before/after (#109): coalescing into one group is a compile-time
+	// optimization only, not a change in how often the hooks run.
 	want := []string{
-		"before1", "before2", "spec1", "spec2", "after2", "after1",
+		"before1", "before2", "spec1", "after2", "after1",
+		"before1", "before2", "spec2", "after2", "after1",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("order length: got %d, want %d", len(order), len(want))

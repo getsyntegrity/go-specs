@@ -314,6 +314,72 @@ func TestRunnerRunFailFastStopsAfterRealFatalfRealProcess(t *testing.T) {
 	}
 }
 
+// TestRunnerRunAfterEachRunsDespiteRealFatalfInBeforeRealProcess proves runSpecWithHooks' defer-based
+// teardown guarantee: a real testing.T.Fatal (via EqualTo) inside a before hook calls runtime.Goexit,
+// which recover() cannot observe (see runStepRecovered) — a plain "run before/body, then run after"
+// sequence would never reach the after-hook call at all, since Goexit unwinds straight past it.
+// Registering after's execution as a defer, before before/body ever run, is what makes it survive
+// Goexit: deferred calls still run while a goroutine unwinds. Same subprocess pattern as
+// TestRunnerRunRealFatalfIsolatesJustThatSpecRealProcess (a nested real Fatalf must not fail this
+// outer test itself).
+func TestRunnerRunAfterEachRunsDespiteRealFatalfInBeforeRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_RUNNER_AFTEREACH_AFTER_BEFORE_FATAL_HELPER") == "1" {
+		prog := &Program{
+			Groups: []group{
+				{
+					before: []step{func(ctx *Context) { EqualTo(ctx, 1, 2) }},
+					after:  []step{func(*Context) { fmt.Println("after ran") }},
+					specs:  []step{func(*Context) { fmt.Println("spec ran") }},
+				},
+			},
+		}
+		NewRunner(prog).Run(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerRunAfterEachRunsDespiteRealFatalfInBeforeRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_RUNNER_AFTEREACH_AFTER_BEFORE_FATAL_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the before hook's real Fatal to fail the process, but it passed: %s", output)
+	}
+	if strings.Contains(string(output), "spec ran") {
+		t.Fatalf("expected the spec body to be skipped after before's real Fatal, got: %s", output)
+	}
+	if !strings.Contains(string(output), "after ran") {
+		t.Fatalf("expected the after hook to still run despite before's real Fatal (Goexit), got: %s", output)
+	}
+}
+
+// TestRunnerRunAfterEachRunsDespiteRealFatalfInBodyRealProcess is
+// TestRunnerRunAfterEachRunsDespiteRealFatalfInBeforeRealProcess for a real Fatal in the spec body
+// itself, rather than in before: the same defer-based guarantee must hold regardless of which of the
+// two Goexit sources fired.
+func TestRunnerRunAfterEachRunsDespiteRealFatalfInBodyRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_RUNNER_AFTEREACH_AFTER_BODY_FATAL_HELPER") == "1" {
+		prog := &Program{
+			Groups: []group{
+				{
+					after: []step{func(*Context) { fmt.Println("after ran") }},
+					specs: []step{func(ctx *Context) { EqualTo(ctx, 1, 2) }},
+				},
+			},
+		}
+		NewRunner(prog).Run(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerRunAfterEachRunsDespiteRealFatalfInBodyRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_RUNNER_AFTEREACH_AFTER_BODY_FATAL_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the spec body's real Fatal to fail the process, but it passed: %s", output)
+	}
+	if !strings.Contains(string(output), "after ran") {
+		t.Fatalf("expected the after hook to still run despite the body's real Fatal (Goexit), got: %s", output)
+	}
+}
+
 // TestRunnerRunSpecNamesWithSpacesAndSlashesReportedVerbatim proves a real *testing.T subtest per
 // spec (used for isolation, see runSpecRecovered) never leaks into reported spec identity: Go's
 // t.Run sanitizes spaces to "_" and treats "/" as a nested-subtest boundary for -v/-run/test2json

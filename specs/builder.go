@@ -8,7 +8,16 @@ import (
 )
 
 // scope holds hooks for one Describe level. Root scope is at index 0.
+//
+// id is a monotonically increasing identifier assigned when the scope is pushed (Describe) or
+// created (ensureScope) — never the scope's address. b.scopes is a slice with push/pop semantics
+// (Describe appends then pops via defer), so sibling Describes at the same nesting depth reuse the
+// same backing-array slot: &b.scopes[i] can be identical across two unrelated scopes that are never
+// alive at the same time. hookKey used to key on that address, so two sibling scopes with the same
+// hook counts collided and were silently coalesced into one group (#109). id is unique per scope for
+// the life of the Builder, so it can't alias this way.
 type scope struct {
+	id         int
 	beforeEach []step
 	afterEach  []step
 }
@@ -53,6 +62,9 @@ type Builder struct {
 	scopeNames []string
 	pending    []specItem
 	hasFocus   bool
+	// nextScopeID hands out each new scope's id (see scope.id), incremented every time a scope is
+	// pushed. Never reused, even after Describe pops the scope back off b.scopes.
+	nextScopeID int
 }
 
 // NewBuilder creates a builder that will produce a new Program.
@@ -102,12 +114,19 @@ func (b *Builder) emitSpecSteps(fn func(*Context)) []step {
 	return steps
 }
 
+// newScope returns a scope with a fresh, unique id (see scope.id) and advances nextScopeID.
+func (b *Builder) newScope() scope {
+	id := b.nextScopeID
+	b.nextScopeID++
+	return scope{id: id}
+}
+
 // Describe opens a scope and runs body. Nested Describes push inner scopes; hooks apply to inner It.
 func (b *Builder) Describe(name string, body func()) {
 	if body == nil {
 		return
 	}
-	b.scopes = append(b.scopes, scope{})
+	b.scopes = append(b.scopes, b.newScope())
 	b.scopeNames = append(b.scopeNames, name)
 	// Both stacks unwind through defer so a panic in body cannot leave them out of step with each
 	// other. A caller that recovers and keeps declaring would otherwise get breadcrumbs naming
@@ -130,7 +149,7 @@ func (b *Builder) fullName(name string) string {
 // ensureScope ensures at least one scope exists (for BeforeEach/AfterEach/It used without Describe).
 func (b *Builder) ensureScope() {
 	if len(b.scopes) == 0 {
-		b.scopes = append(b.scopes, scope{})
+		b.scopes = append(b.scopes, b.newScope())
 	}
 }
 
@@ -232,17 +251,22 @@ func (b *Builder) ItParallel(name string, fn func(*Context)) {
 
 // hookKey returns a key that uniquely identifies the current scope stack and hook set.
 // Same scope stack (same Describe path) => same key, so specs in the same Describe coalesce.
-// Uses scope pointer identity so different Describes do not coalesce.
+//
+// Uses each scope's monotonic id (see scope.id), not its address: b.scopes is a slice with
+// push/pop semantics, so &b.scopes[i] is reused across sibling Describes at the same depth once an
+// earlier sibling has closed — two unrelated scopes could share the same address and, with matching
+// hook counts, the same key, silently coalescing their specs into one group (#109). id is unique for
+// the life of the Builder, so this can't happen; hook lengths are still folded in only to keep the
+// key legible for debugging, not for uniqueness.
 func (b *Builder) hookKey() string {
 	if len(b.scopes) == 0 {
 		return ""
 	}
-	// Use scope pointer + lengths so we don't compare func values (Go forbids).
 	var buf []byte
 	for i := range b.scopes {
 		s := &b.scopes[i]
 		lb, la := len(s.beforeEach), len(s.afterEach)
-		buf = append(buf, fmt.Sprintf("%p,%d,%d", s, lb, la)...)
+		buf = append(buf, fmt.Sprintf("%d,%d,%d;", s.id, lb, la)...)
 	}
 	return string(buf)
 }
