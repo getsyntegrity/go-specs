@@ -112,12 +112,16 @@ func TestDescribeWithReporterEmitsEventsPerCartesianCandidate(t *testing.T) {
 	if len(rep.specFinished) != 2 {
 		t.Fatalf("expected 2 SpecFinished events (one per combo), got %d: %+v", len(rep.specFinished), rep.specFinished)
 	}
-	for _, e := range rep.specFinished {
+	// Each candidate reports its own identity (#103): the framework's unsanitized formatted values
+	// plus the 1-based executed ordinal that links the event to its `go test -v` subtest. Before
+	// this, every candidate reported the bare spec name and the events were indistinguishable.
+	wantNames := []string{"includes tier [tier=basic] #1", "includes tier [tier=pro] #2"}
+	for idx, e := range rep.specFinished {
 		if e.Failed {
 			t.Fatalf("expected all combos to pass, got %+v", e)
 		}
-		if e.Name != "includes tier" {
-			t.Fatalf("expected event name 'includes tier', got %q", e.Name)
+		if e.Name != wantNames[idx] {
+			t.Fatalf("expected event name %q, got %q", wantNames[idx], e.Name)
 		}
 	}
 	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].TotalSpecs != 2 || rep.suiteFinished[0].FailedSpecs != 0 {

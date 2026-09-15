@@ -156,8 +156,11 @@ func TestPathsCasesUseIsolatedHooksAndContext(t *testing.T) {
 	}
 }
 
+// TestPathsReporterIncludesCombinationNames proves report output identifies each generated
+// candidate by its own combination, not by a shared spec name (#103). The " #<n>" ordinal the
+// reporter appends is additive: it links the line back to the matching `go test -v` subtest without
+// disturbing the framework's own "base [k=v]" rendering.
 func TestPathsReporterIncludesCombinationNames(t *testing.T) {
-	t.Skip("generated reporting is deferred until the later reporting gate")
 	var buf bytes.Buffer
 	reporter := report.New(&buf)
 	DescribeWithReporter(t, "Paths", reporter, func(s *Spec) {
