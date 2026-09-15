@@ -573,29 +573,31 @@ func TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T)
 	}
 }
 
-// TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess pins a defect, not a guarantee: when a -run
-// pattern discards a spec's subtest, the reporter is still told the spec started and finished
-// without failing, so a spec whose body never executed is counted as passed.
+// TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess proves the fix for #111 on the
+// Spec/ExecutionPlan model: when a -run pattern discards a spec's subtest, the reporter must not
+// tell a consumer the spec passed. runSpecProgramIsolated now threads testing.T.Run's own bool
+// return (false exactly when the filter discarded the subtest) back through specResult.Filtered,
+// and reportSpecFinished reports that spec as SpecResultEvent{Filtered: true} instead of a bare
+// pass — Failed stays false and Duration stays 0, same as a compile-time Skipped spec, but Skipped
+// itself stays false: the cause here is external selection, not a declared skip (see
+// report.SpecResultEvent.Filtered's doc comment for why the two are kept apart).
 //
-// Neither runSpecProgramIsolated nor runSpecIsolated inspects testing.T.Run's bool return, which is
-// false exactly when the filter discarded the subtest, and the SpecStarted/SpecFinished pair is
-// emitted around that call with ctx.failed still at its reset value. The behaviour predates #102 —
-// it arrived with the per-spec isolation of #74 — but #102 turns -run into a documented way to
-// select specs, so it is now reachable on first use rather than latent. Pinned so the fix, when it
-// lands, has to change this test deliberately.
-func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
+// This test used to pin the opposite: `REPORTED ... failed=false skipped=false` for all four
+// declared specs, indistinguishable from a genuine pass. It now asserts the corrected transcript
+// deliberately, per the original test's own doc comment.
+func TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess(t *testing.T) {
 	if os.Getenv("GO_SPECS_SUBTEST_FILTER_REPORT_HELPER") == "1" {
 		var rep recordingReporter
 		DescribeWithReporter(t, "suite", &rep, identityHelperSuite)
 		for i, started := range rep.specStarted {
 			finished := rep.specFinished[i]
-			fmt.Printf("REPORTED name=%q failed=%v skipped=%v\n", started.Name, finished.Failed, finished.Skipped)
+			fmt.Printf("REPORTED name=%q failed=%v skipped=%v filtered=%v\n", started.Name, finished.Failed, finished.Skipped, finished.Filtered)
 		}
 		return
 	}
 	cmd := exec.Command(os.Args[0],
 		"-test.v",
-		"-test.run=^TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess$/^suite$/^when_b$/^does_a_thing$",
+		"-test.run=^TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess$/^suite$/^when_b$/^does_a_thing$",
 	)
 	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_FILTER_REPORT_HELPER=1")
 	output, err := cmd.CombinedOutput()
@@ -604,15 +606,16 @@ func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
 	}
 	transcript := string(output)
 
-	// Exactly one body ran, but all four specs were reported, none of them failed, and none of them
-	// was marked skipped.
+	// Exactly one body ran, all four specs were reported, none of them failed or was marked
+	// Skipped — but the three that never ran are now marked Filtered, and the one that did is not.
 	if strings.Count(transcript, "RAN ") != 1 {
 		t.Fatalf("expected exactly one spec body to run under the -run pattern, got:\n%s", transcript)
 	}
 	for _, want := range []string{
-		`REPORTED name="does a thing" failed=false skipped=false`,
-		`REPORTED name="slash/inside" failed=false skipped=false`,
-		`REPORTED name="" failed=false skipped=false`,
+		`REPORTED name="does a thing" failed=false skipped=false filtered=true`,  // when a/does a thing
+		`REPORTED name="does a thing" failed=false skipped=false filtered=false`, // when b/does a thing: ran
+		`REPORTED name="slash/inside" failed=false skipped=false filtered=true`,
+		`REPORTED name="" failed=false skipped=false filtered=true`,
 	} {
 		if !strings.Contains(transcript, want) {
 			t.Fatalf("expected the reporter to emit %s, got:\n%s", want, transcript)
@@ -620,5 +623,54 @@ func TestSpecRunFilteredSpecsAreReportedAsPassedRealProcess(t *testing.T) {
 	}
 	if got := strings.Count(transcript, "REPORTED "); got != 4 {
 		t.Fatalf("expected 4 reported specs for 4 declared specs, got %d in:\n%s", got, transcript)
+	}
+	if got := strings.Count(transcript, "filtered=true"); got != 3 {
+		t.Fatalf("expected 3 specs reported as filtered, got %d in:\n%s", got, transcript)
+	}
+}
+
+// TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess is
+// TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess for the Runner/Program model: #111's
+// defect shape was identical in runSpecIsolated, which now threads t.Run's bool return back the
+// same way as its ExecutionPlan counterpart.
+func TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_SUBTEST_FILTER_REPORT_RUNNER_HELPER") == "1" {
+		var rep recordingReporter
+		NewRunnerWithReporter(identityHelperProgram(), "suite", &rep).Run(t)
+		for i, started := range rep.specStarted {
+			finished := rep.specFinished[i]
+			fmt.Printf("REPORTED name=%q failed=%v skipped=%v filtered=%v\n", started.Name, finished.Failed, finished.Skipped, finished.Filtered)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0],
+		"-test.v",
+		"-test.run=^TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess$/^suite$/^when_b$/^does_a_thing$",
+	)
+	cmd.Env = append(os.Environ(), "GO_SPECS_SUBTEST_FILTER_REPORT_RUNNER_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper run failed: %v\n%s", err, output)
+	}
+	transcript := string(output)
+
+	if strings.Count(transcript, "RAN ") != 1 {
+		t.Fatalf("expected exactly one spec body to run under the -run pattern, got:\n%s", transcript)
+	}
+	for _, want := range []string{
+		`REPORTED name="does a thing" failed=false skipped=false filtered=true`,  // when a/does a thing
+		`REPORTED name="does a thing" failed=false skipped=false filtered=false`, // when b/does a thing: ran
+		`REPORTED name="slash/inside" failed=false skipped=false filtered=true`,
+		`REPORTED name="" failed=false skipped=false filtered=true`,
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("expected the reporter to emit %s, got:\n%s", want, transcript)
+		}
+	}
+	if got := strings.Count(transcript, "REPORTED "); got != 4 {
+		t.Fatalf("expected 4 reported specs for 4 declared specs, got %d in:\n%s", got, transcript)
+	}
+	if got := strings.Count(transcript, "filtered=true"); got != 3 {
+		t.Fatalf("expected 3 specs reported as filtered, got %d in:\n%s", got, transcript)
 	}
 }

@@ -66,10 +66,16 @@ func specName(names []string, i int) string {
 // empty — parallelBackend has no separable output source). An ordinary Fatalf-based sequential
 // assertion failure never reaches specFinished at all (runtime.Goexit unwinds the whole Run call
 // before returning here), so Message/Output stay empty for that case too; see runStepRecovered.
+//
+// Filtered is true when external test selection (e.g. `go test -run`) discarded the spec's subtest
+// before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc
+// comments for why this can't be read from testing.T.Run's own bool return. Message/Output stay
+// empty for it, same as when nothing failed: nothing ran to produce either.
 type specResult struct {
-	Failed  bool
-	Message string
-	Output  string
+	Failed   bool
+	Filtered bool
+	Message  string
+	Output   string
 }
 
 // specExecutionObserver receives per-spec Started/Finished notifications from execution points

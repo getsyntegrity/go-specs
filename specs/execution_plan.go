@@ -223,27 +223,32 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	results := runPlanSpecsInOrder(runCtx, backend, counter, s.Plan)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:        name,
-		Time:        time.Now(),
-		Duration:    time.Since(suiteStart),
-		TotalSpecs:  counter.total,
-		FailedSpecs: counter.failed,
+		Name:          name,
+		Time:          time.Now(),
+		Duration:      time.Since(suiteStart),
+		TotalSpecs:    counter.total,
+		FailedSpecs:   counter.failed,
+		FilteredSpecs: counter.filtered,
 	})
 	return results
 }
 
-// specCounter decorates an EventReporter to tally executed/failed specs for the enclosing suite's
-// SuiteEndEvent, then forwards every event unchanged to the underlying reporter.
+// specCounter decorates an EventReporter to tally executed/failed/filtered specs for the enclosing
+// suite's SuiteEndEvent, then forwards every event unchanged to the underlying reporter.
 type specCounter struct {
 	report.EventReporter
-	total  int
-	failed int
+	total    int
+	failed   int
+	filtered int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	c.total++
 	if e.Failed {
 		c.failed++
+	}
+	if e.Filtered {
+		c.filtered++
 	}
 	c.EventReporter.SpecFinished(e)
 }
@@ -335,8 +340,8 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	ctx, release := acquireContext(backend)
 	defer release()
 	started := reportSpecStarted(rep, name, path)
-	message, output := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
-	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
+	message, output, ran := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
+	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output, Filtered: !ran})
 	return proposalControllerResult{}
 }
 
@@ -352,18 +357,27 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 // testing.T.Run purely for -v/-run/IDE/test2json identity. It is never read back from t.Name():
 // SpecStartEvent/SpecResultEvent keep taking Name from plan.Names and Path from plan.FullNames, so
 // testing's sanitization (spaces to "_") and "#01" suffixing never leak into reported identity.
-func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string) {
+//
+// ran is false exactly when external test selection (e.g. `go test -run`) discarded the subtest,
+// threaded back so the caller can report the spec as Filtered instead of passed (#111). It cannot
+// be read from t.Run's own bool return: testing.T.Run returns true for a filtered-out subtest too
+// (a subtest that never ran vacuously "succeeded"), so runSpecProgramIsolated instead sets ran from
+// inside the closure itself — which only runs at all when the filter accepted the subtest. The two
+// fast paths above never go through t.Run at all, so they always ran.
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string, ran bool) {
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
 		ctx.SetPathValues(PathValues{})
-		return runProgram(program, ctx, nil)
+		message, output = runProgram(program, ctx, nil)
+		return message, output, true
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
 		ctx.SetPathValues(PathValues{})
-		return runProgram(program, ctx, nil)
+		message, output = runProgram(program, ctx, nil)
+		return message, output, true
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
@@ -375,8 +389,9 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
-func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string) {
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran bool) {
 	t.Run(subtestName, func(subT *testing.T) {
+		ran = true
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
@@ -475,10 +490,15 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, r
 	if rep == nil {
 		return
 	}
+	duration := time.Since(start.Time)
+	if result.Filtered {
+		duration = 0
+	}
 	rep.SpecFinished(report.SpecResultEvent{
 		SpecStartEvent: start,
 		Failed:         result.Failed,
-		Duration:       time.Since(start.Time),
+		Filtered:       result.Filtered,
+		Duration:       duration,
 		Message:        result.Message,
 		Output:         result.Output,
 	})
