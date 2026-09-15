@@ -171,7 +171,7 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		return runPlanFlatNoSubtests(runCtx, backend, nil, s.Plan)
+		return runPlanSpecsInOrder(runCtx, backend, nil, s.Plan)
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
 	// Paths() can execute a variable number of candidates per plan index, so the plan alone can't
@@ -183,7 +183,7 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	results := runPlanFlatNoSubtests(runCtx, backend, counter, s.Plan)
+	results := runPlanSpecsInOrder(runCtx, backend, counter, s.Plan)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:        name,
 		Time:        time.Now(),
@@ -223,7 +223,11 @@ func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
 	return context.WithCancel(ctx)
 }
 
-func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. The plan is already
+// flat — its hooks are compiled into each spec's own instruction range — so there is no group
+// nesting to walk here. Each spec still gets its own subtest when the backend wraps a real
+// *testing.T; that decision belongs to runSpecProgram, not to this loop.
+func runPlanSpecsInOrder(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
 	results := make([]proposalControllerResult, 0, len(plan.ProgramStart))
 	for i := 0; i < len(plan.ProgramStart); i++ {
 		results = append(results, runExecutionContext(runCtx, backend, rep, plan, i))
@@ -356,6 +360,12 @@ func specEventName(plan *ExecutionPlan, i int) string {
 //
 // It falls back to plan.Names[i] for a plan built without breadcrumbs — a hand-built ExecutionPlan,
 // or a compiler with an empty name stack, where the leaf name already is the whole breadcrumb.
+//
+// The empty string doubles as the "no breadcrumb" sentinel, which It("") declared outside any scope
+// also produces. That case is deliberately not given a separate representation: both branches return
+// "" for it, so the sentinel is indistinguishable from the value it stands for only where the two
+// agree. Carrying a presence flag would cost a field on the exported ExecutionPlan — and a slice per
+// plan — to encode a distinction nothing can observe.
 func specSubtestName(plan *ExecutionPlan, i int) string {
 	if i >= 0 && i < len(plan.FullNames) && plan.FullNames[i] != "" {
 		return plan.FullNames[i]

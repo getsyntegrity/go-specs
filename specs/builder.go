@@ -99,9 +99,14 @@ func (b *Builder) Describe(name string, body func()) {
 	}
 	b.scopes = append(b.scopes, scope{})
 	b.scopeNames = append(b.scopeNames, name)
+	// Both stacks unwind through defer so a panic in body cannot leave them out of step with each
+	// other. A caller that recovers and keeps declaring would otherwise get breadcrumbs naming
+	// scopes that already closed — silently wrong identity rather than a visible failure.
+	defer func() {
+		b.scopes = b.scopes[:len(b.scopes)-1]
+		b.scopeNames = b.scopeNames[:len(b.scopeNames)-1]
+	}()
 	body()
-	b.scopes = b.scopes[:len(b.scopes)-1]
-	b.scopeNames = b.scopeNames[:len(b.scopeNames)-1]
 }
 
 // fullName returns the Describe breadcrumb ending in name — the same mapping the bytecode compiler
