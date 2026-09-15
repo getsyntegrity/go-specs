@@ -49,14 +49,16 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // mutex: a parallel group's goroutines call specStarted/specFinished concurrently, and not every
 // EventReporter implementation can be assumed to be concurrency-safe on its own — the framework
 // serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed/
-// skipped tally every reported spec (sequential and parallel alike, since both paths share one
-// instance via ctx.execObserver) for the run's SuiteEndEvent. total counts passed+failed+skipped.
+// skipped/filtered tally every reported spec (sequential and parallel alike, since both paths share
+// one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
+// passed+failed+skipped+filtered.
 type reporterObserver struct {
-	mu      sync.Mutex
-	rep     report.EventReporter
-	total   int
-	failed  int
-	skipped int
+	mu       sync.Mutex
+	rep      report.EventReporter
+	total    int
+	failed   int
+	skipped  int
+	filtered int
 }
 
 func (o *reporterObserver) specStarted(name string) report.SpecStartEvent {
@@ -74,10 +76,16 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 	if result.Failed {
 		o.failed++
 	}
+	duration := time.Since(start.Time)
+	if result.Filtered {
+		o.filtered++
+		duration = 0
+	}
 	o.rep.SpecFinished(report.SpecResultEvent{
 		SpecStartEvent: start,
 		Failed:         result.Failed,
-		Duration:       time.Since(start.Time),
+		Filtered:       result.Filtered,
+		Duration:       duration,
 		Message:        result.Message,
 		Output:         result.Output,
 	})
@@ -134,12 +142,13 @@ func (r *Runner) Run(tb testing.TB) {
 	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:         name,
-		Time:         time.Now(),
-		Duration:     time.Since(suiteStart),
-		TotalSpecs:   obs.total,
-		FailedSpecs:  obs.failed,
-		SkippedSpecs: obs.skipped,
+		Name:          name,
+		Time:          time.Now(),
+		Duration:      time.Since(suiteStart),
+		TotalSpecs:    obs.total,
+		FailedSpecs:   obs.failed,
+		SkippedSpecs:  obs.skipped,
+		FilteredSpecs: obs.filtered,
 	})
 }
 
@@ -215,10 +224,10 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i])
 		}
-		message, output := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		message, output, ran := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
 		failed := ctx.failed
 		if named {
-			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output})
+			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 		}
 		if ctx.failFast && failed {
 			return
@@ -240,14 +249,23 @@ func runSpecsRecovered(ctx *Context, g *group) {
 // testing.T.Run purely for -v/-run/IDE/test2json identity (#102). It is never read back from
 // t.Name(): SpecStartEvent/SpecResultEvent's Name always comes from group.names, so Go's subtest
 // sanitization (spaces to "_") and duplicate-name "#01" suffixing never leak into reported identity.
-func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string) {
+//
+// ran is false exactly when external test selection (e.g. `go test -run`) discarded the subtest,
+// threaded back so the caller can report the spec as Filtered instead of passed (#111). It cannot
+// be read from t.Run's own bool return: testing.T.Run returns true for a filtered-out subtest too
+// (a subtest that never ran vacuously "succeeded"), so runSpecIsolated instead sets ran from inside
+// the closure itself — which only runs at all when the filter accepted the subtest. The two fast
+// paths above never go through t.Run at all, so they always ran.
+func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran bool) {
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
-		return runSpecWithHooks(ctx, before, s, after)
+		message, output = runSpecWithHooks(ctx, before, s, after)
+		return message, output, true
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
-		return runSpecWithHooks(ctx, before, s, after)
+		message, output = runSpecWithHooks(ctx, before, s, after)
+		return message, output, true
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -259,8 +277,13 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // line at all — since escape analysis decides a variable's storage class for the whole function, not
 // per branch. Keeping the capture inside its own function scopes that heap allocation to the
 // isolation path only.
-func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string) {
+//
+// ran is set from inside the closure itself, not from t.Run's own bool return (see runSpecRecovered's
+// doc comment on why t.Run's return can't be trusted for this) — which only runs at all when the
+// filter accepted the subtest.
+func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran bool) {
 	t.Run(subtestName, func(subT *testing.T) {
+		ran = true
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
 	return
