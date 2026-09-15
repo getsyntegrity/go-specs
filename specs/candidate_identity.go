@@ -26,8 +26,8 @@ const (
 	// candidateWalkMaxDepth and candidateWalkMaxElems bound the reflective search for
 	// unstable-formatting values (see candidateUnstableKind). Naming runs once per executed
 	// candidate, so the walk must be cheap and must terminate on recursive or huge structures;
-	// these limits trade an exhaustive search for a predictable constant cost. A pointer buried
-	// deeper than this renders through fmt, which is the pre-existing behavior.
+	// these limits trade an exhaustive search for a predictable constant cost. A container the walk
+	// cannot fully cover within these bounds is never treated as safe — see candidateUnstableKind.
 	candidateWalkMaxDepth = 4
 	candidateWalkMaxElems = 8
 
@@ -341,17 +341,30 @@ func renderCandidateValue(v any) string {
 }
 
 // candidateUnstableKind reports the kind word to use instead of fmt's rendering when rv is, or
-// transitively contains, a value whose %v embeds a pointer address.
+// transitively contains, a value whose %v embeds a pointer address — OR when the walk could not
+// rule that out within its bounds.
 //
 // A test name must be the same string on every run of the same candidate — otherwise -run patterns
 // rot between runs and diffs of -v output are pure noise. Addresses are not; so a pointer, unsafe
 // pointer, func, chan or uintptr collapses to a fixed word ("ptr", "func", ...) that says what the
 // value was without pretending to identify it. The walk is bounded (see candidateWalkMaxDepth /
 // candidateWalkMaxElems) because it runs per executed candidate and must terminate on cyclic or
-// very wide data.
+// very wide data — but a scan the budget cut short is information the caller never had, not proof
+// there was nothing to find. So an incomplete scan reports unstable too, with a marker naming the
+// container kind (or "complex" when depth ran out before any kind was even visited): "unknown"
+// must mean "unstable", never "safe", or a pointer sitting past the cutoff would still reach %v.
+//
+// Maps get one further rule: MapRange's iteration order is unspecified by the language, so which
+// entry a bounded walk visits first is not reproducible. A map's outcome may therefore depend on
+// whether ANY of its entries is unstable, never on which one — so a map never bubbles up an
+// entry's own kind word, only its own ("map"), and a map within budget is always inspected in full
+// rather than stopped at the first hit, so that "any entry" answer does not itself depend on order.
 func candidateUnstableKind(rv reflect.Value, depth int) (string, bool) {
-	if depth > candidateWalkMaxDepth || !rv.IsValid() {
+	if !rv.IsValid() {
 		return "", false
+	}
+	if depth > candidateWalkMaxDepth {
+		return "complex", true
 	}
 	switch rv.Kind() {
 	case reflect.Pointer:
@@ -370,26 +383,53 @@ func candidateUnstableKind(rv reflect.Value, depth int) (string, bool) {
 		}
 		return candidateUnstableKind(rv.Elem(), depth+1)
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < rv.Len() && i < candidateWalkMaxElems; i++ {
+		n := rv.Len()
+		limit := n
+		if limit > candidateWalkMaxElems {
+			limit = candidateWalkMaxElems
+		}
+		for i := 0; i < limit; i++ {
 			if kind, unstable := candidateUnstableKind(rv.Index(i), depth+1); unstable {
 				return kind, true
 			}
 		}
+		if n > candidateWalkMaxElems {
+			// Elements past the budget were never inspected; one of them could still be a
+			// pointer, so the incomplete scan must not be reported as safe.
+			return "slice", true
+		}
 	case reflect.Map:
-		seen := 0
-		for iter := rv.MapRange(); iter.Next() && seen < candidateWalkMaxElems; seen++ {
-			if kind, unstable := candidateUnstableKind(iter.Key(), depth+1); unstable {
-				return kind, true
+		n := rv.Len()
+		if n > candidateWalkMaxElems {
+			// Too large to inspect in full: skip straight to the conservative marker rather
+			// than visiting an arbitrary, order-dependent subset of entries.
+			return "map", true
+		}
+		unstable := false
+		for iter := rv.MapRange(); iter.Next(); {
+			if _, u := candidateUnstableKind(iter.Key(), depth+1); u {
+				unstable = true
 			}
-			if kind, unstable := candidateUnstableKind(iter.Value(), depth+1); unstable {
-				return kind, true
+			if _, u := candidateUnstableKind(iter.Value(), depth+1); u {
+				unstable = true
 			}
 		}
+		if unstable {
+			return "map", true
+		}
 	case reflect.Struct:
-		for i := 0; i < rv.NumField() && i < candidateWalkMaxElems; i++ {
+		n := rv.NumField()
+		limit := n
+		if limit > candidateWalkMaxElems {
+			limit = candidateWalkMaxElems
+		}
+		for i := 0; i < limit; i++ {
 			if kind, unstable := candidateUnstableKind(rv.Field(i), depth+1); unstable {
 				return kind, true
 			}
+		}
+		if n > candidateWalkMaxElems {
+			return "struct", true
 		}
 	}
 	return "", false

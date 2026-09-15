@@ -2,6 +2,9 @@ package specs
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -239,6 +242,110 @@ func TestGeneratedCaseNameIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestGeneratedCaseNameMapOrderIsProcessIndependent proves the fix for candidateUnstableKind's map
+// walk (PR #107 review): a map holding two different unstable-kind values (a pointer and a channel)
+// used to bubble up whichever one Go's randomized MapRange visited first, so the SAME map value could
+// render as "ptr" in one run and "chan" in another. That randomization is reseeded per process, so an
+// in-process loop cannot exercise it — this spawns real subprocesses, the way
+// TestGeneratedCandidateIsSelectableWithRun does, because the property under test is reproducibility
+// across process boundaries: a -run pattern captured from one `go test` invocation has to keep
+// matching in the next one.
+func TestGeneratedCaseNameMapOrderIsProcessIndependent(t *testing.T) {
+	if os.Getenv("GO_SPECS_MAP_ORDER_HELPER") == "1" {
+		gen := newPathGenerator([]PathVar{{Name: "v", Values: []any{1}}}, nil, 0, 0, false, 0, 0, 0)
+		values := map[string]any{"a": &struct{ N int }{N: 1}, "b": make(chan int)}
+		candidate := proposalCandidate{
+			Values:        gen.PathValuesWith(map[string]any{"v": values}),
+			AcceptedIndex: 1,
+		}
+		fmt.Println(generatedCaseName(gen, "spec", candidate))
+		return
+	}
+
+	const runs = 5
+	names := make([]string, runs)
+	for i := 0; i < runs; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestGeneratedCaseNameMapOrderIsProcessIndependent$", "-test.v")
+		cmd.Env = append(os.Environ(), "GO_SPECS_MAP_ORDER_HELPER=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper process %d failed: %v\n%s", i, err, output)
+		}
+		name, ok := candidateNamePrintedBy(string(output))
+		if !ok {
+			t.Fatalf("helper process %d printed no candidate name:\n%s", i, output)
+		}
+		names[i] = name
+	}
+	for i := 1; i < runs; i++ {
+		if names[i] != names[0] {
+			t.Fatalf("candidate name is not process-independent: run 0 = %q, run %d = %q", names[0], i, names[i])
+		}
+	}
+	if want := "spec/case-1-v=map"; names[0] != want {
+		t.Fatalf("candidate name = %q, want %q (a map must never bubble up an entry's own kind word)", names[0], want)
+	}
+}
+
+// TestGeneratedCaseNameSliceOverflowNeverFallsBackToAddress proves the fix for candidateUnstableKind's
+// slice/array walk (PR #107 review): a pointer sitting past candidateWalkMaxElems was never inspected,
+// so the walk reported the value as safe and it fell through to fmt's %v — which embeds the pointer's
+// heap address. Two runs of the "same" candidate get different addresses from their own heaps, so the
+// name changed between processes even though nothing about the candidate did. Run in real subprocesses
+// because that is the only place a leaked address is visible: a single process cannot observe its
+// pointers changing.
+func TestGeneratedCaseNameSliceOverflowNeverFallsBackToAddress(t *testing.T) {
+	if os.Getenv("GO_SPECS_SLICE_OVERFLOW_HELPER") == "1" {
+		gen := newPathGenerator([]PathVar{{Name: "v", Values: []any{1}}}, nil, 0, 0, false, 0, 0, 0)
+		values := []any{0, 1, 2, 3, 4, 5, 6, 7, &struct{ N int }{N: 1}}
+		candidate := proposalCandidate{
+			Values:        gen.PathValuesWith(map[string]any{"v": values}),
+			AcceptedIndex: 1,
+		}
+		fmt.Println(generatedCaseName(gen, "spec", candidate))
+		return
+	}
+
+	const runs = 2
+	names := make([]string, runs)
+	for i := 0; i < runs; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestGeneratedCaseNameSliceOverflowNeverFallsBackToAddress$", "-test.v")
+		cmd.Env = append(os.Environ(), "GO_SPECS_SLICE_OVERFLOW_HELPER=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper process %d failed: %v\n%s", i, err, output)
+		}
+		name, ok := candidateNamePrintedBy(string(output))
+		if !ok {
+			t.Fatalf("helper process %d printed no candidate name:\n%s", i, output)
+		}
+		if strings.Contains(name, "0x") {
+			t.Fatalf("name %q leaked a pointer address for a value past the walk budget", name)
+		}
+		names[i] = name
+	}
+	for i := 1; i < runs; i++ {
+		if names[i] != names[0] {
+			t.Fatalf("candidate name is not process-independent: run 0 = %q, run %d = %q", names[0], i, names[i])
+		}
+	}
+	if want := "spec/case-1-v=slice"; names[0] != want {
+		t.Fatalf("candidate name = %q, want %q (an overflowed slice must never fall back to %%v)", names[0], want)
+	}
+}
+
+// candidateNamePrintedBy finds the line a helper process printed with fmt.Println(generatedCaseName(...))
+// among go test's own "=== RUN"/"--- PASS" noise: every candidate name here starts with "spec/", which
+// none of testing's own output lines do.
+func candidateNamePrintedBy(output string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "spec/") {
+			return line, true
+		}
+	}
+	return "", false
+}
+
 type stringerValue struct{ secret string }
 
 func (stringerValue) String() string { return "REDACTED" }
@@ -261,7 +368,9 @@ func TestGeneratedCaseNameRendersUnstableKindsAsKindWords(t *testing.T) {
 		{"uintptr", uintptr(0xdeadbeef), "uintptr"},
 		{"unsafePointer", unsafe.Pointer(ptr), "unsafeptr"},
 		{"pointerInsideSlice", []any{1, ptr}, "ptr"},
-		{"pointerInsideMap", map[string]any{"k": ptr}, "ptr"},
+		// A map never bubbles up an entry's own kind word (see candidateUnstableKind): its
+		// marker is always "map", so it cannot depend on which entry MapRange visits first.
+		{"pointerInsideMap", map[string]any{"k": ptr}, "map"},
 		{"pointerInsideStruct", struct{ P *int }{P: new(int)}, "ptr"},
 		{"nil", nil, "nil"},
 	}
