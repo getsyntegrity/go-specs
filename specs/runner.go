@@ -55,10 +55,10 @@ type reporterObserver struct {
 	filtered int
 }
 
-func (o *reporterObserver) specStarted(name string) report.SpecStartEvent {
+func (o *reporterObserver) specStarted(name string, path []string) report.SpecStartEvent {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	e := report.SpecStartEvent{Name: name, Time: time.Now()}
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
 	o.rep.SpecStarted(e)
 	return e
 }
@@ -89,10 +89,10 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 // SpecFinished{Skipped: true}, reusing the exact same SpecStartEvent for both (same invariant
 // specStarted/specFinished hold for a real spec) — Duration is left at its zero value, since no
 // body ever ran between them, and Failed is always false.
-func (o *reporterObserver) specSkipped(name string) {
+func (o *reporterObserver) specSkipped(name string, path []string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	e := report.SpecStartEvent{Name: name, Time: time.Now()}
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
 	o.rep.SpecStarted(e)
 	o.total++
 	o.skipped++
@@ -203,8 +203,8 @@ func reportSkipped(ctx *Context, g *group) {
 	if obs == nil {
 		return
 	}
-	for _, name := range g.skipped {
-		obs.specSkipped(name)
+	for i, name := range g.skipped {
+		obs.specSkipped(name, g.skippedPath(i))
 	}
 }
 
@@ -253,7 +253,7 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		named := obs != nil && i < len(g.names)
 		var started report.SpecStartEvent
 		if named {
-			started = obs.specStarted(g.names[i])
+			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
 		message, output, ran := runSpecRecovered(ctx, s, g.subtestName(i))
 		failed := ctx.failed

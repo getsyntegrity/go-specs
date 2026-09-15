@@ -29,9 +29,9 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   before and after it. `Name` stays the declared leaf name verbatim. `Path` was separately broken —
   the `Describe`/`Spec` model rebuilt it by splitting the joined breadcrumb on `/`, so
   `It("slash/inside")` reported four segments whose last one was not the `Name`; that is fixed below
-  ([#113](https://github.com/getsyntegrity/go-specs/issues/113)). The `Builder`/`Runner` model still
-  reports no `Path` at all, tracked in
-  [#112](https://github.com/getsyntegrity/go-specs/issues/112).
+  ([#113](https://github.com/getsyntegrity/go-specs/issues/113)). The `Builder`/`Runner` model
+  reported no `Path` at all, also fixed below
+  ([#112](https://github.com/getsyntegrity/go-specs/issues/112)).
 
   This applies to every run whose backend is a real `*testing.T`, including `DescribeFlat` and
   `DescribeFast`: despite their names, both create one subtest per spec exactly like `Describe`, so
@@ -111,6 +111,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   unconditionally and then dropped, costing one allocation per spec per run on the reporter-less
   path this package advertises as allocation-free. Over 2000 specs that is half of the run's total
   allocations: `allocs/op` 4.004k → 2.003k, `B/op` −14%.
+
+- `report.SpecStartEvent.Path` is now reported by the `Builder`/`Runner` execution model too — it
+  previously stayed `nil` for every spec, unlike the `Describe`/`Spec` model, which leaves a reporter
+  (a JUnit `classname`, a tree renderer, grouped CI output) unable to tell a suite's structure apart
+  when a program was built through `Builder`. `Path` is built from the enclosing `Describe` names
+  captured at registration time, never by splitting the joined breadcrumb — the same defect #113
+  fixed for the other model would otherwise resurface for a declared name containing `/`. Covers
+  sequential specs, `SkipIt` specs, and `ItParallel` specs alike.
+  ([#112](https://github.com/getsyntegrity/go-specs/issues/112))
 
 ### Added
 
