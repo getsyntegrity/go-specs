@@ -41,6 +41,8 @@ func lockFor(path string) *sync.Mutex {
 
 // RunFromFile compares value to the stored snapshot for name, or creates/updates it.
 // callerFile is the path to the test file (e.g. from runtime.Caller(1) in Context.Snapshot).
+// A backend that exposes Helper() is marked unconditionally, not only on failure: RunFromFile decides
+// the verdict itself and reports it here, so the mark has to precede the comparison.
 func RunFromFile(backend Backend, callerFile string, name string, value any) {
 	if h, ok := backend.(helperBackend); ok {
 		h.Helper()

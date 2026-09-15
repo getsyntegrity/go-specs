@@ -273,14 +273,16 @@ func (x expectT[T]) To(m Matcher) {
 
 // Snapshot serializes value as JSON and compares it to the stored snapshot named name.
 // Snapshots are stored in __snapshots__ next to the test file. Set GO_SPECS_UPDATE_SNAPSHOTS=1 to create or update snapshots.
-// Helper() is only called on failure (caller file lookup); runSnapshot failures are reported by the snapshots package.
+//
+// Unlike the Expect assertions, the snapshot path marks its helper chain unconditionally rather than
+// only on failure. Snapshot already performs caller discovery to locate __snapshots__, and the
+// pass/fail verdict is decided inside the snapshots package, which reports the failure itself, so the
+// mark cannot be deferred to a failure branch here. Snapshot comparison is JSON marshalling plus file
+// I/O, so the extra Helper() call is not on a measurable hot path.
 func (c *Context) Snapshot(name string, value any) {
 	if c == nil || c.backend == nil {
 		return
 	}
-	// Snapshot already performs caller discovery to locate __snapshots__, so marking this frame
-	// unconditionally costs nothing extra; the mismatch verdict is decided deeper in the snapshots
-	// package, which is why the mark cannot be deferred to the failure branch as elsewhere.
 	if c.tb != nil {
 		c.tb.Helper()
 	}
