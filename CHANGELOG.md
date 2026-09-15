@@ -49,3 +49,22 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   discarded is still reported to an attached reporter as started and finished without failing, so it
   appears as passed although its body never ran. Both are tracked separately.
   ([#102](https://github.com/getsyntegrity/go-specs/issues/102))
+
+### Fixed
+
+- Failing built-in assertions now report the user's own assertion file and line instead of a
+  go-specs internal frame such as `testing_backend.go` or `context.go`. Terminal and IDE output
+  jump straight to the behaviour that broke. Covers `EqualTo`, `ExpectT(...).ToEqual`/`.To`,
+  `Context.Expect(...).ToEqual`/`.To`, and `ctx.Snapshot`, across `Describe`, `DescribeFlat`,
+  `DescribeFast`, and the Builder/Runner path. The passing fast path is unchanged: caller discovery
+  still happens only on failure, and assertions still allocate nothing when they pass.
+  ([#101](https://github.com/getsyntegrity/go-specs/issues/101))
+
+### Known issues
+
+- A failing `ctx.Snapshot` is reported to a `report.EventReporter` as a **passing** spec
+  (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
+  though `go test` exits non-zero. Pre-existing and unrelated to the attribution fix above; every
+  other assertion records the failure correctly. Pinned by
+  `TestSnapshotFailureLeavesContextUnfailed`.
+  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
