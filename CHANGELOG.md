@@ -67,11 +67,24 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   nobody wrote. The compiler now carries the declared segments through to the event
   ([#113](https://github.com/getsyntegrity/go-specs/issues/113)).
 
+- Running a suite without a `report.EventReporter` no longer builds a `Path` per spec. It was built
+  unconditionally and then dropped, costing one allocation per spec per run on the reporter-less
+  path this package advertises as allocation-free. Over 2000 specs that is half of the run's total
+  allocations: `allocs/op` 4.004k → 2.003k, `B/op` −14%.
+
 ### Added
 
-- `ExecutionPlan.PathSegments`, `ExecutionPlan.PathStart` and `ExecutionPlan.PathLen` hold each
-  spec's declared scope names, laid out like `Instructions`/`ProgramStart`/`ProgramLen`. `FullNames`
-  is unchanged and still carries the subtest identity.
+- `ExecutionPlan.PathScopes`, `ExecutionPlan.PathScopeStart` and `ExecutionPlan.PathScopeLen` hold
+  the declared scopes enclosing each spec, laid out like `Instructions`/`ProgramStart`/`ProgramLen`.
+  The spec's own name is not repeated — `Names[i]` already holds it, and `Path` is the window
+  followed by `Names[i]`. Specs sharing enclosing scopes share one window, so this grows with the
+  shape of the suite rather than with the spec count. `FullNames` is unchanged and still carries the
+  subtest identity.
+
+- `ExecutionPlan` is exported, and `Path` is now derived from the fields above rather than from
+  `FullNames`. A hand-built plan that populates only `FullNames` therefore reports `Path: nil` where
+  it previously reported the split breadcrumb; populate `PathScopes`/`PathScopeStart`/`PathScopeLen`
+  to report a path. Plans built through `Describe`/`BuildSuite` are unaffected.
 
 ### Known issues
 
