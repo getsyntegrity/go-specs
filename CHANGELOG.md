@@ -16,10 +16,16 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   escaped, so the guarantee is stated over the name `testing` actually uses: two specs are
   independently identifiable whenever their *normalized* breadcrumbs differ. Breadcrumbs that
   normalize to the same string — `When("a/b")` against `Describe("a")`/`When("b")`, or `When("when a")`
-  against `When("when_a")` — stay ambiguous and keep `testing`'s `#01` numbering, the same ambiguity
-  `testing.T.Run` has on its own; this is accepted so that `-run` patterns stay typeable from the
-  declared names. The mapping is an internal detail and is not exported. Reporter `Name` and `Path`
-  values are unchanged — they remain the framework's own unsanitized values.
+  against `When("when_a")` — stay ambiguous and keep `testing`'s `#01` numbering. That is a
+  consequence of go-specs flattening the declared tree into a single `t.Run` per spec, not a
+  limitation `testing` imposes: the whole breadcrumb has to fit in one subtest name. The discarded
+  alternative is nesting a real `t.Run` per scope, which would cost the allocation-free runner; it is
+  not escaping, which would break `-run` patterns typed from the declared names. The mapping is an
+  internal detail and is not exported.
+
+  Reporter `Name` and `Path` values are unchanged. Note that they already differed between the two
+  models and still do: the `Describe`/`Spec` model reports a `Path`, and the `Builder`/`Runner` model
+  has never populated one. Tracked in [#112](https://github.com/getsyntegrity/go-specs/issues/112).
 
   This applies to every run whose backend is a real `*testing.T`, including `DescribeFlat` and
   `DescribeFast`: despite their names, both create one subtest per spec exactly like `Describe`, so
