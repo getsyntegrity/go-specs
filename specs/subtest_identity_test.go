@@ -575,12 +575,14 @@ func TestRunnerRunHierarchicalSubtestsKeepReporterIdentityVerbatim(t *testing.T)
 
 // TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess proves the fix for #111 on the
 // Spec/ExecutionPlan model: when a -run pattern discards a spec's subtest, the reporter must not
-// tell a consumer the spec passed. runSpecProgramIsolated now threads testing.T.Run's own bool
-// return (false exactly when the filter discarded the subtest) back through specResult.Filtered,
-// and reportSpecFinished reports that spec as SpecResultEvent{Filtered: true} instead of a bare
-// pass — Failed stays false and Duration stays 0, same as a compile-time Skipped spec, but Skipped
-// itself stays false: the cause here is external selection, not a declared skip (see
-// report.SpecResultEvent.Filtered's doc comment for why the two are kept apart).
+// tell a consumer the spec passed. t.Run's own bool return can't be used for this — it reports
+// true for a subtest the filter discarded, the same as a genuine pass — so runSpecProgramIsolated
+// instead sets a local `ran` flag from the first statement inside the closure passed to t.Run,
+// which only executes when the filter accepts the subtest. That flag threads back through
+// specResult.Filtered, and reportSpecFinished reports that spec as SpecResultEvent{Filtered: true}
+// instead of a bare pass — Failed stays false and Duration stays 0, same as a compile-time Skipped
+// spec, but Skipped itself stays false: the cause here is external selection, not a declared skip
+// (see report.SpecResultEvent.Filtered's doc comment for why the two are kept apart).
 //
 // This test used to pin the opposite: `REPORTED ... failed=false skipped=false` for all four
 // declared specs, indistinguishable from a genuine pass. It now asserts the corrected transcript
@@ -631,8 +633,9 @@ func TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess(t *testing.T) {
 
 // TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess is
 // TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess for the Runner/Program model: #111's
-// defect shape was identical in runSpecIsolated, which now threads t.Run's bool return back the
-// same way as its ExecutionPlan counterpart.
+// defect shape was identical in runSpecIsolated, which sets the same closure-scoped `ran` flag
+// the same way as its ExecutionPlan counterpart, for the same reason — t.Run's own bool return
+// doesn't distinguish a filtered-out subtest from a genuine pass.
 func TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess(t *testing.T) {
 	if os.Getenv("GO_SPECS_SUBTEST_FILTER_REPORT_RUNNER_HELPER") == "1" {
 		var rep recordingReporter
