@@ -31,7 +31,6 @@ type Spec struct {
 	arena       *NodeArena
 	rootID      int
 	plan        *ExecutionPlan // set by top-level Describe when using bytecode compiler (no arena)
-	flat        bool           // if true, run all specs in one test (no subtests)
 	compileOnce sync.Once
 	suite       *CompiledSuite
 }
@@ -42,7 +41,7 @@ type Spec struct {
 // tb may be *testing.T or *testing.B (e.g. for scaling benchmarks).
 func Describe(tb testing.TB, name string, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn, false)
+		describeWithCompiler(tb, name, nil, fn)
 		return
 	}
 	defer ensureRegistry()()
@@ -67,18 +66,18 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 }
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
-func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec), flat bool) {
-	describeWithCompilerContext(tb, nil, name, rep, fn, flat)
+func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
+	describeWithCompilerContext(tb, nil, name, rep, fn)
 }
 
-func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec), flat bool) []proposalControllerResult {
+func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec)) []proposalControllerResult {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
 	var backend testBackend
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, flat: flat, compiler: c}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, compiler: c}
 	if fn != nil {
 		fn(s)
 	}
@@ -123,7 +122,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 // DescribeWithReporter starts a top-level describe block with a reporter.
 func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn, false)
+		describeWithCompiler(tb, name, rep, fn)
 		return
 	}
 	defer ensureRegistry()()
@@ -147,17 +146,16 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 	}
 }
 
-// DescribeFlat runs a suite whose hooks are flattened into each spec's own instruction range rather
-// than resolved by walking a tree — that is what "flat" names. It does not mean "no subtests":
-// against a *testing.T every spec still runs in its own subtest, named by its full
-// Describe/When/It breadcrumb, exactly as Describe does (#102). Only a *testing.B backend runs
-// without subtests.
+// DescribeFlat is an alias for Describe, kept for compatibility (#110). Its name refers to the
+// compiled plan, not to subtests: "flat" meant hooks flattened into each spec's own instruction
+// range instead of resolved by walking a tree. Against a *testing.T every spec still runs in its
+// own subtest, named by its full Describe/When/It breadcrumb, exactly as Describe does (#102). Only
+// a *testing.B backend runs without subtests.
 //
-// The flat flag it records is not read by anything downstream, so this function is currently
-// behaviourally identical to Describe; the distinction is tracked separately.
+// Prefer Describe.
 func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn, true)
+		describeWithCompiler(tb, name, nil, fn)
 		return
 	}
 	defer ensureRegistry()()
@@ -171,7 +169,7 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -185,7 +183,7 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 // SuiteStarted/SuiteFinished and SpecStarted/SpecFinished events for the run.
 func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn, true)
+		describeWithCompiler(tb, name, rep, fn)
 		return
 	}
 	defer ensureRegistry()()
@@ -199,7 +197,7 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -209,15 +207,12 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 	}
 }
 
-// DescribeFast is an alias for DescribeFlat and behaves identically to it — and, since the flat flag
-// is never read downstream, identically to Describe. It does not skip the per-spec testing.T.Run,
-// and it does not avoid closure, subtest or name allocations.
+// DescribeFast is an alias for DescribeFlat, and therefore for Describe (#110). It does not skip
+// the per-spec testing.T.Run, and it does not avoid closure, subtest or name allocations.
 //
 // BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast in the benchmarks package keeps that
 // claim checkable instead of asserted: all three declare and run the same suite and report the same
-// allocs/op. Run them together to confirm it — the claim is that the three agree, not that they cost
-// any particular amount, so no figure is quoted here to rot the next time an unrelated change moves
-// the allocation path. A change that wires the flag up separates them there first.
+// allocs/op.
 //
 // Kept for compatibility. Prefer Describe.
 func DescribeFast(tb testing.TB, name string, fn func(*Spec)) {

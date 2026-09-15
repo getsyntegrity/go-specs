@@ -182,7 +182,7 @@ func TestDescribePathsDispatchHonorsCancellationAndDeadline(t *testing.T) {
 				s.Paths(func(pb *PathBuilder) { pb.Int("value", []int{1}) }).It("case", func(*Context) {
 					bodyRan = true
 				})
-			}, false)
+			})
 			if bodyRan || len(results) != 1 || results[0].Terminal != tc.terminal {
 				t.Fatalf("body ran = %t, results = %+v, want terminal %d", bodyRan, results, tc.terminal)
 			}

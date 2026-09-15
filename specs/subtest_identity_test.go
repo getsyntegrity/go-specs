@@ -506,9 +506,9 @@ func TestRunnerRunNormalizedBreadcrumbCollisionRealProcess(t *testing.T) {
 //
 // The "flat" in DescribeFlat refers to the compiled plan — hooks are flattened into each spec's own
 // instruction range instead of being resolved by walking a tree — not to the absence of subtests.
-// Spec.flat is recorded at declaration time and never read again; CompiledSuite does not carry it,
-// and runSpecProgram's only gate is whether the backend wraps a real *testing.T. A *testing.B does
-// not, which is why benchmarks genuinely run without subtests; a *testing.T always does.
+// runSpecProgram's only gate is whether the backend wraps a real *testing.T. A *testing.B does not,
+// which is why benchmarks genuinely run without subtests; a *testing.T always does. DescribeFlat is
+// now a documented alias for Describe (#110); it never had a distinct runtime behavior to lose.
 //
 // This test exists so that claim is checked rather than asserted in prose: it failed against no
 // version of this package, because no version of this package ever skipped the subtest for a
