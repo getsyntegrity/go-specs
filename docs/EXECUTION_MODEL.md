@@ -240,7 +240,23 @@ corpus (mutate a random entry, or fall back to random when it is empty), so by t
 asked for the target candidate, it can be working from a smaller or different corpus than the run
 that produced the failure — and can propose a **different** `PathValues` for that same attempt index,
 even with the same seed. The `-run` pattern that looks like it isolates one candidate's execution does
-not isolate it from the strategy's state, and the candidate that actually runs may not be the one that
+not isolate it from the strategy's state.
+
+What that divergence actually does to the re-run depends on how narrow the `-run` pattern is, because
+`generatedCaseName` puts the attempt/seed ordinal *before* the rendered values and content hash
+(`case-<ordinal>[-seed<N>]<k=v,...>~<hash>`), and `-run` matches each path segment as an unanchored
+regexp — a substring hit anywhere in the name is enough:
+
+- **Ordinal/prefix pattern** (e.g. `-run '.../case-7-seed123'`, matching only the ordinal/seed
+  prefix): the regenerated candidate's name still contains that prefix even though its trailing
+  values and hash differ, so the pattern still matches — and the **different** `PathValues` this
+  candidate now gets executes in place of the one that failed.
+- **Exact copied name** (the full subtest name from the original failure, values and hash included):
+  the regenerated candidate's values and hash no longer appear in that string, so the pattern no
+  longer matches it — and **no candidate executes** for that attempt at all. Like any other
+  `-run`-discarded subtest, it is still reported as passed (see "Reporting of filtered specs" above).
+
+Either way, the candidate that actually runs under a narrowed `-run` is not reliably the one that
 failed.
 
 `Cartesian` and `Sample` have no feedback-dependent state, so they are not exposed. Plain `Explore`

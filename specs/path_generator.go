@@ -650,7 +650,12 @@ func (s *pathSequence) advance() bool {
 // Narrowing `-run` to one generated candidate's subtest therefore doesn't just skip the candidates
 // around it — it can leave the corpus these two strategies draw from smaller than it was on the run
 // that produced the failure, so the target attempt index can propose a different PathValues on
-// re-run. See docs/EXECUTION_MODEL.md's "Adaptive strategies" section and #124.
+// re-run. Whether that difference is visible depends on how the -run pattern was written, because
+// generatedCaseName puts the ordinal/seed before the rendered values and hash: with an
+// ordinal/prefix pattern, corpus divergence can execute that different PathValues under the same
+// attempt index; with the exact copied candidate name (values and hash included), the regenerated
+// candidate no longer matches the pattern at all, so no candidate executes for that attempt. See
+// docs/EXECUTION_MODEL.md's "Adaptive strategies" section and #124.
 func (s *pathSequence) admitFeedback(candidate PathValues, passed bool, cov *Coverage) {
 	if s == nil || s.g == nil || s.g.mode != ExplorationGuided {
 		return

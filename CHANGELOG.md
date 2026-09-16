@@ -153,7 +153,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   it, and each one `-run` discards never populates its `Coverage`, so the corpus these two strategies
   draw from can end up smaller than it was on the run that produced the failure. The candidate
   actually generated for the target attempt index can then differ from the one that failed, even
-  with the same seed. `Cartesian`, `Sample`, and plain `Explore` are not exposed — see
-  `docs/EXECUTION_MODEL.md`'s "Adaptive strategies" section for the full mechanism. Documentation
-  only; no code change. Tracked in
+  with the same seed. With an ordinal/prefix `-run` pattern, that divergence can execute the
+  different `PathValues` in place of the one that failed; with the exact copied candidate name
+  (values and hash included), it can instead make the regenerated candidate stop matching the
+  pattern, so no candidate executes at all. `Cartesian`, `Sample`, and plain `Explore` are not
+  exposed — see `docs/EXECUTION_MODEL.md`'s "Adaptive strategies" section for the full mechanism.
+  Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
