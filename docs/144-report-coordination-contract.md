@@ -1,10 +1,18 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Status: proposed (design gate for #143; unblocks #145, #146)
+Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
 **not** implement shard emission (#145) or merge/render (#146), and does not change
 `NormalizedReport` or any renderer from #142.
+
+**Amendment note**: §3, §5, §7, §8, and §10 were revised after an adversarial re-read surfaced
+three gaps between this contract and the hardening requirements now recorded on #145/#146:
+sanitized shard filenames were not collision-free, invalid-configuration exit semantics were
+undefined, and `GO_SPECS_RUN_ID` reuse across independent invocations was indistinguishable from
+a legitimate second producer of the same run. This amendment closes all three with a run-ownership
+marker (`GO_SPECS_RUN_TOKEN` + an exclusively-created `run.json`) and a collision-safe shard
+filename. It does not reopen or revert #144/#147; it supersedes the affected passages in place.
 
 ## 1. Design-space findings
 
@@ -172,69 +180,101 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
 
 ## 3. Recommended lifecycle
 
-1. **Before `go test` runs**, the invoking script/CI step generates a run identifier and exports
-   it (`GO_SPECS_RUN_ID`), alongside an optional shard base directory
-   (`GO_SPECS_REPORT_DIR`, default `.go-specs/runs`). This is the *only* place a run ID can
-   originate (F8) — go-specs itself cannot manufacture a value multiple independently-launched
-   binaries would agree on.
-2. **`go test ./... -count=1 ...`** runs exactly as today. Every package that has already wired
-   go-specs into its own `TestMain` (unchanged requirement — see §10) reads `GO_SPECS_RUN_ID`
-   from its environment (F2: harmless to packages that don't). If absent, shard emission remains
-   disabled; if present but invalid, configuration fails loudly and the package must not continue
-   as though reporting were disabled. If valid, that package's `TestMain` additionally writes one
-   shard file after its own `m.Run()` returns, via
-   temp-write + fsync + atomic rename (§5). Packages that never link go-specs do nothing and are
-   never broken by the two env vars being present (F1 vs F2).
-3. **`go test` returns.** Its exit code is untouched by any of this — reporting has not
-   influenced it, per-process, since #142.
-4. **After `go test` returns**, the same script/CI step — only if it wants a merged module report
+1. **Before `go test` runs**, the invoking script/CI step generates a run identifier
+   (`GO_SPECS_RUN_ID`, a readable logical name — build number, branch+timestamp, etc.) and,
+   separately, a random ownership token (`GO_SPECS_RUN_TOKEN`, a nonce generated once per
+   invocation), alongside an optional shard base directory (`GO_SPECS_REPORT_DIR`, default
+   `.go-specs/runs`). Both env vars are exported before `go test` runs. This is the *only* place
+   either value can originate (F8) — go-specs itself cannot manufacture a value multiple
+   independently-launched binaries would agree on. `GO_SPECS_RUN_ID` alone cannot do this job: two
+   independent invocations that happen to reuse the same logical run ID (a flaky generator, a
+   retried CI step with a stable build number, a copy-pasted script) are indistinguishable from
+   each other, and from a legitimate second producer of the same run, using the ID alone — every
+   process in both invocations would present the identical `GO_SPECS_RUN_ID`. The random,
+   per-invocation `GO_SPECS_RUN_TOKEN` is the only thing that lets ownership be verified rather
+   than assumed.
+2. **Still before `go test` runs**, the same step calls `InitializeRun` (library call or a thin
+   `go-specs-report init` CLI), which exclusively creates the run marker
+   `<GO_SPECS_REPORT_DIR>/<run-id>/run.json` (§5) recording the run's schema version, `RunID`, and
+   a hash of `RunToken`. Exclusive creation (fails if the file already exists) is what turns "two
+   invocations reused the same `RunID`" into an immediate, loud, pre-test error instead of a
+   silent race to write into the same directory. If `InitializeRun` fails because the marker
+   already exists, the invoking script must not proceed to run `go test` with reporting enabled
+   (§8).
+3. **`go test ./... -count=1 ...`** runs exactly as today. Every package that has already wired
+   go-specs into its own `TestMain` (unchanged requirement — see §10) reads `GO_SPECS_RUN_ID` and
+   `GO_SPECS_RUN_TOKEN` from its environment (F2: harmless to packages that don't). If
+   `GO_SPECS_RUN_ID` is absent, shard emission remains disabled. If present, both the run ID and
+   the token must be valid and the package must be able to confirm, against the run marker, that
+   its token matches the marker's stored ownership hash (§5); any of those checks failing is a
+   configuration error that must fail loudly, before `m.Run()`, and must not continue as though
+   reporting were disabled or degrade to a best-effort write (§8). Once ownership is confirmed,
+   that package's `TestMain` writes one shard file after its own `m.Run()` returns, via
+   temp-write + fsync + atomic, non-clobbering rename (§5). Packages that never link go-specs do
+   nothing and are never broken by the env vars being present (F1 vs F2).
+4. **`go test` returns.** Its exit code reflects test results as always, plus the one explicit
+   carve-out in §8 for a pre-test configuration/ownership failure detected in step 3.
+5. **After `go test` returns**, the same script/CI step — only if it wants a merged module report
    — runs a separate, explicit finalization command/library call
    (`report.Finalize(ctx, opts)` or a thin `go-specs-report finalize` CLI), passing the same run
-   ID, the shard base dir, the authoritative expected-producer manifest supplied by the invoker,
-   and (if used) the path to the single combined `-coverprofile` file.
-   This step is the only thing in the system entitled to read shards, merge them, and render the
-   four #142 formats module-wide.
-5. Finalize discovers the run's shard directory, accepts only complete (atomically-renamed) and
-   valid shards, checks them against the authoritative expected-producer manifest, merges
-   execution data deterministically, merges coverage by deduplicating
-   blocks from the single combined profile (§9), and renders XML/HTML/TXT/JSON through the
-   existing #142 renderers, unchanged.
-6. Finalize's own exit code is independent of `go test`'s (§8) and finalize is itself responsible
+   ID and token, the shard base dir, the authoritative expected-producer manifest supplied by the
+   invoker, and (if used) the path to the single combined `-coverprofile` file. This step is the
+   only thing in the system entitled to read shards, merge them, and render the four #142 formats
+   module-wide.
+6. Finalize reads the run marker first and confirms `RunToken` ownership before touching any
+   shard; a missing or mismatched marker is a fail-closed error (§8), not a partial report.
+   Finalize then discovers the run's shard directory, accepts only complete (atomically-renamed)
+   and valid shards, checks them against the authoritative expected-producer manifest, merges
+   execution data deterministically, merges coverage by deduplicating blocks from the single
+   combined profile (§9), and renders XML/HTML/TXT/JSON through the existing #142 renderers,
+   unchanged.
+7. Finalize's own exit code is independent of `go test`'s (§8) and finalize is itself responsible
    for shard-directory cleanup on success (§5) — no package process deletes anything.
 
-Step 4 is optional and separate from step 2: skipping it leaves `go test` fully functional and
-native, exactly as #141 requires. It is an "optional orchestration/finalization step," not a
-replacement test runner — the user's canonical command is still, verbatim, `go test ./...`.
+Steps 5–7 are optional and separate from steps 1–3: skipping them leaves `go test` fully
+functional and native, exactly as #141 requires. Finalization is an "optional
+orchestration/finalization step," not a replacement test runner — the user's canonical command is
+still, verbatim, `go test ./...`. Steps 1–2 (run ID, token, and marker) are the minimum
+pre-flight cost of enabling reporting at all; they run once, outside `go test`, and touch nothing
+inside it.
 
 ## 4. Event/process sequence
 
 ```mermaid
 sequenceDiagram
     participant CI as Invoking script / CI step
+    participant FS as Shard directory (run R)
     participant GT as go test (parent)
     participant PA as pkgA test binary
     participant PB as pkgB test binary
-    participant FS as Shard directory (run R)
     participant FIN as go-specs finalize
 
-    CI->>CI: generate RunID R, export GO_SPECS_RUN_ID=R
-    CI->>GT: go test ./... -count=1 -coverprofile=cover.out
+    CI->>CI: generate RunID R, RunToken T
+    CI->>FS: InitializeRun: exclusively create run.json {R, hash(T)}
+    alt run.json already exists (RunID reused)
+        FS-->>CI: exclusive create fails
+        CI->>CI: abort before running go test (fail-closed, §8)
+    end
+    CI->>GT: go test ./... -count=1 -coverprofile=cover.out (env: GO_SPECS_RUN_ID=R, GO_SPECS_RUN_TOKEN=T)
     par package binaries (independent processes, F3)
         GT->>PA: exec
+        PA->>FS: read run.json, confirm hash(T) matches
         PA->>PA: m.Run()
-        PA->>FS: write .tmp, fsync, close, rename -> pkgA.shard.json
+        PA->>FS: write .tmp, fsync, close, non-clobber rename -> <sanitized>--<sha256(pkgPath)>.shard.json
         PA-->>GT: exit(code)
     and
         GT->>PB: exec
+        PB->>FS: read run.json, confirm hash(T) matches
         PB->>PB: m.Run()
-        PB->>FS: write .tmp, fsync, close, rename -> pkgB.shard.json
+        PB->>FS: write .tmp, fsync, close, non-clobber rename -> <sanitized>--<sha256(pkgPath)>.shard.json
         PB-->>GT: exit(code)
     end
     GT->>GT: merge combined coverage profile (F6), write cover.out
     GT-->>CI: exit(test_rc)
-    CI->>FIN: go-specs-report finalize --run-id=R --coverprofile=cover.out
+    CI->>FIN: go-specs-report finalize --run-id=R --run-token=T --coverprofile=cover.out
+    FIN->>FS: read run.json, confirm hash(T) matches (fail-closed otherwise)
     FIN->>FS: list *.shard.json only (never *.tmp-*)
-    FIN->>FIN: validate, dedupe coverage blocks (F7), merge, render XML/HTML/TXT/JSON
+    FIN->>FIN: validate filename/envelope identity, dedupe coverage blocks (F7), merge, render XML/HTML/TXT/JSON
     FIN-->>CI: exit(finalize_rc)
     CI->>CI: report test_rc and finalize_rc independently
 ```
@@ -243,40 +283,74 @@ sequenceDiagram
 
 Environment variables are optional for activation: absence of `GO_SPECS_RUN_ID` makes shard
 emission a no-op, preserving "disabled by default." Presence is an explicit request to activate
-coordination, so an invalid value is a configuration error and must fail loudly rather than
-silently degrading to disabled mode:
+coordination, so an invalid value, a missing/mismatched run marker, or a missing token is a
+configuration error and must fail loudly rather than silently degrading to disabled mode:
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `GO_SPECS_RUN_ID` | invoking script/CI, before `go test` | Opaque run identifier, `^[A-Za-z0-9_.-]{1,128}$`. Absent ⇒ coordination disabled. Present but invalid ⇒ configuration error; the process must fail loudly and must not silently disable shard emission. |
+| `GO_SPECS_RUN_ID` | invoking script/CI, before `go test` | Readable, logical run identifier, `^[A-Za-z0-9_.-]{1,128}$`. Identifies the run for humans and for directory naming. Absent ⇒ coordination disabled. Present but invalid ⇒ configuration error; the process must fail loudly and must not silently disable shard emission. **Not, by itself, proof of ownership** — see `GO_SPECS_RUN_TOKEN`. |
+| `GO_SPECS_RUN_TOKEN` | invoking script/CI, before `go test`, once per invocation | Random nonce (recommend ≥128 bits of CSPRNG entropy, e.g. a UUIDv4 or `crypto/rand`-sourced hex string), `^[A-Za-z0-9_.-]{16,128}$`. Required whenever `GO_SPECS_RUN_ID` is present. This is what distinguishes a legitimate second producer of *this* run from an unrelated invocation that happens to reuse the same `RunID`: both would present an identical `GO_SPECS_RUN_ID`, but only the genuine invocation holds the matching token. Present but invalid, or absent while `GO_SPECS_RUN_ID` is present ⇒ configuration error, fails loudly, same as an invalid run ID. |
 | `GO_SPECS_REPORT_DIR` | invoking script/CI (optional) | Base directory for run subdirectories. Default `.go-specs/runs`. |
 | `GO_SPECS_REPORT` | existing, #142 | Unchanged: per-process local format:path target(s), orthogonal to shard emission. |
 
-Filesystem layout: `<GO_SPECS_REPORT_DIR>/<run-id>/shards/<sanitized-package-path>.shard.json`.
+Filesystem layout:
 
-- **Sanitization**: package import path with `/` → `_`, any byte outside
-  `[A-Za-z0-9_.-]` percent-escaped; result validated with `filepath.Clean` + containment check
-  against the shard directory before use, both when writing (F-nothing-observed-but-defensive)
-  and when the finalizer reads a shard's self-reported package path back out of its envelope —
-  a shard's own content is never trusted as a filesystem destination.
-- **Ownership/permissions**: run directory and shard directory `0700`; shard files `0600`. Only
-  the invoking user/CI job needs access; test output can include stack traces and assertion
-  messages, so least privilege is the safe default even on "our own" CI runners.
+```
+<GO_SPECS_REPORT_DIR>/<run-id>/
+  run.json                                              # ownership marker, §5
+  shards/<sanitized-package-path>--<sha256-of-package-path>.shard.json
+```
+
+- **Run marker (`run.json`)**: created exclusively (fails if already present, e.g. `O_CREATE |
+  O_EXCL`) by `InitializeRun`, *before* `go test` runs (§3 step 2). Contains a marker schema
+  version, the `RunID`, and a hash (not the raw value) of `RunToken`. Every subsequent reader
+  (producer or finalizer) recomputes the hash of its own `GO_SPECS_RUN_TOKEN` and compares it to
+  the marker's stored hash:
+  - **matching hash** ⇒ legitimate participant in this run (a retry within the same invocation, or
+    another package's producer, or the finalizer) — proceed;
+  - **marker present with a different hash, or marker absent while reporting is enabled** ⇒
+    `RunID` collision or misconfiguration — fail closed, loudly, immediately; never proceed as if
+    reporting were disabled or as if ownership were unverified-but-fine.
+  This is the only mechanism in the contract that can actually tell "another producer of the same
+  run" apart from "an unrelated invocation that reused the same `RunID`" — `GO_SPECS_RUN_ID` alone
+  cannot, because both cases present identical `RunID` values to every process involved.
+- **Shard filename**: `<sanitized-package-path>--<sha256-of-package-path>.shard.json`, where
+  `sanitized-package-path` keeps the existing rule below for readability only (`/` → `_`, any byte
+  outside `[A-Za-z0-9_.-]` percent-escaped), and `sha256-of-package-path` is the full, lowercase
+  hex SHA-256 digest of the **original, unsanitized** import path. The sanitized prefix is not
+  trusted for uniqueness — it exists only so filenames stay human-readable — because it is not
+  injective: `foo/bar` and `foo_bar` both sanitize to `foo_bar`, and would produce the same
+  filename under the sanitized-only scheme this section previously specified. The hash suffix is
+  what actually guarantees two distinct import paths never produce the same shard filename. The
+  `ShardEnvelope` (§7) still carries the original, unsanitized `PackagePath`; the finalizer
+  recomputes its SHA-256 and rejects any shard whose filename hash does not match the hash of its
+  own envelope's `PackagePath` (corrupt or tampered shard, §9/§10).
+- **Ownership/permissions**: run directory and shard directory `0700`; `run.json` and shard files
+  `0600`. Only the invoking user/CI job needs access; test output can include stack traces and
+  assertion messages, so least privilege is the safe default even on "our own" CI runners.
 - **Write protocol**: write to `<final-name>.tmp-<pid>` inside the *same* shard directory (never
   `/tmp` or another mount — cross-filesystem `rename` is not atomic on POSIX and must be
-  documented as a hard constraint on `GO_SPECS_REPORT_DIR`), `Sync()`, `Close()`, then
-  `os.Rename` to the final name. The finalizer only ever globs the final naming pattern and
-  never opens a `.tmp-*` file — a shard is atomically either wholly absent or wholly present,
-  satisfying "aggregation cannot read a shard that is still being written."
-- **Duplicate producer identity**: two shards resolving to the same package path is rejected by
-  the finalizer as corrupt/ambiguous (§9), never "pick one."
+  documented as a hard constraint on `GO_SPECS_REPORT_DIR`), `Sync()`, `Close()`, then publish via
+  a **non-clobbering** atomic rename to the final name (e.g. `linkat`+`unlink` of the temp file, or
+  an explicit pre-rename existence check treated as authoritative under the exclusivity guarantee
+  `InitializeRun` already establishes for the run as a whole) — a final shard destination that
+  already exists is reported as a duplicate-producer error, never silently overwritten. The
+  finalizer only ever globs the final naming pattern and never opens a `.tmp-*` file — a shard is
+  atomically either wholly absent or wholly present, satisfying "aggregation cannot read a shard
+  that is still being written."
+- **Duplicate producer identity**: because the shard filename now encodes a collision-free hash of
+  the package path (previous section) and publication is non-clobbering (previous bullet), two
+  shards for the same package path can no longer silently collapse into one file. A second write
+  attempt for an already-published package fails explicitly at write time, and the finalizer
+  additionally rejects, as corrupt/ambiguous (§9), any case it still observes two valid shard
+  files whose envelopes report the same `PackagePath` — never "pick one."
 - **Cleanup/retention**: package processes never delete anything (F5/F3: a process that dies
   early must not have been relied on to clean up, and no process should have delete authority
-  over a sibling it can't see). The finalizer prunes its own run's shard directory after a
-  successful merge (configurable; default keep). A separate, explicit `gc`-style operation
-  (library call or CLI verb) removes run directories older than a retention window — never
-  triggered automatically mid-run, since an old-looking directory cannot be distinguished from a
-  slow-but-alive peer without external knowledge.
+  over a sibling it can't see). The finalizer prunes its own run's shard directory (including
+  `run.json`) after a successful merge (configurable; default keep). A separate, explicit
+  `gc`-style operation (library call or CLI verb) removes run directories older than a retention
+  window — never triggered automatically mid-run, since an old-looking directory cannot be
+  distinguished from a slow-but-alive peer without external knowledge.
 
 ## 6. Cache, failure, and coverage semantics
 
@@ -306,21 +380,60 @@ touch `NormalizedReport` or any `Render*` function.
 // a value multiple independently-launched package binaries would agree on (see F8).
 type RunID string
 
+// RunToken is the random, per-invocation ownership nonce (GO_SPECS_RUN_TOKEN). Unlike RunID it
+// is never used for path construction; it exists only to be hashed and compared against the run
+// marker (§5), so a RunID collision between unrelated invocations is detectable and rejectable
+// rather than assumed away.
+type RunToken string
+
 // ValidateRunID enforces ^[A-Za-z0-9_.-]{1,128}$, rejecting empty values and anything that
 // could act as a path separator or traversal segment.
 func ValidateRunID(s string) (RunID, error)
 
-// ShardConfig is resolved once per package process, typically inside TestMain.
-type ShardConfig struct {
-	RunID       RunID  // from GO_SPECS_RUN_ID; zero value means shard emission is disabled
-	BaseDir     string // from GO_SPECS_REPORT_DIR, default ".go-specs/runs"
-	PackagePath string // this package's import path
+// ValidateRunToken enforces ^[A-Za-z0-9_.-]{16,128}$, rejecting empty or low-entropy-looking
+// values. Validation is a length/charset check only; RunToken is opaque to go-specs beyond that.
+func ValidateRunToken(s string) (RunToken, error)
+
+// RunOwnership is the result of successfully claiming or verifying a run's marker file. It is
+// the evidence a ShardWriter (or Finalize) needs before it is allowed to touch a shard: proof
+// that this process's RunToken matches the one recorded when the run was initialized.
+type RunOwnership struct {
+	RunID       RunID
+	MarkerPath  string // <BaseDir>/<RunID>/run.json
+	TokenHash   string // sha256(RunToken), matching the marker's stored value
 }
 
-// ShardConfigFromEnv reads GO_SPECS_RUN_ID / GO_SPECS_REPORT_DIR. When GO_SPECS_RUN_ID is
-// unset, Enabled() is false and ShardWriter is a no-op. When it is present but invalid,
-// ShardConfigFromEnv returns an error that the caller must surface; invalid configuration must
-// never be treated as disabled reporting.
+// InitializeRunOptions configures the pre-flight step that must run once, before `go test`,
+// per §3 step 2.
+type InitializeRunOptions struct {
+	RunID   RunID
+	Token   RunToken
+	BaseDir string // from GO_SPECS_REPORT_DIR, default ".go-specs/runs"
+}
+
+// InitializeRun exclusively creates the run marker (<BaseDir>/<RunID>/run.json, §5) recording
+// RunID and hash(Token). It fails if the marker already exists — that failure means the RunID
+// was reused by another invocation (or a stale marker was left behind) and the caller must not
+// proceed to run `go test` with reporting enabled (§8). This is the only code path allowed to
+// create a run marker; ShardConfigFromEnv and Finalize only ever read and verify it.
+func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership, error)
+
+// ShardConfig is resolved once per package process, typically inside TestMain.
+type ShardConfig struct {
+	RunID       RunID    // from GO_SPECS_RUN_ID; zero value means shard emission is disabled
+	Token       RunToken // from GO_SPECS_RUN_TOKEN; required whenever RunID is set
+	BaseDir     string   // from GO_SPECS_REPORT_DIR, default ".go-specs/runs"
+	PackagePath string   // this package's import path
+	Ownership   RunOwnership // verified against run.json (§5); populated by ShardConfigFromEnv
+}
+
+// ShardConfigFromEnv reads GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN / GO_SPECS_REPORT_DIR and
+// verifies the run marker (§5), populating ShardConfig.Ownership on success. When
+// GO_SPECS_RUN_ID is unset, Enabled() is false and ShardWriter is a no-op. When RunID or Token
+// is present but invalid, the marker is missing, or the marker's stored hash does not match this
+// process's Token, ShardConfigFromEnv returns an error that the caller must surface before
+// m.Run() (§3 step 3); invalid configuration or a failed ownership check must never be treated
+// as disabled reporting.
 func ShardConfigFromEnv(packagePath string) (ShardConfig, error)
 func (c ShardConfig) Enabled() bool
 
@@ -350,6 +463,7 @@ type ShardEnvelope struct {
 
 type FinalizeOptions struct {
 	RunID          RunID
+	Token          RunToken // verified against run.json (§5) before any shard is read; fail-closed on mismatch
 	BaseDir        string
 	CoverProfile   string   // path to the one combined `go test -coverprofile` file, optional
 	ExpectedProducers []string // required authoritative list of packages expected to emit shards
@@ -399,12 +513,27 @@ termination bypasses it — F5) so the failure is fully represented in the merge
 | Tests pass, reporting fails (finalize) | unchanged (0) | non-zero, distinct from `go test`'s codes | |
 | Tests fail and reporting also fails | unchanged (1) | non-zero | Two independent signals, never collapsed into one. |
 | Abrupt process termination: timeout/SIGKILL/OOM/unrecovered out-of-band panic (F5) | whatever `go test`/the OS already reports for a kill/timeout | Finalize reports that package under `PackagesMissing` or `Rejected`, not silently | The killed package's shard was never written; finalize's job is to make that fact loud, not to guess. |
+| Invalid protocol configuration detected before tests run: invalid `GO_SPECS_RUN_ID`/`GO_SPECS_RUN_TOKEN`, `InitializeRun` marker-creation failure, or a per-package ownership check that fails against `run.json` before `m.Run()` (§3 steps 2–3) | non-zero, recommended `2` (distinct from ordinary test-failure `1`) | does not run | This is an infrastructure/configuration error, not a test outcome — see the exception below. |
+| Normal failure publishing a shard (write/rename error, unexpected/duplicate producer, non-clobber rejection) after a valid, ownership-verified `m.Run()` | original test result preserved, unchanged | non-zero, due to a missing or rejected producer (`PackagesMissing`/`Rejected`) | Reporting failure never overwrites or falsifies the test result that already happened. |
 
-`go test`'s exit code is never touched by anything in this design — it is exactly what #142
-already preserves per-process, and multi-package coordination does not add a new way for a test
-binary to change its own exit status based on reporting outcome (F5 already makes that
-impossible for the kill case, and the design deliberately keeps it impossible for every other
-case too, for consistency).
+`go test`'s exit code reflects exactly one thing outside of ordinary test results: whether
+protocol configuration/ownership was valid *before* `m.Run()` ran (row six above). With that one
+explicit carve-out, the framing is:
+
+- **`go test` fails** ⇒ that is the test result, full stop; reporting outcome never changes it
+  (row two, row seven).
+- **Report generation fails after a valid test execution** ⇒ the test result is never falsified;
+  only Finalize's own, independent exit code reflects the reporting failure (rows three, four,
+  seven).
+- **Protocol configuration is invalid before any test ran** ⇒ this is an infrastructure/config
+  error, not a test outcome, and is the one case where reporting is allowed to affect `go test`'s
+  exit code, deliberately and loudly, with a distinct recommended code (`2`) so CI can tell "tests
+  failed" apart from "reporting was misconfigured and nothing ran" (row six).
+
+Outside that one carve-out, multi-package coordination adds no new way for a test binary to
+change its own exit status based on reporting outcome (F5 already makes that impossible for the
+kill case, and the design deliberately keeps it impossible for every other post-`m.Run()` case
+too, for consistency).
 
 Finalize's exit code is a **separate command's** exit code by construction (§3 step 4), so it can
 never retroactively overwrite what `go test` already returned. Recommended CI wiring keeps `go
@@ -449,7 +578,16 @@ Responsibility split:
 
 - **Run ID**: validated against `^[A-Za-z0-9_.-]{1,128}$` before being used as a path segment;
   rejects empty, `..`, `/`, and control characters — blocks path traversal via a crafted
-  `GO_SPECS_RUN_ID`.
+  `GO_SPECS_RUN_ID`. `RunID` alone is a readable label, never proof of ownership — see Run Token.
+- **Run Token**: validated against `^[A-Za-z0-9_.-]{16,128}$` and never used as a path segment; it
+  exists solely to be hashed and compared against the run marker (§5). This is what makes RunID
+  reuse across independent invocations detectable: two invocations presenting the same `RunID` but
+  different `RunToken` values fail closed at marker verification instead of silently sharing a run
+  namespace. Only a hash of the token is persisted to `run.json`, never the raw value.
+- **Shard filename collision**: the sanitized package-path prefix is not injective (`/` → `_`
+  collides, e.g. `foo/bar` and `foo_bar`), so filenames additionally carry the full SHA-256 of the
+  original, unsanitized import path (§5); the finalizer recomputes and checks that hash against
+  each shard's own envelope, closing the collision that a sanitized-only filename would allow.
 - **Package-path-to-filename mapping**: sanitized and then containment-checked
   (`filepath.Clean` + prefix check against the shard directory) both when a shard is written and
   when its self-reported `PackagePath` is read back by the finalizer — a shard's own content is
@@ -468,11 +606,12 @@ Responsibility split:
   specifically so `os.Rename` stays atomic (POSIX rename atomicity does not hold across
   filesystem/mount boundaries).
 - **Concurrent independent runs**: isolated by construction, since each run's shards live under
-  `<base>/<run-id>/shards/` and run IDs are validated to be non-empty/non-colliding path
-  segments supplied by the caller; two runs sharing a base dir never share a shard directory
-  unless the caller reuses a run ID, which is a caller error the validator can additionally guard
-  against (e.g., refuse to write into an existing run directory that already has a *different*
-  finalize-success marker, if stricter collision detection is wanted in #145's implementation).
+  `<base>/<run-id>/shards/` and run IDs are validated to be non-empty path segments supplied by
+  the caller. A caller reusing the same `RunID` across two independent invocations is no longer a
+  gap tolerated by the design: `InitializeRun`'s exclusive creation of `run.json` (§3, §5) rejects
+  the reuse outright before `go test` runs, and every subsequent producer/finalizer re-verifies
+  its `RunToken` against that marker before touching a shard. This collision detection is
+  mandatory, not an opt-in hardening #145 may choose to add.
 
 ## 11. Acceptance-criteria mapping (issue #144)
 
@@ -480,12 +619,12 @@ Responsibility split:
 |---|---|---|
 | 1 | Lifecycle described invocation → final report publication | §3, §4 |
 | 2 | No package process elected by timing or "last writer wins" | Rejected explicitly in §2 (F3); finalization is a separate, externally-triggered step, not an election among package processes |
-| 3 | Aggregation cannot read a shard still being written | §5: temp-write + fsync + close + atomic rename; finalizer globs only final names, never `.tmp-*` |
+| 3 | Aggregation cannot read a shard still being written | §5: temp-write + fsync + close + non-clobbering atomic rename; finalizer globs only final names, never `.tmp-*`, and verifies run ownership via `run.json` before reading any shard |
 | 4 | Existing Go flags and package discovery retain normal behavior | No new required test flags (§1 F1, §2); activation is env-var only, `go test`'s own discovery remains untouched. Expected shard producers are supplied separately and authoritatively, never inferred by changing or reinterpreting `go test` discovery. |
 | 5 | Packages without go-specs integration do not fail due to unknown flags | §1 F1/F2: no forwarded flag is used for module-wide activation; env vars are silently ignored by non-participating packages |
 | 6 | Cache behavior explicit and tested in the later integration slice | §6/§1 F4: `-count=1` required, documented as a stated tradeoff; the finalizer compares shards with the authoritative expected-producer list, so a cache-skipped producer is reported missing and specified for #146 to test |
 | 7 | Test failure and reporting failure exit semantics defined independently | §8, full 5-state table |
-| 8 | Run directories cannot collide across concurrent invocations | §5/§10: run ID is a validated, caller-supplied, non-empty path segment; `<base>/<run-id>/shards/` namespaces every run |
+| 8 | Run directories cannot collide across concurrent invocations | §3/§5/§10: run ID is a validated, caller-supplied, non-empty path segment namespacing `<base>/<run-id>/shards/`, and `InitializeRun`'s exclusively-created `run.json` marker plus per-participant `RunToken` verification makes an actual `RunID` reuse a fail-closed error rather than a probabilistic non-event |
 | 9 | #141 and #143 contain no contradictory execution requirements after this decision | §12: no contradiction found; #141 explicitly pre-authorized exactly this "document the limitation, propose an external coordinator" outcome |
 | 10 | Design identifies exact work owned by REPORT-002B and REPORT-002C | §7 (API sketch split), §9 (coverage responsibility split), §12 |
 
