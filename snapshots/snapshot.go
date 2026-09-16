@@ -39,17 +39,19 @@ func lockFor(path string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// RunFromFile compares value to the stored snapshot for name, or creates/updates it.
+// RunFromFile compares value to the stored snapshot for name, or creates/updates it. It reports any
+// failure to backend itself and also returns whether the comparison passed, so a caller that tracks
+// its own pass/fail state (e.g. specs.Context) can fold the verdict in without re-deciding it.
 // callerFile is the path to the test file (e.g. from runtime.Caller(1) in Context.Snapshot).
 // A backend that exposes Helper() is marked unconditionally, not only on failure: RunFromFile decides
 // the verdict itself and reports it here, so the mark has to precede the comparison.
-func RunFromFile(backend Backend, callerFile string, name string, value any) {
+func RunFromFile(backend Backend, callerFile string, name string, value any) bool {
 	if h, ok := backend.(helperBackend); ok {
 		h.Helper()
 	}
 	if name == "" {
 		backend.Fatalf("snapshot name cannot be empty")
-		return
+		return false
 	}
 	dir := filepath.Dir(callerFile)
 	base := filepath.Base(callerFile)
@@ -64,7 +66,7 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) {
 	newBytes, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		backend.Fatalf("snapshot: marshal: %v", err)
-		return
+		return false
 	}
 
 	mu := lockFor(snapshotPath)
@@ -75,7 +77,7 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) {
 	data, err := Load(snapshotPath)
 	if err != nil && !os.IsNotExist(err) {
 		backend.Fatalf("snapshot: load %s: %v", snapshotPath, err)
-		return
+		return false
 	}
 	if data == nil {
 		data = make(map[string]json.RawMessage)
@@ -85,34 +87,35 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) {
 		data[name] = newBytes
 		if err := os.MkdirAll(snapshotDir, 0755); err != nil {
 			backend.Fatalf("snapshot: mkdir: %v", err)
-			return
+			return false
 		}
 		if err := Save(snapshotPath, data); err != nil {
 			backend.Fatalf("snapshot: save: %v", err)
-			return
+			return false
 		}
-		return
+		return true
 	}
 
 	existing, ok := data[name]
 	if !ok {
 		backend.Fatalf("snapshot %q missing; run with %s=1 to create", name, UpdateSnapshotsEnv)
-		return
+		return false
 	}
 
 	var existingVal, newVal any
 	if err := json.Unmarshal(existing, &existingVal); err != nil {
 		backend.Fatalf("snapshot: unmarshal existing: %v", err)
-		return
+		return false
 	}
 	if err := json.Unmarshal(newBytes, &newVal); err != nil {
 		backend.Fatalf("snapshot: unmarshal new: %v", err)
-		return
+		return false
 	}
 	if !reflect.DeepEqual(existingVal, newVal) {
 		backend.Fatalf("snapshot %q mismatch:\nexpected (snapshot): %s\ngot: %s", name, string(existing), string(newBytes))
-		return
+		return false
 	}
+	return true
 }
 
 // Load reads a snapshot file.

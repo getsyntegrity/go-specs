@@ -2,7 +2,8 @@ package specs
 
 import "github.com/pablogore/go-specs/snapshots"
 
-// runSnapshot compares value to the stored snapshot for name, or creates/updates it.
+// runSnapshot compares value to the stored snapshot for name, or creates/updates it, and reports
+// whether the comparison passed so the caller can fold the verdict into its own failure state.
 // callerFile is the path to the test file (from runtime.Caller(1) in Context.Snapshot).
 //
 // When the backend is a real testing.TB it is handed to the snapshots package directly rather than
@@ -10,11 +11,11 @@ import "github.com/pablogore/go-specs/snapshots"
 // testing.T.Helper. Going through runnableBackend would mark the wrapper frame instead and land the
 // failure on testing_backend.go. That mark is unconditional: the pass/fail verdict is only known
 // deeper in, so it cannot be deferred to a failure branch the way assertion marks are.
-func runSnapshot(backend testBackend, callerFile string, name string, value any) {
+func runSnapshot(backend testBackend, callerFile string, name string, value any) bool {
 	var sb snapshots.Backend = backend
 	if tb := helperTB(backend); tb != nil {
 		tb.Helper()
 		sb = tb
 	}
-	snapshots.RunFromFile(sb, callerFile, name, value)
+	return snapshots.RunFromFile(sb, callerFile, name, value)
 }

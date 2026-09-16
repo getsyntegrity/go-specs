@@ -293,6 +293,11 @@ func (x expectT[T]) To(m Matcher) {
 // pass/fail verdict is decided inside the snapshots package, which reports the failure itself, so the
 // mark cannot be deferred to a failure branch here. Snapshot comparison is JSON marshalling plus file
 // I/O, so the extra Helper() call is not on a measurable hot path.
+//
+// runSnapshot's returned bool is what makes a mismatch reach c.failed: snapshots.RunFromFile reports
+// the failure straight to the backend (so go test still exits red) without ever touching ctx.failed,
+// so without this call SpecResultEvent.Failed and SuiteEndEvent.FailedSpecs would stay wrong for
+// every reporter consumer even though the exit code was correct (issue #115).
 func (c *Context) Snapshot(name string, value any) {
 	if c == nil || c.backend == nil {
 		return
@@ -306,7 +311,9 @@ func (c *Context) Snapshot(name string, value any) {
 		c.backend.Fatalf("snapshot: could not get caller file")
 		return
 	}
-	runSnapshot(c.backend, callerFile, name, value)
+	if !runSnapshot(c.backend, callerFile, name, value) {
+		c.recordFailure()
+	}
 }
 
 // Expectation is the result of Context.Expect(actual).
