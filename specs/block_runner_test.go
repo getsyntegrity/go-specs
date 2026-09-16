@@ -18,11 +18,11 @@ func TestCompileBlocks(t *testing.T) {
 	if len(blocks) != 2 {
 		t.Fatalf("blocks len: got %d, want 2 (10/8 ceil)", len(blocks))
 	}
-	if blocks[0].Start != 0 || blocks[0].Count != 8 {
-		t.Errorf("block 0: start=%d count=%d, want start=0 count=8", blocks[0].Start, blocks[0].Count)
+	if blocks[0].start != 0 || blocks[0].count != 8 {
+		t.Errorf("block 0: start=%d count=%d, want start=0 count=8", blocks[0].start, blocks[0].count)
 	}
-	if blocks[1].Start != 8 || blocks[1].Count != 2 {
-		t.Errorf("block 1: start=%d count=%d, want start=8 count=2", blocks[1].Start, blocks[1].Count)
+	if blocks[1].start != 8 || blocks[1].count != 2 {
+		t.Errorf("block 1: start=%d count=%d, want start=8 count=2", blocks[1].start, blocks[1].count)
 	}
 }
 
@@ -52,8 +52,8 @@ func TestCompileBlocks_DefaultSize(t *testing.T) {
 		specs[i] = RunSpec{Fn: func(*Context) {}}
 	}
 	_, blocks := CompileBlocks(specs, 0)
-	if len(blocks) != 1 || blocks[0].Count != 3 {
-		t.Errorf("blockSize 0 should use default 8: got 1 block with count %d", blocks[0].Count)
+	if len(blocks) != 1 || blocks[0].count != 3 {
+		t.Errorf("blockSize 0 should use default 8: got 1 block with count %d", blocks[0].count)
 	}
 }
 

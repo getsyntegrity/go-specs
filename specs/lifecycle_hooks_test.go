@@ -70,10 +70,10 @@ func TestBeforeAfterHooksNestedOrder(t *testing.T) {
 
 func TestAfterEachRunsOnPanic(t *testing.T) {
 	ranAfter := false
-	ctx := NewContext(t)
+	ctx := &Context{backend: asTestBackend(t), T: t}
 	func() {
 		defer func() { _ = recover() }()
-		defer RunAfterHooks(ctx, []Fixture{func(*Context) { ranAfter = true }})
+		defer runAfterHooks(ctx, []Fixture{func(*Context) { ranAfter = true }})
 		panic("boom")
 	}()
 	if !ranAfter {

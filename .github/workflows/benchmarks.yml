@@ -8,19 +8,22 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
     permissions:
       contents: write  # allow committing charts back to the repo
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.26.0"
+          go-version: "1.24"
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Create results directory
         run: mkdir -p benchmarks/results
@@ -31,7 +34,7 @@ jobs:
           cd ..
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

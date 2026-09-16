@@ -1,7 +1,3 @@
-// Package property_coverage_spy_test demonstrates: (1) BDD examples, (2) property tests
-// (Paths + ExploreSmart / ExploreCoverage / Cartesian), (3) spy verification with the mock.
-// WithdrawBalance is correct; the comments explain how shrinking would surface a minimal
-// counterexample if the implementation were buggy.
 package property_coverage_spy_test
 
 import (
@@ -76,22 +72,11 @@ func TestPaymentService(t *testing.T) {
 			ctx.Expect(result >= 0).To(specs.BeTrue())
 		})
 
-		// Same property over a small Cartesian space (0..5). The implementation is correct,
-		// so the property holds for all combinations.
-		//
-		// If WithdrawBalance were implemented incorrectly:
-		//
-		//     return balance - amount
-		//
-		// this property test would fail and the framework would shrink
-		// the failing case to a minimal counterexample such as:
-		//
-		//     balance = 0
-		//     amount  = 1
+		// Same property over a small Cartesian space so the bug is found and shrunk (e.g. balance=0, amount=1).
 		s.Paths(func(p *specs.PathBuilder) {
 			p.IntRange("balance", 0, 5)
 			p.IntRange("amount", 0, 5)
-		}).It("balance never negative (small space)", func(ctx *specs.Context) {
+		}).It("balance never negative (small space, finds bug)", func(ctx *specs.Context) {
 			balance := ctx.Path().Int("balance")
 			amount := ctx.Path().Int("amount")
 			result := property_coverage_spy.WithdrawBalance(balance, amount)

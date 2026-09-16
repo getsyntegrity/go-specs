@@ -1,0 +1,42 @@
+# Shipwright workflow manifest for go-specs.
+#
+# go-specs is a library (no root `main` package), so there is nothing to
+# build/publish as a binary or container -- unlike Shipwright's own
+# examples/workflow/*.yaml, this manifest has no `build` step. Each test
+# step below omits `input`/`needs`, so it defaults straight to spec.source
+# (internal/workflow/engine/execute.go's resolveInput) and all three run
+# concurrently instead of chaining through a build artifact.
+apiVersion: shipwright.dev/v1
+kind: Workflow
+metadata:
+  name: go-specs-ci
+  description: >-
+    Run go-specs' unit tests, lint, and vulnerability scan in parallel.
+spec:
+  source:
+    path: .
+
+  steps:
+    - id: unit
+      capability: test
+      uses:
+        provider: go-test
+        version: "1"
+
+    - id: lint
+      capability: test
+      uses:
+        provider: golangci-lint
+        version: "1"
+
+    - id: vuln
+      capability: test
+      uses:
+        provider: govulncheck
+        version: "1"
+
+  execution:
+    concurrency:
+      maxParallel: 3
+    failFast: false
+    timeout: 10m

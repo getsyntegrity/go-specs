@@ -19,7 +19,7 @@ func TestSnapshotMatchPasses(t *testing.T) {
 
 func TestSnapshotMissingFails(t *testing.T) {
 	fake := &fakeSnapshotBackend{}
-	RunSnapshot(fake, "test.go", "nonexistent-key", 42)
+	runSnapshot(fake, "test.go", "nonexistent-key", 42)
 	if fake.fatalfMsg == "" {
 		t.Fatal("expected Fatalf when snapshot key is missing")
 	}
@@ -57,3 +57,23 @@ func (f *fakeSnapshotBackend) Name() string { return "" }
 func (f *fakeSnapshotBackend) Cleanup(func()) {}
 
 func (f *fakeSnapshotBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
+
+// TestSnapshotFailureRecordsContextFailure guards issue #115: a failing ctx.Snapshot must flip
+// ctx.failed like every other assertion, since that flag is what SpecResultEvent.Failed and
+// SuiteEndEvent.FailedSpecs are built from. Before the fix, the mismatch verdict was decided inside
+// snapshots.RunFromFile, which reported straight to the backend (so `go test` still exited red)
+// without ever touching ctx.failed — so a reporter-driven consumer (JUnit writer, CI summary, flake
+// tracker) was told the spec passed when it hadn't.
+func TestSnapshotFailureRecordsContextFailure(t *testing.T) {
+	fake := &fakeSnapshotBackend{}
+	ctx := &Context{backend: fake}
+
+	ctx.Snapshot("nonexistent-key-pinning-the-unrecorded-failure", 42)
+
+	if fake.fatalfMsg == "" {
+		t.Fatal("expected the snapshot mismatch to be reported to the backend")
+	}
+	if !ctx.failed {
+		t.Fatal("expected ctx.failed to be set on a snapshot mismatch, matching every other assertion")
+	}
+}

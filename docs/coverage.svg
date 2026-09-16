@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20">
-  <rect width="120" height="20" rx="3" fill="#555"/>
-  <rect x="70" width="50" height="20" rx="0 3 3 0" fill="#fe7d37"/>
-  <rect x="68" width="2" height="20" fill="#fe7d37"/>
-  <text x="35" y="14" fill="#fff" font-size="11" font-family="Deja Vu Sans,Verdana,sans-serif" text-anchor="middle">coverage</text>
-  <text x="95" y="14" fill="#fff" font-size="11" font-family="Deja Vu Sans,Verdana,sans-serif" text-anchor="middle">64%</text>
-</svg>

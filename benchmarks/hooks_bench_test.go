@@ -19,7 +19,7 @@ const hooksSpecCount = 100
 
 func BenchmarkHooks_GoSpecs(b *testing.B) {
 	prog := BuildSpecsProgramWithHooks(hooksSpecCount, hooksDepth)
-	r := specs.NewRunner(prog, nil)
+	r := specs.NewRunner(prog)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

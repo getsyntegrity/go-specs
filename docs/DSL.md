@@ -64,6 +64,10 @@ specs.NewRunner(prog).Run(t)
 
 Consecutive `ItParallel` specs are grouped into one parallel step; they run concurrently, then execution continues with the next sequential step.
 
+Each `ItParallel` spec runs on its own `*specs.Context`. `ctx.T` is `nil` inside these bodies — sharing the real `*testing.T` across goroutines is not safe, so use `ctx.Expect(...)` for assertions instead of `ctx.T` directly.
+
+A failing assertion still stops the rest of that spec body, same as in a sequential `It` — code after a failed `ctx.Expect(...)` inside `ItParallel` does not run. Every spec in the parallel group always runs to completion before the runner moves on; `Runner.FailFast` only takes effect at the next group, it cannot cancel a sibling `ItParallel` spec mid-group.
+
 ## Expect and EqualTo
 
 Assertions use the context. Two main styles:
@@ -84,6 +88,29 @@ ctx.Expect(value).To(specs.Equal(expected))
 ```
 
 `ExpectT(ctx, x).ToEqual(y)` is the preferred form for typed equality; it avoids matcher allocations.
+
+### Equality semantics differ between the three `ToEqual`-shaped APIs — by design
+
+`EqualTo`, `ExpectT(ctx, x).ToEqual(y)`, and `ctx.Expect(x).ToEqual(y)` do not always agree on equal-looking values, because they trade off differently between speed and generality:
+
+| API | Constraint | Comparison |
+|---|---|---|
+| `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
+| `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
+| `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `reflect.DeepEqual` for everything else. |
+
+The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't even be called with a slice or map — that's a compile error, not a runtime surprise. But for structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
+
+```go
+type withPtr struct{ N *int }
+a, b := 5, 5
+x, y := withPtr{&a}, withPtr{&b}
+
+x == y                    // false — different pointers
+reflect.DeepEqual(x, y)   // true  — same pointed-to value
+```
+
+So `EqualTo(ctx, x, y)` fails while `ctx.Expect(x).ToEqual(y)` passes, for the exact same `x`/`y`. This is the tradeoff: pick `EqualTo`/`ExpectT` for the zero-allocation, no-reflection fast path when your type's `==` already means what you want (primitives, or plain value structs with no pointer fields); pick `ctx.Expect(...).ToEqual(...)` when you need value-based deep equality for structs, slices, or maps.
 
 ## Example
 

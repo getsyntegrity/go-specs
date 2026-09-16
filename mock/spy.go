@@ -92,19 +92,12 @@ func (s *Spy) CalledWith(matchers ...ArgMatcher) bool {
 }
 
 // CalledTimes asserts the spy was called exactly n times; calls t.Fatalf otherwise.
-// The count is read once under the lock so the comparison and the failure message
-// always reflect the same value (no TOCTOU race when other goroutines are calling
-// the spy concurrently).
 func (s *Spy) CalledTimes(t *testing.T, n int) {
 	t.Helper()
 	if s == nil {
 		t.Fatal("spy is nil")
-		return
 	}
-	s.mu.Lock()
-	actual := len(s.calls)
-	s.mu.Unlock()
-	if actual != n {
-		t.Fatalf("expected %d calls, got %d", n, actual)
+	if s.CallCount() != n {
+		t.Fatalf("expected %d calls, got %d", n, s.CallCount())
 	}
 }

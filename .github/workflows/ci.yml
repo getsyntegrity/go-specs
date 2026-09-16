@@ -1,0 +1,135 @@
+# CI: build, vet, and test (including -race) on every PR and push to develop/main.
+# Runs once, on Go 1.25 (the version go.mod requires) and ubuntu-latest only --
+# no version/OS matrix. A matrix earning its cost needs a reason for each leg
+# (an OS-specific bug class, a toolchain deprecation window); this repo never
+# had one, so it was pure CI runtime with no coverage payoff. If a real reason
+# shows up later (e.g. a macOS-only code path), add that leg back deliberately.
+#
+# The `shipwright` job runs unit tests, lint, and govulncheck as one
+# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
+# executing in parallel instead of sequentially. .shipwright/workflow.yaml is
+# the canonical definition of what "go-specs passes CI" means; this file only
+# adds what Shipwright cannot express today. It complements rather than
+# replaces the `test` job below: Dagger only runs Linux containers and pins
+# its own Go toolchain (not 1.25), so it can't stand in for the native
+# build/vet/test step that actually verifies the go.mod floor compiles and
+# passes. Both run in parallel, so the small overlap on `test` costs nothing.
+#
+# Build and vet stay native because Shipwright has no provider for either
+# on a library module: its only `build` provider compiles a single `main`
+# binary from `.` (go-specs has none), and no `go-vet` provider is
+# registered anywhere in Shipwright -- golangci-lint's default linter set
+# already runs vet-equivalent checks, but that's implicit coverage, not a
+# vet gate a manifest can request directly (pablogore/shipwright#273,
+# pablogore/shipwright#274).
+#
+# The job downloads+verifies the pinned shipwright binary itself instead of
+# using pablogore/shipwright's own composite action: that action's v0.12.0
+# action.yml has an unrelated bug (a literal `${{ secrets.DAGGER_CLOUD_TOKEN
+# }}` inside an input's `description:` string, which GitHub's own template
+# validator rejects with "Unrecognized named-value: 'secrets'" while just
+# parsing the manifest -- confirmed on this repo's own PR checks, and
+# re-confirmed against the v0.12.0 tag and main tip on 2026-09-10,
+# pablogore/shipwright#275). The steps below replicate exactly what that
+# action does (download -> verify checksums.txt -> run), minus the broken
+# manifest.
+#
+# The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
+# every push/PR to develop/main, the same branches release.yml tags and
+# publishes from on every push to main. `goreleaser check` only validates
+# the config's schema; it does not resolve `main:` build paths, so it would
+# not have caught .goreleaser.yaml pointing `builds` at a `tools/specs-cli`
+# entrypoint that never existed on develop -- the bug fixed in #130. Only a
+# real `--snapshot` release attempt does, and it does so on every PR instead
+# of on the first push to main, where release.yml would otherwise discover
+# it while creating a real tag.
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test with race detector
+        run: go test -race ./...
+
+  shipwright:
+    runs-on: ubuntu-latest
+    env:
+      SHIPWRIGHT_VERSION: v0.12.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Download Shipwright
+        run: |
+          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/shipwright-linux-amd64" -o shipwright
+          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/checksums.txt" -o checksums.txt
+          chmod +x shipwright
+
+      - name: Verify checksum
+        run: |
+          EXPECTED="$(grep -E '[[:space:]]\*?shipwright-linux-amd64$' checksums.txt | awk '{print $1}')"
+          [ -n "$EXPECTED" ]
+          ACTUAL="$(sha256sum shipwright | awk '{print $1}')"
+          [ "$EXPECTED" = "$ACTUAL" ]
+
+      - name: Run unit/lint/vuln workflow
+        run: ./shipwright --workflow .shipwright/workflow.yaml --branch "${{ github.ref_name }}"
+
+  goreleaser:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # goreleaser needs tag history to compute the changelog
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: Check config
+        run: goreleaser check
+
+      - name: Dry-run release
+        run: goreleaser release --snapshot --clean

@@ -31,7 +31,7 @@ func BenchmarkRunner_GoSpecs_BuildSuite(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		specs.RunCompiledSuite(suite, b)
+		suite.Run(b)
 	}
 }
 
@@ -146,6 +146,6 @@ func BenchmarkHooks_GoSpecs_Nested(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		specs.RunCompiledSuite(suite, b)
+		suite.Run(b)
 	}
 }
