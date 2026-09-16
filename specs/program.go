@@ -110,8 +110,10 @@ func specName(names []string, i int) string {
 // distinct source exists today — a recovered panic (Message: the panic value, Output: its stack
 // trace) or an ItParallel/parallelBackend failure (Message: the recorded string, Output: left
 // empty — parallelBackend has no separable output source). An ordinary Fatalf-based sequential
-// assertion failure never reaches specFinished at all (runtime.Goexit unwinds the whole Run call
-// before returning here), so Message/Output stay empty for that case too; see runStepRecovered.
+// assertion failure does still reach specFinished — Failed is true, since recordFailure() runs
+// before the Fatalf call that triggers runtime.Goexit, and Goexit only unwinds the spec's own
+// subtest goroutine — but Message/Output stay empty for it: Goexit unwinds past the point where
+// this struct would otherwise be filled in; see runStepRecovered.
 //
 // Filtered is true when external test selection (e.g. `go test -run`) discarded the spec's subtest
 // before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc

@@ -289,15 +289,16 @@ func (x expectT[T]) To(m Matcher) {
 // Snapshots are stored in __snapshots__ next to the test file. Set GO_SPECS_UPDATE_SNAPSHOTS=1 to create or update snapshots.
 //
 // Unlike the Expect assertions, the snapshot path marks its helper chain unconditionally rather than
-// only on failure. Snapshot already performs caller discovery to locate __snapshots__, and the
-// pass/fail verdict is decided inside the snapshots package, which reports the failure itself, so the
-// mark cannot be deferred to a failure branch here. Snapshot comparison is JSON marshalling plus file
-// I/O, so the extra Helper() call is not on a measurable hot path.
+// only on failure. Snapshot already performs caller discovery to locate __snapshots__ before the
+// pass/fail verdict is even known, so the mark cannot be deferred to a failure branch here. Snapshot
+// comparison is JSON marshalling plus file I/O, so the extra Helper() call is not on a measurable hot
+// path.
 //
-// runSnapshot's returned bool is what makes a mismatch reach c.failed: snapshots.RunFromFile reports
-// the failure straight to the backend (so go test still exits red) without ever touching ctx.failed,
-// so without this call SpecResultEvent.Failed and SuiteEndEvent.FailedSpecs would stay wrong for
-// every reporter consumer even though the exit code was correct (issue #115).
+// runSnapshot's returned Result is what makes a mismatch reach c.failed. Unlike every other
+// assertion in this file, this has to record the failure *before* triggering Fatalf, not after:
+// runSnapshot only evaluates the comparison, it never reports it, precisely so recordFailure() runs
+// while the call can still return. On a real testing.T, Fatalf ends in runtime.Goexit, which unwinds
+// this goroutine and never comes back — recordFailure() after that point is dead code (issue #115).
 func (c *Context) Snapshot(name string, value any) {
 	if c == nil || c.backend == nil {
 		return
@@ -311,8 +312,9 @@ func (c *Context) Snapshot(name string, value any) {
 		c.backend.Fatalf("snapshot: could not get caller file")
 		return
 	}
-	if !runSnapshot(c.backend, callerFile, name, value) {
+	if result := runSnapshot(c.backend, callerFile, name, value); !result.Passed {
 		c.recordFailure()
+		c.backend.Fatalf("%s", result.Message)
 	}
 }
 
