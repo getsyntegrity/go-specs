@@ -145,3 +145,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   other assertion records the failure correctly. Pinned by
   `TestSnapshotFailureLeavesContextUnfailed`.
   ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
+
+- Narrowing `go test -run` to a single `ExploreCoverage`/`ExploreSmart` generated candidate's
+  subtest — the natural way to isolate a failure and re-run it — does not isolate it from the
+  strategy's corpus/coverage state. `-run` only gates the `t.Run` call around a candidate's
+  execution; the surrounding Propose/Execute/AdmitFeedback loop still iterates every candidate up to
+  it, and each one `-run` discards never populates its `Coverage`, so the corpus these two strategies
+  draw from can end up smaller than it was on the run that produced the failure. The candidate
+  actually generated for the target attempt index can then differ from the one that failed, even
+  with the same seed. `Cartesian`, `Sample`, and plain `Explore` are not exposed — see
+  `docs/EXECUTION_MODEL.md`'s "Adaptive strategies" section for the full mechanism. Documentation
+  only; no code change. Tracked in
+  [#124](https://github.com/getsyntegrity/go-specs/issues/124).

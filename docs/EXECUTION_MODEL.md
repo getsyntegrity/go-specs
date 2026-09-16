@@ -218,6 +218,45 @@ reporter as started and finished without failing — it appears as passed althou
 `t.Run`'s boolean return, which is `false` exactly when the filter discarded the subtest, is not
 inspected. This predates breadcrumbs too, and is tracked separately.
 
+### Adaptive strategies: a `-run`-narrowed re-run can silently generate a different candidate
+
+`ExploreCoverage` and `ExploreSmart` drive a candidate through a Propose → Accept → Execute →
+AdmitFeedback loop (`proposalController.Run`) that is independent of `testing`: Propose asks the
+strategy for the next `PathValues`, Execute runs that candidate in its own generated subtest and
+collects its real per-candidate `Coverage`, and AdmitFeedback hands that `Coverage` to the strategy's
+`Feedback` method, which grows its corpus only when the candidate actually found unseen coverage
+(`Coverage.HasNewCoverage`). `-run` only ever reaches the Execute step, because that is the only step
+wrapped in a `t.Run` call — Propose and AdmitFeedback are plain Go calls the loop makes on every
+iteration, matched pattern or not.
+
+The failure mode this creates is not a fabricated pass polluting the corpus — a candidate `-run`
+discards before `t.Run` invokes it never populates its `Coverage` (see "Reporting of filtered specs"
+above), so `Feedback` sees an all-zero `Coverage`, `HasNewCoverage` reports nothing new, and no growth
+happens. The corpus simply fails to grow the way it did in the original run. That is still a problem:
+narrowing `-run` to the one generated subtest that failed — the natural way to isolate and re-run
+it — silently drops every real coverage contribution the *other* candidates made on the original run,
+before reaching the one you narrowed to. `CoverageExplorer`/`SmartExplorer.NextInput` draws from that
+corpus (mutate a random entry, or fall back to random when it is empty), so by the time Propose is
+asked for the target candidate, it can be working from a smaller or different corpus than the run
+that produced the failure — and can propose a **different** `PathValues` for that same attempt index,
+even with the same seed. The `-run` pattern that looks like it isolates one candidate's execution does
+not isolate it from the strategy's state, and the candidate that actually runs may not be the one that
+failed.
+
+`Cartesian` and `Sample` have no feedback-dependent state, so they are not exposed. Plain `Explore`
+grows its corpus from `captureSignature()`, a call-site signature captured from the fixed call chain
+inside `admitFeedback` itself rather than from anything the candidate's body did — it evaluates the
+same way whether or not `-run` let that candidate's body run, so its corpus content does not diverge
+under a narrowed `-run`. Only `ExploreCoverage` and `ExploreSmart` key growth on the candidate's real,
+per-execution `Coverage`, which is exactly what `-run` prevents from being collected.
+
+There is no fix here — reproducing one candidate under a narrowed `-run` without perturbing
+`ExploreCoverage`/`ExploreSmart`'s corpus state would need the strategy to either replay the discarded
+candidates' real feedback or know it is running under a filter, and `-run` communicates neither past
+the subtest boundary. Tracked in
+[#124](https://github.com/getsyntegrity/go-specs/issues/124); a design decision on whether an
+isolated-re-run mode for adaptive strategies is worth adding is still open.
+
 ---
 
 ## Memory layout concept

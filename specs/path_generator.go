@@ -643,6 +643,14 @@ func (s *pathSequence) advance() bool {
 // passed still doesn't affect growth for any strategy: a failing candidate's coverage is feedback
 // too (see proposalFeedback's doc comment), and ForEach's compatibility path never considered
 // pass/fail either, so this preserves that semantics rather than introducing a new one.
+//
+// growth for strategyCoverage/strategySmart depends on cov having genuinely been populated by
+// runIsolatedCaseDirect, which a `-run` pattern that discards this candidate's subtest prevents
+// (the t.Run closure never runs, so cov stays all-zero and HasNewCoverage reports nothing new).
+// Narrowing `-run` to one generated candidate's subtest therefore doesn't just skip the candidates
+// around it — it can leave the corpus these two strategies draw from smaller than it was on the run
+// that produced the failure, so the target attempt index can propose a different PathValues on
+// re-run. See docs/EXECUTION_MODEL.md's "Adaptive strategies" section and #124.
 func (s *pathSequence) admitFeedback(candidate PathValues, passed bool, cov *Coverage) {
 	if s == nil || s.g == nil || s.g.mode != ExplorationGuided {
 		return
