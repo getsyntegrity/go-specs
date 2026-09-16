@@ -20,5 +20,8 @@ specs-cli
 *.tgz
 *.tar.gz
 
+# GoReleaser
+dist/
+
 # Project
 benchmarks/results/*.txt
