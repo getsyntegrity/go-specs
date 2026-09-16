@@ -60,6 +60,15 @@ jobs:
             PATCH=$((PATCH + 1))
             NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
           fi
+
+          # Strict SemVer core only (vMAJOR.MINOR.PATCH) -- fail fast rather than
+          # let a malformed manual input or a malformed existing tag become a
+          # pushed release tag. Applies to both the manual and auto-bumped path.
+          if ! [[ "$NEW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$NEW_TAG' is not a valid release version. Expected strict SemVer vMAJOR.MINOR.PATCH (e.g. v1.2.3); pre-release/build metadata suffixes are not supported yet." >&2
+            exit 1
+          fi
+
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
