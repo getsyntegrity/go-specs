@@ -87,14 +87,7 @@ func RenderJSON(w io.Writer, r NormalizedReport) error {
 }
 
 func toJSONTotals(t Totals) jsonTotals {
-	return jsonTotals{
-		Total:    t.Total,
-		Passed:   t.Passed,
-		Failed:   t.Failed,
-		Error:    t.Error,
-		Skipped:  t.Skipped,
-		Filtered: t.Filtered,
-	}
+	return jsonTotals(t)
 }
 
 func toJSONSuite(s Suite) jsonSuite {

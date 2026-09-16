@@ -66,6 +66,46 @@ func TestRenderXMLIsValidJUnit(t *testing.T) {
 	}
 }
 
+// TestRenderXMLNestedScopesDisambiguateIdentity proves that two cases sharing the same leaf name
+// under different When branches of the same suite get different (classname, name) pairs: the
+// classname is derived from each case's own enclosing scopes (Case.Path), not just the suite name,
+// so a JUnit consumer can tell which branch failed instead of merging both cases' history.
+func TestRenderXMLNestedScopesDisambiguateIdentity(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Suites: []Suite{{
+			Name: "Checkout",
+			Cases: []Case{
+				{Name: "is valid", Path: []string{"Checkout", "when the cart is empty", "is valid"}, Status: StatusPassed},
+				{Name: "is valid", Path: []string{"Checkout", "when the cart has items", "is valid"}, Status: StatusFailed, Message: "boom"},
+			},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, r); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	cases := doc.Suites[0].TestCases
+	if len(cases) != 2 {
+		t.Fatalf("got %d testcases, want 2", len(cases))
+	}
+	if cases[0].Name != cases[1].Name {
+		t.Fatalf("expected both cases to share the same leaf name, got %q and %q", cases[0].Name, cases[1].Name)
+	}
+	if cases[0].ClassName == cases[1].ClassName {
+		t.Fatalf("both cases got the same classname %q, so a JUnit consumer cannot distinguish them", cases[0].ClassName)
+	}
+	wantA := "Checkout/when the cart is empty"
+	wantB := "Checkout/when the cart has items"
+	if cases[0].ClassName != wantA || cases[1].ClassName != wantB {
+		t.Fatalf("classnames = %q, %q; want %q, %q", cases[0].ClassName, cases[1].ClassName, wantA, wantB)
+	}
+}
+
 func TestRenderXMLEscapesUnsafeContent(t *testing.T) {
 	r := NormalizedReport{
 		SchemaVersion: SchemaVersion,

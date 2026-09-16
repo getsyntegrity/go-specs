@@ -91,14 +91,26 @@ func (c *Collector) SetCoverage(cov Coverage) {
 // Report returns the NormalizedReport built so far, with Duration set to the sum of every
 // finished suite's Duration. Call it only after every suite the caller cares about has finished;
 // a still-open suite contributes 0 to Duration and keeps whatever cases it had received so far.
+//
+// The returned report is a deep copy: every slice (Suites, each Suite's Cases, each Case's Path,
+// Coverage.Packages) is freshly allocated, so a caller mutating what it got back — appending to a
+// Case's Path, reslicing a Suite's Cases, sorting Coverage.Packages — can never reach back into
+// the Collector's own state, and a second Report() call afterward is unaffected.
 func (c *Collector) Report() NormalizedReport {
 	r := c.report
-	r.Suites = append([]Suite(nil), c.report.Suites...)
+	r.Suites = make([]Suite, len(c.report.Suites))
 	var total time.Duration
-	for _, s := range r.Suites {
+	for i, s := range c.report.Suites {
+		r.Suites[i] = s
+		r.Suites[i].Cases = make([]Case, len(s.Cases))
+		for j, cs := range s.Cases {
+			r.Suites[i].Cases[j] = cs
+			r.Suites[i].Cases[j].Path = append([]string(nil), cs.Path...)
+		}
 		total += s.Duration
 	}
 	r.Duration = total
+	r.Coverage.Packages = append([]PackageCoverage(nil), c.report.Coverage.Packages...)
 	return r
 }
 

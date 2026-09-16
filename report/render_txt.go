@@ -35,11 +35,11 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	if len(r.Coverage.Packages) > 0 {
 		bw.printf("\nCoverage\n")
 		tw := tabwriter.NewWriter(bw, 0, 2, 2, ' ', 0)
-		fmt.Fprintf(tw, "Package\tCovered\tTotal\tPercent\n")
+		tabPrintf(bw, tw, "Package\tCovered\tTotal\tPercent\n")
 		for _, p := range r.Coverage.Packages {
-			fmt.Fprintf(tw, "%s\t%d\t%d\t%s%%\n", p.ImportPath, p.Covered, p.Total, formatPercentage(p.Percentage()))
+			tabPrintf(bw, tw, "%s\t%d\t%d\t%s%%\n", p.ImportPath, p.Covered, p.Total, formatPercentage(p.Percentage()))
 		}
-		fmt.Fprintf(tw, "Aggregate\t%d\t%d\t%s%%\n", r.Coverage.Total.Covered, r.Coverage.Total.Total, formatPercentage(r.Coverage.Total.Percentage()))
+		tabPrintf(bw, tw, "Aggregate\t%d\t%d\t%s%%\n", r.Coverage.Total.Covered, r.Coverage.Total.Total, formatPercentage(r.Coverage.Total.Percentage()))
 		if err := tw.Flush(); err != nil && bw.err == nil {
 			bw.err = err
 		}
@@ -90,5 +90,17 @@ func (e *errWriter) printf(format string, args ...any) {
 	_, err := fmt.Fprintf(e.w, format, args...)
 	if err != nil {
 		e.err = err
+	}
+}
+
+// tabPrintf writes a formatted row to tw (a *tabwriter.Writer over bw) and records the first
+// write error on bw, matching errWriter.printf's convention — tabwriter's own Write can fail
+// once it flushes buffered rows to the underlying writer, so this error can't be ignored either.
+func tabPrintf(bw *errWriter, tw io.Writer, format string, args ...any) {
+	if bw.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(tw, format, args...); err != nil {
+		bw.err = err
 	}
 }

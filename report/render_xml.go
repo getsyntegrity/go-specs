@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"io"
 	"strconv"
+	"strings"
 )
 
 // JUnit XML shape. Every text/attribute value is written through encoding/xml, which escapes
@@ -99,8 +100,8 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 	return err
 }
 
-func renderJUnitCase(className string, c Case) junitTestCase {
-	tc := junitTestCase{Name: c.Name, ClassName: className, Time: formatSeconds(c.Duration)}
+func renderJUnitCase(suiteName string, c Case) junitTestCase {
+	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path), Time: formatSeconds(c.Duration)}
 	switch c.Status {
 	case StatusFailed:
 		tc.Failure = &junitFailure{Message: c.Message, Body: c.Output}
@@ -112,6 +113,18 @@ func renderJUnitCase(className string, c Case) junitTestCase {
 		tc.Skipped = &junitSkipped{Message: "filtered"}
 	}
 	return tc
+}
+
+// junitClassName derives a JUnit classname from a case's enclosing scopes: c.Path[:len(c.Path)-1]
+// (outermost first, per SpecStartEvent.Path's doc in events.go), joined with "/". Two specs with
+// the same leaf name declared under different When/Describe branches therefore get different
+// classnames, so their (classname, name) pair stays unique. Falls back to suiteName when Path
+// carries no scopes at all (e.g. a Case built without Path, outside the normal collector path).
+func junitClassName(suiteName string, path []string) string {
+	if len(path) <= 1 {
+		return suiteName
+	}
+	return strings.Join(path[:len(path)-1], "/")
 }
 
 // coverageProperties renders Coverage as deterministic <property> entries (sorted by

@@ -67,3 +67,39 @@ func TestCollectorReportIsASnapshot(t *testing.T) {
 		t.Fatalf("Report() snapshot mutated by later events: %+v", first.Suites)
 	}
 }
+
+// TestCollectorReportDeepCopy proves Report() hands back a fully independent copy, not just a
+// fresh Suites slice sharing nested state with the Collector. It mutates every nested slice a
+// caller could reach — a Case's Path, a Suite's Cases, Coverage.Packages — through the returned
+// report, then takes a second snapshot and asserts none of those mutations are visible in it or
+// in the Collector's own state.
+func TestCollectorReportDeepCopy(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "A"})
+	finishCase(c, "a1", []string{"A", "a1"}, 0, false, false, false, "", "")
+	c.SuiteFinished(SuiteEndEvent{Name: "A"})
+	c.SetCoverage(Coverage{Packages: []PackageCoverage{{ImportPath: "pkg", Covered: 1, Total: 2}}})
+
+	first := c.Report()
+
+	// Mutate every nested slice reachable from the returned snapshot.
+	first.Suites[0].Cases[0].Path[1] = "tampered"
+	first.Suites[0].Cases = append(first.Suites[0].Cases, Case{Name: "injected"})
+	first.Coverage.Packages[0].ImportPath = "tampered"
+	first.Coverage.Packages = append(first.Coverage.Packages, PackageCoverage{ImportPath: "injected"})
+
+	second := c.Report()
+
+	if second.Suites[0].Cases[0].Path[1] != "a1" {
+		t.Fatalf("mutating the returned Path leaked into the Collector: %+v", second.Suites[0].Cases[0].Path)
+	}
+	if len(second.Suites[0].Cases) != 1 {
+		t.Fatalf("appending to the returned Cases leaked into the Collector: %+v", second.Suites[0].Cases)
+	}
+	if second.Coverage.Packages[0].ImportPath != "pkg" {
+		t.Fatalf("mutating the returned Coverage.Packages leaked into the Collector: %+v", second.Coverage.Packages)
+	}
+	if len(second.Coverage.Packages) != 1 {
+		t.Fatalf("appending to the returned Coverage.Packages leaked into the Collector: %+v", second.Coverage.Packages)
+	}
+}

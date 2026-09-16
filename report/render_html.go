@@ -183,5 +183,5 @@ func RenderHTML(w io.Writer, r NormalizedReport) error {
 }
 
 func toHTMLTotals(t Totals) htmlTotals {
-	return htmlTotals{t.Total, t.Passed, t.Failed, t.Error, t.Skipped, t.Filtered}
+	return htmlTotals(t)
 }
