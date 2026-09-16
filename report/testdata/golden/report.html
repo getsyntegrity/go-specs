@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>go-specs report</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 2rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  th { background: #f5f5f5; }
+  .summary span { display: inline-block; margin-right: 1.5rem; font-size: 0.95rem; }
+  .status { font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 3px; font-size: 0.8rem; }
+  .status-passed { background: #e3f7e8; color: #1a7f37; }
+  .status-failed { background: #fde8e8; color: #b3261e; }
+  .status-error { background: #fde8e8; color: #b3261e; }
+  .status-skipped, .status-filtered { background: #f0f0f0; color: #555; }
+  .diagnostics { white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: #444; margin: 0.2rem 0 0.6rem 0; }
+  .coverage-bar { display: inline-block; width: 80px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; vertical-align: middle; margin-right: 0.4rem; }
+  .coverage-fill { display: block; height: 8px; background: #1a7f37; }
+</style>
+</head>
+<body>
+<h1>go-specs report</h1>
+<div class="summary">
+  <span>Total: <strong>6</strong></span>
+  <span>Passed: <strong>2</strong></span>
+  <span>Failed: <strong>1</strong></span>
+  <span>Error: <strong>1</strong></span>
+  <span>Skipped: <strong>1</strong></span>
+  <span>Filtered: <strong>1</strong></span>
+  <span>Duration: <strong>0.019s</strong></span>
+</div>
+
+
+<h2>Checkout</h2>
+<div class="summary">
+  <span>total=4</span>
+  <span>passed=1</span>
+  <span>failed=1</span>
+  <span>error=1</span>
+  <span>skipped=1</span>
+  <span>filtered=0</span>
+  <span>duration=0.015s</span>
+</div>
+<table>
+<thead><tr><th>Status</th><th>Case</th><th>Duration</th></tr></thead>
+<tbody>
+
+<tr>
+  <td><span class="status status-passed">passed</span></td>
+  <td>Checkout pays with a valid card</td>
+  <td>0.005s</td>
+</tr>
+
+<tr>
+  <td><span class="status status-failed">failed</span></td>
+  <td>Checkout rejects an expired card<div class="diagnostics">expected status 402, got 200</div></td>
+  <td>0.003s</td>
+</tr>
+
+<tr>
+  <td><span class="status status-error">error</span></td>
+  <td>Checkout crashes on a nil cart<div class="diagnostics">recovered panic: nil pointer dereference</div><div class="diagnostics">goroutine 1 [running]:
+main.crash()
+	/x/y.go:10 &#43;0x1a</div></td>
+  <td>0.002s</td>
+</tr>
+
+<tr>
+  <td><span class="status status-skipped">skipped</span></td>
+  <td>Checkout skips legacy flow</td>
+  <td>0.000s</td>
+</tr>
+
+</tbody>
+</table>
+
+<h2>Cart</h2>
+<div class="summary">
+  <span>total=2</span>
+  <span>passed=1</span>
+  <span>failed=0</span>
+  <span>error=0</span>
+  <span>skipped=0</span>
+  <span>filtered=1</span>
+  <span>duration=0.004s</span>
+</div>
+<table>
+<thead><tr><th>Status</th><th>Case</th><th>Duration</th></tr></thead>
+<tbody>
+
+<tr>
+  <td><span class="status status-passed">passed</span></td>
+  <td>Cart totals items</td>
+  <td>0.004s</td>
+</tr>
+
+<tr>
+  <td><span class="status status-filtered">filtered</span></td>
+  <td>Cart applies a coupon</td>
+  <td>0.000s</td>
+</tr>
+
+</tbody>
+</table>
+
+
+
+<h2>Coverage</h2>
+<table>
+<thead><tr><th>Package</th><th>Covered</th><th>Total</th><th>Percent</th></tr></thead>
+<tbody>
+
+<tr>
+  <td>github.com/getsyntegrity/go-specs/report</td>
+  <td>90</td>
+  <td>100</td>
+  <td><span class="coverage-bar"><span class="coverage-fill" style="width:90.00%"></span></span>90.00%</td>
+</tr>
+
+<tr>
+  <td>github.com/getsyntegrity/go-specs/specs</td>
+  <td>700</td>
+  <td>800</td>
+  <td><span class="coverage-bar"><span class="coverage-fill" style="width:87.50%"></span></span>87.50%</td>
+</tr>
+
+<tr>
+  <td><strong>Aggregate</strong></td>
+  <td>790</td>
+  <td>900</td>
+  <td><span class="coverage-bar"><span class="coverage-fill" style="width:87.78%"></span></span>87.78%</td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>
