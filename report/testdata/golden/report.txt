@@ -1,0 +1,22 @@
+go-specs report
+Total: 6  Passed: 2  Failed: 1  Error: 1  Skipped: 1  Filtered: 1
+Duration: 0.019s
+
+Suite: Checkout
+  FAIL  Checkout rejects an expired card (0.003s)
+        message: expected status 402, got 200
+  ERROR Checkout crashes on a nil cart (0.002s)
+        message: recovered panic: nil pointer dereference
+        output: goroutine 1 [running]:
+main.crash()
+	/x/y.go:10 +0x1a
+  Totals: total=4 passed=1 failed=1 error=1 skipped=1 filtered=0
+
+Suite: Cart
+  Totals: total=2 passed=1 failed=0 error=0 skipped=0 filtered=1
+
+Coverage
+Package                                   Covered  Total  Percent
+github.com/getsyntegrity/go-specs/report  90       100    90.00%
+github.com/getsyntegrity/go-specs/specs   700      800    87.50%
+Aggregate                                 790      900    87.78%

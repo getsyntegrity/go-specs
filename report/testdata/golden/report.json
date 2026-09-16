@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "1",
+  "execution": {
+    "total": 6,
+    "passed": 2,
+    "failed": 1,
+    "error": 1,
+    "skipped": 1,
+    "filtered": 1,
+    "durationMs": 19
+  },
+  "suites": [
+    {
+      "name": "Checkout",
+      "durationMs": 15,
+      "totals": {
+        "total": 4,
+        "passed": 1,
+        "failed": 1,
+        "error": 1,
+        "skipped": 1,
+        "filtered": 0
+      },
+      "cases": [
+        {
+          "name": "Checkout pays with a valid card",
+          "path": [
+            "Checkout",
+            "pays with a valid card"
+          ],
+          "status": "passed",
+          "durationMs": 5
+        },
+        {
+          "name": "Checkout rejects an expired card",
+          "path": [
+            "Checkout",
+            "rejects an expired card"
+          ],
+          "status": "failed",
+          "durationMs": 3,
+          "message": "expected status 402, got 200"
+        },
+        {
+          "name": "Checkout crashes on a nil cart",
+          "path": [
+            "Checkout",
+            "crashes on a nil cart"
+          ],
+          "status": "error",
+          "durationMs": 2,
+          "message": "recovered panic: nil pointer dereference",
+          "output": "goroutine 1 [running]:\nmain.crash()\n\t/x/y.go:10 +0x1a"
+        },
+        {
+          "name": "Checkout skips legacy flow",
+          "path": [
+            "Checkout",
+            "skips legacy flow"
+          ],
+          "status": "skipped",
+          "durationMs": 0
+        }
+      ]
+    },
+    {
+      "name": "Cart",
+      "durationMs": 4,
+      "totals": {
+        "total": 2,
+        "passed": 1,
+        "failed": 0,
+        "error": 0,
+        "skipped": 0,
+        "filtered": 1
+      },
+      "cases": [
+        {
+          "name": "Cart totals items",
+          "path": [
+            "Cart",
+            "totals items"
+          ],
+          "status": "passed",
+          "durationMs": 4
+        },
+        {
+          "name": "Cart applies a coupon",
+          "path": [
+            "Cart",
+            "applies a coupon"
+          ],
+          "status": "filtered",
+          "durationMs": 0
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "packages": [
+      {
+        "importPath": "github.com/getsyntegrity/go-specs/report",
+        "covered": 90,
+        "total": 100,
+        "percentage": 90
+      },
+      {
+        "importPath": "github.com/getsyntegrity/go-specs/specs",
+        "covered": 700,
+        "total": 800,
+        "percentage": 87.5
+      }
+    ],
+    "total": {
+      "covered": 790,
+      "total": 900,
+      "percentage": 87.78
+    }
+  }
+}

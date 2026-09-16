@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="1" errors="1" skipped="2" time="0.019">
+  <testsuite name="Checkout" tests="4" failures="1" errors="1" skipped="1" time="0.015">
+    <properties>
+      <property name="go-specs.coverage.aggregate.covered" value="790"></property>
+      <property name="go-specs.coverage.aggregate.total" value="900"></property>
+      <property name="go-specs.coverage.aggregate.percentage" value="87.78"></property>
+      <property name="go-specs.coverage.package.github.com/getsyntegrity/go-specs/report" value="90.00"></property>
+      <property name="go-specs.coverage.package.github.com/getsyntegrity/go-specs/specs" value="87.50"></property>
+    </properties>
+    <testcase name="Checkout pays with a valid card" classname="Checkout" time="0.005"></testcase>
+    <testcase name="Checkout rejects an expired card" classname="Checkout" time="0.003">
+      <failure message="expected status 402, got 200"></failure>
+    </testcase>
+    <testcase name="Checkout crashes on a nil cart" classname="Checkout" time="0.002">
+      <error message="recovered panic: nil pointer dereference">goroutine 1 [running]:&#xA;main.crash()&#xA;&#x9;/x/y.go:10 +0x1a</error>
+    </testcase>
+    <testcase name="Checkout skips legacy flow" classname="Checkout" time="0.000">
+      <skipped></skipped>
+    </testcase>
+  </testsuite>
+  <testsuite name="Cart" tests="2" failures="0" errors="0" skipped="1" time="0.004">
+    <properties>
+      <property name="go-specs.coverage.aggregate.covered" value="790"></property>
+      <property name="go-specs.coverage.aggregate.total" value="900"></property>
+      <property name="go-specs.coverage.aggregate.percentage" value="87.78"></property>
+      <property name="go-specs.coverage.package.github.com/getsyntegrity/go-specs/report" value="90.00"></property>
+      <property name="go-specs.coverage.package.github.com/getsyntegrity/go-specs/specs" value="87.50"></property>
+    </properties>
+    <testcase name="Cart totals items" classname="Cart" time="0.004"></testcase>
+    <testcase name="Cart applies a coupon" classname="Cart" time="0.000">
+      <skipped message="filtered"></skipped>
+    </testcase>
+  </testsuite>
+</testsuites>
