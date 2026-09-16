@@ -64,12 +64,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   specs, and saved per-test re-run buttons in IDEs, which will silently select nothing until the
   stored pattern is regenerated.
 
-  Two pre-existing behaviours become easier to meet now that `-run` is a documented way to select
-  specs. Under a narrow `-run` pattern the `Builder`/`Runner` model still executes the group
-  `BeforeEach`/`AfterEach` hooks of specs the pattern discarded, because those hooks run outside the
-  subtest; the `Describe`/`Spec` model does not. And in either model a spec whose subtest the filter
-  discarded is still reported to an attached reporter as started and finished without failing, so it
-  appears as passed although its body never ran. Both are tracked separately.
+  Two pre-existing behaviours became easier to meet once `-run` was documented above as a way to
+  select specs — both are now fixed. The `Builder`/`Runner` model used to still execute a discarded
+  spec's group `BeforeEach`/`AfterEach` hooks, because those hooks ran outside the spec's own subtest;
+  `runSpecWithHooks` now runs each spec's before hooks, body, and after hooks as one unit inside its
+  own subtest, so a `-run` filter discards a spec's hooks along with it, matching `Describe`/`Spec`
+  ([#109](https://github.com/getsyntegrity/go-specs/issues/109)). And a spec whose subtest the filter
+  discarded no longer gets reported to an attached reporter as passed — see `Filtered: true` below
+  ([#111](https://github.com/getsyntegrity/go-specs/issues/111)).
   ([#102](https://github.com/getsyntegrity/go-specs/issues/102))
 
 ### Fixed
@@ -141,6 +143,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   sequential specs, `SkipIt` specs, and `ItParallel` specs alike.
   ([#112](https://github.com/getsyntegrity/go-specs/issues/112))
 
+- `PathValues.Hash()` is now sensitive to the content of `string`, `float64`, and `float32` values
+  instead of falling through to the position-only fallback used for types the hash doesn't recognize.
+  Strings are hashed byte-by-byte with an FNV-like multiply; floats use their IEEE bit pattern
+  (`math.Float32bits`/`math.Float64bits`). Two `PathValues` differing only in a string or float value
+  no longer collide on the same hash. Pointer/map/func/etc. values keep the conservative position-only
+  fallback unchanged.
+  ([#122](https://github.com/getsyntegrity/go-specs/issues/122))
+
 ### Added
 
 - `benchmarks/paths_bench_test.go`: path-exploration benchmarks for a large Cartesian run and a sampled run, covering the third cost center `BENCHMARKS.md` names.
@@ -157,14 +167,23 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   it previously reported the split breadcrumb; populate `PathScopes`/`PathScopeStart`/`PathScopeLen`
   to report a path. Plans built through `Describe`/`BuildSuite` are unaffected.
 
+- `assert.EqualValues(t testing.TB, a, b any) bool` compares two values for use as a test helper:
+  wrapped errors compare via `errors.Is` (either direction), everything else via `reflect.DeepEqual`.
+  Moved from the `matchers` package; `assert` is now the single source of truth for equality helpers.
+  ([#128](https://github.com/getsyntegrity/go-specs/issues/128))
+
 ### Known issues
 
-- A failing `ctx.Snapshot` is reported to a `report.EventReporter` as a **passing** spec
+- A failing `ctx.Snapshot` is still reported to a `report.EventReporter` as a **passing** spec
   (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
-  though `go test` exits non-zero. Pre-existing and unrelated to the attribution fix above; every
-  other assertion records the failure correctly. Pinned by
-  `TestSnapshotFailureLeavesContextUnfailed`.
-  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
+  though `go test` exits non-zero. #125 added a `c.recordFailure()` call gated on `runSnapshot`'s
+  returned bool, but `snapshots.RunFromFile` reports a mismatch by calling `backend.Fatalf` itself
+  before returning a verdict; against a real `*testing.T`, `Fatalf` triggers `runtime.Goexit()`, which
+  unwinds the goroutine past the `if !runSnapshot(...)` check in `Context.Snapshot` before it ever
+  runs — so `recordFailure()` is never reached. The existing regression test
+  (`TestSnapshotFailureRecordsContextFailure`) uses a fake backend whose `Fatalf` returns normally
+  instead of calling `Goexit`, so it didn't catch this. Reopened as
+  [#115](https://github.com/getsyntegrity/go-specs/issues/115).
 
 - Narrowing `go test -run` to a single `ExploreCoverage`/`ExploreSmart` generated candidate's
   subtest — the natural way to isolate a failure and re-run it — does not isolate it from the
