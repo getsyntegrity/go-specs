@@ -76,6 +76,24 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- A failing `ctx.Snapshot` was reported to a `report.EventReporter` as a **passing** spec
+  (`SpecResultEvent.Failed` stayed `false`, and `SuiteEndEvent.FailedSpecs` did not count it), even
+  though `go test` exited non-zero. #125 attempted to fix this by having `Context.Snapshot` call
+  `c.recordFailure()` after `runSnapshot` returned `false` — but `snapshots.RunFromFile` reports a
+  mismatch by calling `backend.Fatalf` directly, and on a real `*testing.T`, `Fatalf` ends in
+  `FailNow()` → `runtime.Goexit()`, which unwinds the calling goroutine right there and never
+  returns to `RunFromFile` or `Context.Snapshot`. `recordFailure()` was therefore unreachable in
+  production; #125's own test used a fake backend whose `Fatalf` records the message and returns
+  normally, so it never exercised the Goexit path it was meant to fix. `snapshots.Evaluate` now
+  separates comparison from reporting: it returns a `Result{Passed, Message}` without calling
+  `Fatalf`, so `Context.Snapshot` can call `c.recordFailure()` *before* triggering the backend's
+  `Fatalf` — the same before-Fatalf ordering every other assertion in this package already follows.
+  `snapshots.RunFromFile`'s existing bool-returning, Fatalf-calling contract is preserved as a thin
+  wrapper over `Evaluate`, so it and its own tests are unaffected. Pinned by
+  `TestSnapshotMismatchRealProcessRecordsFailure`, a subprocess test against a real `*testing.T` —
+  a fake-backend test cannot catch this class of bug, since a fake `Fatalf` doesn't `Goexit`.
+  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
+
 - A spec whose subtest is discarded by `-run` (e.g. `go test -run 'TestX/suite/when_b'` against a
   suite with a sibling `when_a` spec) is no longer reported to `report.EventReporter` as passed.
   `runSpecIsolated` (`Builder`/`Runner`) and `runSpecProgramIsolated` (`Describe`/`ExecutionPlan`)
@@ -173,17 +191,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   ([#128](https://github.com/getsyntegrity/go-specs/issues/128))
 
 ### Known issues
-
-- A failing `ctx.Snapshot` is still reported to a `report.EventReporter` as a **passing** spec
-  (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
-  though `go test` exits non-zero. #125 added a `c.recordFailure()` call gated on `runSnapshot`'s
-  returned bool, but `snapshots.RunFromFile` reports a mismatch by calling `backend.Fatalf` itself
-  before returning a verdict; against a real `*testing.T`, `Fatalf` triggers `runtime.Goexit()`, which
-  unwinds the goroutine past the `if !runSnapshot(...)` check in `Context.Snapshot` before it ever
-  runs — so `recordFailure()` is never reached. The existing regression test
-  (`TestSnapshotFailureRecordsContextFailure`) uses a fake backend whose `Fatalf` returns normally
-  instead of calling `Goexit`, so it didn't catch this. Reopened as
-  [#115](https://github.com/getsyntegrity/go-specs/issues/115).
 
 - Narrowing `go test -run` to a single `ExploreCoverage`/`ExploreSmart` generated candidate's
   subtest — the natural way to isolate a failure and re-run it — does not isolate it from the
