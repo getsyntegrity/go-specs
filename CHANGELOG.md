@@ -6,6 +6,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-16
+
 ### Breaking Changes / Migration from v0.0.9
 
 `v0.0.9` was published from a branch that had reorganized the module into `specs/compiler`, `specs/dsl`, `specs/ctx`, `specs/property`, and `specs/runner` subpackages (plus `cmd/specs-ci` and `tools/coverageheatmap`), with five `specs/*_reexport.go` files aliasing every subpackage symbol back into the root `specs` package so `specs.Program`, `specs.Describe`, `specs.Context`, and friends kept compiling. This release reverts that reorganization: the module returns to the single flat `specs` package that predates it, and the subpackages, the reexport files, `cmd/specs-ci`, and `tools/coverageheatmap` are all gone. See [#127](https://github.com/getsyntegrity/go-specs/issues/127) for the full diagnosis of how the two layouts diverged.
