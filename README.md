@@ -4,9 +4,13 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/pablogore/go-specs)](https://goreportcard.com/report/github.com/pablogore/go-specs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+## Project status
+
+go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, `Mutator`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
+
 ## Description
 
-**go-specs** is a fast, deterministic BDD-style testing framework for Go. It provides an expressive DSL for writing readable tests while staying close to the standard library and avoiding reflection and allocation overhead. Suites run in a fixed order with no hidden concurrency, so test results are stable and reproducible.
+**go-specs** is a fast, deterministic BDD-style testing framework for Go. It provides an expressive DSL for writing readable tests while staying close to the standard library and avoiding reflection and allocation overhead. By default, suites run sequentially in declaration order with no hidden concurrency, so test results are stable and reproducible; opt-in parallel execution (`ItParallel`, `RunParallel`, `RunParallelBatched`) is available where throughput matters.
 
 ## Key features
 
@@ -113,13 +117,13 @@ go-specs is built for low latency and zero allocations on the hot path. The tabl
 - **Zero allocations** — The assertion and runner hot paths allocate nothing on success (0 allocs/op above), reducing GC pressure.
 - **Compiled execution plan** — Suites are compiled once into a fixed program; the runner executes steps via direct function dispatch instead of per-spec lookups or reflection.
 - **No reflection** — Assertions use generics and direct comparison; the fast path avoids `reflect.DeepEqual` and runtime type switches.
-- **Sequential runner loop** — The runner invokes spec and hook functions in a simple loop with direct calls; no matcher heap allocations or indirection on the hot path.
+- **Sequential runner loop** — The default runner invokes spec and hook functions in a simple loop with direct calls; no matcher heap allocations or indirection on the hot path. Opt-in parallel paths (`ItParallel`, `RunParallel`, `RunParallelBatched`) trade this loop for a worker pool when a suite benefits from concurrency.
 
 Reproducible benchmark suite: [benchmarks/](benchmarks/). From the repository root run `make bench` (quick) or `make bench-report` to generate a report in `benchmarks/results/current.txt`.
 
 ## Architecture overview
 
-go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel` via the Builder) are grouped into a single step and run concurrently, then execution continues sequentially. The repository is a single Go module; packages include:
+go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel` via the Builder) are grouped into a single step and run concurrently, then execution continues sequentially. `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The repository is a single Go module; packages include:
 
 - **specs** — Core DSL, runner, context, and execution plan
 - **assert** — Matcher implementations (Equal, BeTrue, BeNil, etc.)

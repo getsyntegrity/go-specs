@@ -1,38 +1,12 @@
-# GoReleaser for go-specs (CLI: specs-cli)
-# Run on tag push v* or via release workflow on merge to main
+# GoReleaser config for go-specs (library-only: no CLI is built or published)
+# Release runs on tag push v* (see .github/workflows/release.yml)
 version: 2
 
 project_name: go-specs
 
+# go-specs ships as a Go module, not a binary. There is no CLI to build.
 builds:
-  - id: specs-cli
-    main: ./cmd/specs-ci
-    binary: specs-cli
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
-    env:
-      - CGO_ENABLED=0
-    ldflags:
-      - -s -w
-
-archives:
-  - id: default
-    formats:
-      - binary
-    ids:
-      - specs-cli
-    name_template: "specs-cli-{{ .Os }}-{{ .Arch }}"
-
-checksum:
-  name_template: "checksums.txt"
+  - skip: true
 
 changelog:
   use: git

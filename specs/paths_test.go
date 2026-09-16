@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/pablogore/go-specs/report"
-	"github.com/pablogore/go-specs/specs/property"
 )
 
 func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
@@ -41,7 +40,7 @@ func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
 		t.Fatal("expected path generator metadata")
 	}
 	var names []string
-	specNode.PathGen.ForEach(t, func(values PathValues) {
+	specNode.PathGen.ForEach(func(values PathValues) {
 		names = append(names, specNode.PathGen.FormatName(specNode.Name, values))
 	})
 	expected := []string{
@@ -58,7 +57,6 @@ func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
 }
 
 func TestPathsExecutesAllCombinations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var hits []string
 	var mu sync.Mutex
 	Describe(t, "Paths", func(s *Spec) {
@@ -89,8 +87,21 @@ func TestPathsExecutesAllCombinations(t *testing.T) {
 	}
 }
 
+func TestPathsExecutesGeneratedCasesSequentiallyInDeclarationOrder(t *testing.T) {
+	var order []int
+	Describe(t, "PathsSequential", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Int("value", []int{1, 2, 3})
+		}).It("case", func(ctx *Context) {
+			order = append(order, ctx.Path().Int("value"))
+		})
+	})
+	if got, want := fmt.Sprint(order), "[1 2 3]"; got != want {
+		t.Fatalf("generated execution order = %s, want %s", got, want)
+	}
+}
+
 func TestPathsFiltersCombinations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var hits []string
 	var mu sync.Mutex
 	Describe(t, "PathsFilter", func(s *Spec) {
@@ -126,8 +137,30 @@ func TestPathsFiltersCombinations(t *testing.T) {
 	}
 }
 
+func TestPathsCasesUseIsolatedHooksAndContext(t *testing.T) {
+	var order []string
+	Describe(t, "PathLifecycle", func(s *Spec) {
+		s.BeforeEach(func(ctx *Context) {
+			if ctx.Path().Int("value") == 0 {
+				t.Fatal("missing generated path value")
+			}
+			order = append(order, "before")
+		})
+		s.AfterEach(func(*Context) { order = append(order, "after") })
+		s.Paths(func(pb *PathBuilder) { pb.Int("value", []int{1, 2}) }).It("case", func(ctx *Context) {
+			order = append(order, fmt.Sprintf("body-%d", ctx.Path().Int("value")))
+		})
+	})
+	if got, want := fmt.Sprint(order), "[before body-1 after before body-2 after]"; got != want {
+		t.Fatalf("case lifecycle = %s, want %s", got, want)
+	}
+}
+
+// TestPathsReporterIncludesCombinationNames proves report output identifies each generated
+// candidate by its own combination, not by a shared spec name (#103). The " #<n>" ordinal the
+// reporter appends is additive: it links the line back to the matching `go test -v` subtest without
+// disturbing the framework's own "base [k=v]" rendering.
 func TestPathsReporterIncludesCombinationNames(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var buf bytes.Buffer
 	reporter := report.New(&buf)
 	DescribeWithReporter(t, "Paths", reporter, func(s *Spec) {
@@ -149,7 +182,6 @@ func TestPathsReporterIncludesCombinationNames(t *testing.T) {
 }
 
 func TestPathsSampleExecutesRequestedCount(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	const samples = 5
 	var mu sync.Mutex
 	var prices []int
@@ -204,7 +236,6 @@ func TestPathsSampleDeterministicWithSeed(t *testing.T) {
 }
 
 func TestPathsSampleRespectsFilters(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var mu sync.Mutex
 	var hits []int
 	Describe(t, "PathsSampleFilters", func(s *Spec) {
@@ -230,7 +261,7 @@ func TestPathsSampleRespectsFilters(t *testing.T) {
 }
 
 func TestPathsSampleReporterNamesIncludeSample(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
+	t.Skip("generated reporting is deferred until the later reporting gate")
 	var buf bytes.Buffer
 	reporter := report.New(&buf)
 	DescribeWithReporter(t, "PathsSampleReporter", reporter, func(s *Spec) {
@@ -246,7 +277,6 @@ func TestPathsSampleReporterNamesIncludeSample(t *testing.T) {
 }
 
 func TestPathsExploreRunsExpectedIterations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	const iterations = 10
 	var mu sync.Mutex
 	var count int
@@ -295,7 +325,6 @@ func TestPathsExploreDeterministicWithSeed(t *testing.T) {
 }
 
 func TestPathsExploreRespectsFilters(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var mu sync.Mutex
 	var values []int
 	Describe(t, "PathsExploreFilters", func(s *Spec) {
@@ -350,25 +379,33 @@ func TestBoolShrinkerReducesValue(t *testing.T) {
 }
 
 func TestPathGeneratorShrink(t *testing.T) {
-	gen := property.NewPathGenerator([]property.PathVar{
-		property.IntRangeVar("x", 0, 1000),
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
 	}, nil, 0, 0, false, 0, 0, 0)
-	initial := property.NewPathValuesForTest(map[string]int{"x": 0}, []any{100})
-	reduced := gen.ShrinkValues(initial, func(pv PathValues) bool {
-		return pv.Int("x") > 10
+	initial := PathValues{
+		values:  []any{100},
+		present: []bool{true},
+		index:   map[string]int{"x": 0},
+	}
+	reduced := gen.shrinkValues(initial, func(pv PathValues) bool {
+		return pv.values[0].(int) > 10
 	})
-	if reduced.Int("x") > 10 {
-		t.Fatalf("expected reduced value <= 10, got %v", reduced.Int("x"))
+	if reduced.values[0].(int) > 10 {
+		t.Fatalf("expected reduced value <= 10, got %v", reduced.values[0])
 	}
 }
 
 func TestShrinkerFindsMinimalFailing(t *testing.T) {
-	gen := property.NewPathGenerator([]property.PathVar{
-		property.IntRangeVar("x", 0, 1000),
-		property.IntRangeVar("y", 0, 1000),
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
+		{Name: "y", rangeSpec: &intRange{min: 0, max: 1000}},
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0, "y": 1}
-	failing := property.NewPathValuesForTest(index, []any{937, 421})
+	failing := PathValues{
+		values:  []any{937, 421},
+		present: []bool{true, true},
+		index:   index,
+	}
 	// Property: holds when x == 0 && y == 0; fails otherwise. Minimal failing is (0,1) or (1,0).
 	test := func(pv PathValues) bool {
 		x := pv.Int("x")
@@ -401,11 +438,15 @@ func TestShrinkerFindsMinimalFailing(t *testing.T) {
 }
 
 func TestShrinkerBinaryShrinksToZero(t *testing.T) {
-	gen := property.NewPathGenerator([]property.PathVar{
-		property.IntRangeVar("x", 0, 1000),
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0}
-	failing := property.NewPathValuesForTest(index, []any{937})
+	failing := PathValues{
+		values:  []any{937},
+		present: []bool{true},
+		index:   index,
+	}
 	// Property: holds when x == 0. So minimal failing is 1 (binary search toward zero).
 	test := func(pv PathValues) bool {
 		return pv.Int("x") == 0
@@ -437,7 +478,8 @@ func TestExploreCoverageRuns(t *testing.T) {
 			p.IntRange("x", 0, 100)
 			p.IntRange("y", 0, 100)
 		}).ExploreCoverage(20).It("property", func(ctx *Context) {
-			ctx.Expect(ctx.Path().Int("x") + ctx.Path().Int("y")).ToEqual(ctx.Path().Int("x") + ctx.Path().Int("y"))
+			x, y := ctx.Path().Int("x"), ctx.Path().Int("y")
+			ctx.Expect(x+y >= x && x+y >= y).ToEqual(true)
 		})
 	})
 }
@@ -448,18 +490,94 @@ func TestExploreSmartRuns(t *testing.T) {
 			p.IntRange("x", 0, 100)
 			p.IntRange("y", 0, 100)
 		}).ExploreSmart(25).It("property", func(ctx *Context) {
-			ctx.Expect(ctx.Path().Int("x") + ctx.Path().Int("y")).ToEqual(ctx.Path().Int("x") + ctx.Path().Int("y"))
+			x, y := ctx.Path().Int("x"), ctx.Path().Int("y")
+			ctx.Expect(x+y >= x && x+y >= y).ToEqual(true)
 		})
 	})
 }
 
+// The following tests exercise the real execution path (Describe/Paths().Explore*()) rather than
+// pathSequence directly, so the attempt-budget fix (#18) is proven against what actually runs in
+// production, not just against the generator in isolation.
+
+func TestPathsExploreImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).Explore(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "Explore", "attempts", "iterations")
+}
+
+func TestPathsExploreCoverageImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreCoverageImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).ExploreCoverage(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "ExploreCoverage", "attempts", "iterations")
+}
+
+func TestPathsExploreSmartImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreSmartImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).ExploreSmart(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "ExploreSmart", "attempts", "iterations")
+}
+
+// TestPathsExploreRestrictiveFilterStillReachesIterations guards against the new attempt budget
+// tripping on a filter that is restrictive but satisfiable — it must still reach exactly
+// `iterations`, not fail early just because acceptance is rare.
+func TestPathsExploreRestrictiveFilterStillReachesIterations(t *testing.T) {
+	const iterations = 20
+	var mu sync.Mutex
+	var count int
+	Describe(t, "PathsExploreRestrictiveFilter", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.IntRange("x", 0, 100)
+			pb.Filter(func(v PathValues) bool {
+				return v.Int("x")%10 == 0
+			})
+		}).Explore(iterations).It("multiple of ten", func(ctx *Context) {
+			x := ctx.Path().Int("x")
+			if x%10 != 0 {
+				ctx.T.Fatalf("expected multiple of ten, got %d", x)
+			}
+			mu.Lock()
+			count++
+			mu.Unlock()
+		})
+	})
+	if count != iterations {
+		t.Fatalf("expected %d iterations under a restrictive-but-viable filter, got %d", iterations, count)
+	}
+}
+
 func TestShrinkerCoordinateDescentMultipleInts(t *testing.T) {
-	gen := property.NewPathGenerator([]property.PathVar{
-		property.IntRangeVar("x", 0, 1000),
-		property.IntRangeVar("y", 0, 1000),
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
+		{Name: "y", rangeSpec: &intRange{min: 0, max: 1000}},
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0, "y": 1}
-	failing := property.NewPathValuesForTest(index, []any{937, 421})
+	failing := PathValues{
+		values:  []any{937, 421},
+		present: []bool{true, true},
+		index:   index,
+	}
 	// Property: holds when x <= 0 && y <= 0. Minimal failing is one of (1,0), (0,1), (1,1).
 	test := func(pv PathValues) bool {
 		return pv.Int("x") <= 0 && pv.Int("y") <= 0

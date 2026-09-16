@@ -13,12 +13,15 @@
 *.prof
 coverage.out
 coverage.html
-/specs-cli
+specs-cli
 *.exe
 
 # Archives
 *.tgz
 *.tar.gz
+
+# GoReleaser
+dist/
 
 # Project
 benchmarks/results/*.txt

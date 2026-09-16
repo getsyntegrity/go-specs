@@ -144,5 +144,6 @@ flowchart LR
 | Package | Role |
 | ------- | ---- |
 | **specs** | Public DSL (`Describe`, `BeforeEach`, `AfterEach`, `It`), Builder API, compiler, ExecutionPlan/Program types, Runner, and Context. Entry point for all user code. |
-| **internal/plan** | Execution plan representation and construction (when using the arena/registry path). Used by the analyzer; plan execution is in internal/plan (RunIDs). The public runner lives in specs. |
+| **internal/plan** | Execution plan representation and construction (when using the arena/registry path). Used by the analyzer; the bytecode path builds a plan directly in specs. |
+| **internal/runner** | Internal runner logic for executing a plan (when used by the specs package). The public runner lives in specs. |
 | **report** | Reporting and formatting (e.g. for structured output). Used by the runner when a reporter is configured. |

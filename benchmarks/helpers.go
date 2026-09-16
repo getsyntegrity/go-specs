@@ -50,7 +50,7 @@ func RunSpecsProgram(tb testing.TB, prog *specs.Program) {
 	if prog == nil {
 		return
 	}
-	specs.NewRunner(prog, nil).Run(tb)
+	specs.NewRunner(prog).Run(tb)
 }
 
 // Suite sizes for benchmarks (deterministic, realistic).
@@ -65,7 +65,7 @@ const (
 // Call it before b.ResetTimer(); the returned function runs the suite with minimal allocations per run.
 func CreateGoSpecsSuite(specCount int) func(tb testing.TB) {
 	prog := BuildSpecsProgram(specCount)
-	r := specs.NewRunner(prog, nil)
+	r := specs.NewRunner(prog)
 	return func(tb testing.TB) {
 		r.Run(tb)
 	}

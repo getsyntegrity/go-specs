@@ -18,5 +18,5 @@ func TestParallel(t *testing.T) {
 		})
 	})
 	prog := b.Build()
-	specs.NewRunner(prog, nil).Run(t)
+	specs.NewRunner(prog).Run(t)
 }

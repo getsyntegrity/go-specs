@@ -29,13 +29,3 @@ func BenchmarkMatcher_Gomega(b *testing.B) {
 		g.Expect(true).To(gomega.BeTrue())
 	}
 }
-
-// BenchmarkMatcher_GoSpecs_Equal measures Expect(actual).To(Equal(expected)) with struct-based Equal matcher.
-func BenchmarkMatcher_GoSpecs_Equal(b *testing.B) {
-	ctx := specs.NewContext(b)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ctx.Expect(42).To(specs.Equal(42))
-	}
-}

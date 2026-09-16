@@ -1,8 +1,5 @@
-# go-specs monorepo Makefile
-# Run from repository root with go.work enabled.
-# Note: ./... does not work at root (no root module); each module is built/tested explicitly.
-
-MODULES := ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...
+# go-specs Makefile
+# Single Go module at the repository root; run targets from repo root.
 
 BENCH_RESULTS := benchmarks/results
 BENCHSTAT := $(shell go env GOPATH)/bin/benchstat
@@ -24,21 +21,21 @@ help:
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
 	@echo "  make lint          Lint (golangci-lint or go vet)"
 	@echo "  make build         Build all modules and specs-cli"
-	@echo "  make tidy          go work sync and go mod tidy for all modules"
+	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove specs-cli, coverage.*, benchmark results"
 	@echo ""
 
-# Run tests across all modules
+# Run tests
 test:
-	go test $(MODULES)
+	go test ./...
 
 # Run tests with race detector
 test-race:
-	go test -race $(MODULES)
+	go test -race ./...
 
 # Run tests with coverage; report to stdout and write coverage.out
 coverage:
-	go test -coverprofile=coverage.out $(MODULES)
+	go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out
 
 # Run benchmarks (quick run, output to terminal)
@@ -62,21 +59,13 @@ bench-compare:
 lint:
 	@which golangci-lint >/dev/null 2>&1 && golangci-lint run ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... || (go vet ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...)
 
-# Build all modules and the CLI
+# Build all packages
 build:
-	go build $(MODULES)
-	go build -o specs-cli ./cmd/specs-ci
+	go build ./...
 
-# Tidy all modules
+# Tidy the module
 tidy:
-	go work sync
-	cd specs && go mod tidy
-	cd report && go mod tidy
-	cd mock && go mod tidy
-	cd assert && go mod tidy
-	cd snapshots && go mod tidy
-	cd gen && go mod tidy
-	cd examples && go mod tidy
+	go mod tidy
 
 clean:
 	rm -f specs-cli coverage.out coverage.html

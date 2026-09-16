@@ -1,14 +1,10 @@
 package specs
 
-import (
-	"testing"
-
-	"github.com/pablogore/go-specs/specs/compiler"
-)
+import "testing"
 
 func TestBytecodeRunner_OrderAndHooks(t *testing.T) {
 	var order []string
-	b := compiler.NewBCBuilder(32)
+	b := NewBCBuilder(32)
 	b.AddBefore(func(*Context) { order = append(order, "before1") })
 	b.AddBefore(func(*Context) { order = append(order, "before2") })
 	b.AddAfter(func(*Context) { order = append(order, "after1") })
@@ -40,7 +36,7 @@ func TestBytecodeRunner_OrderAndHooks(t *testing.T) {
 }
 
 func TestBytecodeRunner_SpecStarts(t *testing.T) {
-	b := compiler.NewBCBuilder(8)
+	b := NewBCBuilder(8)
 	b.AddBefore(func(*Context) {})
 	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 1, 1) })
 	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 2, 2) })
@@ -58,7 +54,7 @@ func TestBytecodeRunner_SpecStarts(t *testing.T) {
 }
 
 func TestBytecodeRunner_RunParallel(t *testing.T) {
-	b := compiler.NewBCBuilder(16)
+	b := NewBCBuilder(16)
 	for i := 0; i < 10; i++ {
 		b.AddSpec(func(ctx *Context) { EqualTo(ctx, 1, 1) })
 	}
