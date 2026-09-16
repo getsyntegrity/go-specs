@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // TestJoinSubtestPath pins the package-internal mapping from a declared Describe/When/It breadcrumb

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // recordingReporter is a report.EventReporter test double that records every event it receives,

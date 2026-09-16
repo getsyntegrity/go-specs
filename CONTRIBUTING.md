@@ -14,7 +14,7 @@ Requirements:
 Clone:
 
 ```
-git clone https://github.com/pablogore/go-specs
+git clone https://github.com/getsyntegrity/go-specs
 ```
 
 Run tests (from repo root; use `make test` because there is no root module):

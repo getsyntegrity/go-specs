@@ -6,7 +6,7 @@ package benchmarks
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 // describeVariantSpecs is the suite size the three entry points are compared at.

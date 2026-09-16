@@ -3,9 +3,9 @@ package property_coverage_spy_test
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/mock"
-	"github.com/pablogore/go-specs/specs"
-	"github.com/pablogore/go-specs/examples/property_coverage_spy"
+	"github.com/getsyntegrity/go-specs/mock"
+	"github.com/getsyntegrity/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/examples/property_coverage_spy"
 )
 
 // mockLedger implements property_coverage_spy.Ledger and records calls to the mock's spies.

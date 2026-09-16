@@ -3,8 +3,8 @@ package mocks_test
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/specs"
-	"github.com/pablogore/go-specs/mock"
+	"github.com/getsyntegrity/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/mock"
 )
 
 func TestMocks(t *testing.T) {

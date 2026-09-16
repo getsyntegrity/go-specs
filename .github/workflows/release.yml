@@ -85,3 +85,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.new_tag }}
+
+      - name: Verify external installability of the published tag
+        # Black-box check from a clean consumer module, no local replace:
+        # proves `go get <this repo's module path>@<tag>` actually resolves
+        # and builds from the tag just pushed. GOPROXY=direct + GOSUMDB=off
+        # clone the tag straight from git instead of waiting on the public
+        # proxy's mirror to index it. Added after v0.1.0 shipped with a
+        # go.mod module path that didn't match the repository (getsyntegrity/go-specs#139).
+        if: steps.skip.outputs.already_tagged != 'true'
+        run: |
+          MODULE="$(go list -m)"
+          TAG="${{ steps.tag.outputs.new_tag }}"
+          WORKDIR="$(mktemp -d)"
+          cd "$WORKDIR"
+          go mod init consumer-smoke-test
+          GOPROXY=direct GOSUMDB=off go get "${MODULE}@${TAG}"

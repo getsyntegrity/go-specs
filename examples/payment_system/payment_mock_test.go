@@ -10,8 +10,8 @@ funds are insufficient.
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/mock"
-	specs "github.com/pablogore/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/mock"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 // mockLedger adapts a mock.Mock to the Ledger interface for tests.

@@ -1,6 +1,6 @@
 package full_system_example
 
-import "github.com/pablogore/go-specs/mock"
+import "github.com/getsyntegrity/go-specs/mock"
 
 // Ledger records transfer operations (external dependency to mock).
 type Ledger interface {

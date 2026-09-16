@@ -11,7 +11,7 @@ Run with GO_SPECS_UPDATE_SNAPSHOTS=1 to create or update the snapshot file.
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 func TestTransferSnapshot(t *testing.T) {

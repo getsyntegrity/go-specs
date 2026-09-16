@@ -3,7 +3,7 @@ package bdd_test
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 // TestBDD demonstrates the BDD-style DSL: Describe, When, and It.

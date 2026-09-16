@@ -16,7 +16,7 @@ case that still reproduces the bug.
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 func TestDeposit(t *testing.T) {
