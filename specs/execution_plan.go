@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // ExecutionPlan holds the flat instruction stream and per-spec metadata for the runner.

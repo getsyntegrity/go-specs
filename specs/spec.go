@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // Spec is the DSL handle for building describe/when/it trees.

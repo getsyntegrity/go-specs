@@ -1,6 +1,6 @@
 # Spy example
 
-This example shows how to use **Spy** from `github.com/pablogore/go-specs/mock` to record and assert on function invocations in BDD-style specs, including **interface + spy** for testing dependencies.
+This example shows how to use **Spy** from `github.com/getsyntegrity/go-specs/mock` to record and assert on function invocations in BDD-style specs, including **interface + spy** for testing dependencies.
 
 ## Run
 

@@ -6,7 +6,7 @@ package benchmarks
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 // Build-phase sizes for the Builder breadcrumb benchmarks: deep enough that a per-spec breadcrumb

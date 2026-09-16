@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // Runner runs a compiled Program against a test backend. One context from the pool, reused for every step.

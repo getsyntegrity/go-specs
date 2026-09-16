@@ -13,21 +13,21 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // goSpecsInternalPackages identifies a stack frame as go-specs's own dispatch code — this package
 // and the other library packages a failing assertion's call chain can pass through (snapshots, for
 // ctx.Snapshot) — as opposed to the user's own code. Each entry is a full package import path plus
 // the trailing "." that separates it from a function/method name in frame.Function, so e.g.
-// "github.com/pablogore/go-specs/specs." matches "specs.EqualTo" but not a *subpackage* like
-// "github.com/pablogore/go-specs/specs/testdata/parallel_attribution" — module-prefix matching alone
+// "github.com/getsyntegrity/go-specs/specs." matches "specs.EqualTo" but not a *subpackage* like
+// "github.com/getsyntegrity/go-specs/specs/testdata/parallel_attribution" — module-prefix matching alone
 // would wrongly treat every testdata fixture and example under this module as "internal," since they
 // share the module without being part of the library itself. Used by parallelCallerLocation to find
 // the first frame that isn't ours.
 var goSpecsInternalPackages = []string{
-	"github.com/pablogore/go-specs/specs.",
-	"github.com/pablogore/go-specs/snapshots.",
+	"github.com/getsyntegrity/go-specs/specs.",
+	"github.com/getsyntegrity/go-specs/snapshots.",
 }
 
 // isGoSpecsInternalFrame reports whether fn (a runtime.Frame.Function value) belongs to one of

@@ -3,8 +3,8 @@ package full_system_example
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/mock"
-	specs "github.com/pablogore/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/mock"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 /*

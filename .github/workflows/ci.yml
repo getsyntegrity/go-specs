@@ -66,6 +66,20 @@ jobs:
           go-version: "1.25"
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
+      - name: Verify module path matches repository
+        # go.mod's declared module path is what every external `go get` request
+        # is checked against -- a mismatch (e.g. after an org/repo rename) makes
+        # the module uninstallable from its real location even though it builds
+        # fine locally. Caught the hard way once (getsyntegrity/go-specs#139);
+        # this keeps it from recurring silently.
+        run: |
+          DECLARED="$(go list -m)"
+          EXPECTED="github.com/${GITHUB_REPOSITORY}"
+          if [ "$DECLARED" != "$EXPECTED" ]; then
+            echo "::error::go.mod declares module '$DECLARED' but this repository is '$EXPECTED' -- external 'go get $EXPECTED' would fail." >&2
+            exit 1
+          fi
+
       - name: Build
         run: go build ./...
 

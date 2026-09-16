@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/pablogore/go-specs/assert"
+	"github.com/getsyntegrity/go-specs/assert"
 )
 
 // ExampleDescribe and ExampleContext_Expect are not executed by `go test` (no "Output:" comment):

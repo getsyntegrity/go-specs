@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // step is a single executable step (hook or spec body). Same signature as RunSpec.Fn.

@@ -1,6 +1,6 @@
 package spy_test
 
-import "github.com/pablogore/go-specs/mock"
+import "github.com/getsyntegrity/go-specs/mock"
 
 // Notifier sends messages (e.g. email, log, event). Real code would implement this.
 type Notifier interface {

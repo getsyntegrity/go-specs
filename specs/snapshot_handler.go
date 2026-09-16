@@ -31,7 +31,7 @@ func currentSnapshotMatcher() SnapshotMatcher {
 //nolint:unused // Retained for registered snapshot extensions.
 func enforceSnapshotMatcher(t testing.TB, handler SnapshotMatcher, actual any) {
 	if handler == nil {
-		t.Fatalf("snapshot matcher not registered; import github.com/pablogore/go-specs/snapshots and register if using custom matcher")
+		t.Fatalf("snapshot matcher not registered; import github.com/getsyntegrity/go-specs/snapshots and register if using custom matcher")
 		return
 	}
 	handler(t, actual)

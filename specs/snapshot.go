@@ -1,6 +1,6 @@
 package specs
 
-import "github.com/pablogore/go-specs/snapshots"
+import "github.com/getsyntegrity/go-specs/snapshots"
 
 // runSnapshot compares value to the stored snapshot for name, or creates/updates it, and returns
 // the verdict without reporting it: Context.Snapshot must fold a mismatch into c.failed before
