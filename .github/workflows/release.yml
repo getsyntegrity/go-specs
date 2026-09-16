@@ -1,9 +1,15 @@
-# Release: tag + GoReleaser when PR from develop/hotfix is merged to main
+# Release: tag + GoReleaser, run explicitly via workflow_dispatch once main
+# holds the commit that should be released. A push/merge to main is not
+# sufficient by itself to publish -- see #127.
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. v1.2.3). Leave empty to auto-bump the patch version from the latest tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -19,6 +25,8 @@ jobs:
 
       - name: Skip if already tagged
         id: skip
+        # Idempotency guard only: protects against re-running this dispatch on a
+        # commit that was already released, not a gate on whether to publish.
         run: |
           if git describe --tags --exact-match HEAD 2>/dev/null; then
             echo "already_tagged=true" >> $GITHUB_OUTPUT
@@ -36,15 +44,22 @@ jobs:
       - name: Bump version and create tag
         id: tag
         if: steps.skip.outputs.already_tagged != 'true'
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          LATEST="${LATEST#v}"
-          MAJOR="${LATEST%%.*}"
-          REST="${LATEST#*.}"
-          MINOR="${REST%%.*}"
-          PATCH="${REST#*.}"
-          PATCH=$((PATCH + 1))
-          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          if [ -n "$VERSION_INPUT" ]; then
+            NEW_TAG="$VERSION_INPUT"
+            [[ "$NEW_TAG" == v* ]] || NEW_TAG="v${NEW_TAG}"
+          else
+            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST="${LATEST#v}"
+            MAJOR="${LATEST%%.*}"
+            REST="${LATEST#*.}"
+            MINOR="${REST%%.*}"
+            PATCH="${REST#*.}"
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
