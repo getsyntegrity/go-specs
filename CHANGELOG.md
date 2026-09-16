@@ -151,14 +151,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   fallback unchanged.
   ([#122](https://github.com/getsyntegrity/go-specs/issues/122))
 
-- A failing `ctx.Snapshot` is no longer reported to a `report.EventReporter` as a **passing** spec.
-  `snapshots.RunFromFile` decided the pass/fail verdict and reported it straight to the backend (so
-  `go test` still exited non-zero) but never touched `ctx.failed`, so `SpecResultEvent.Failed` stayed
-  `false` and `SuiteEndEvent.FailedSpecs` didn't count it for any reporter-driven consumer (JUnit
-  writer, CI summary, flake tracker). `Context.Snapshot` now calls `recordFailure()` on a mismatch,
-  like every other assertion does.
-  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
-
 ### Added
 
 - `benchmarks/paths_bench_test.go`: path-exploration benchmarks for a large Cartesian run and a sampled run, covering the third cost center `BENCHMARKS.md` names.
@@ -181,6 +173,17 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   ([#128](https://github.com/getsyntegrity/go-specs/issues/128))
 
 ### Known issues
+
+- A failing `ctx.Snapshot` is still reported to a `report.EventReporter` as a **passing** spec
+  (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
+  though `go test` exits non-zero. #125 added a `c.recordFailure()` call gated on `runSnapshot`'s
+  returned bool, but `snapshots.RunFromFile` reports a mismatch by calling `backend.Fatalf` itself
+  before returning a verdict; against a real `*testing.T`, `Fatalf` triggers `runtime.Goexit()`, which
+  unwinds the goroutine past the `if !runSnapshot(...)` check in `Context.Snapshot` before it ever
+  runs — so `recordFailure()` is never reached. The existing regression test
+  (`TestSnapshotFailureRecordsContextFailure`) uses a fake backend whose `Fatalf` returns normally
+  instead of calling `Goexit`, so it didn't catch this. Reopened as
+  [#115](https://github.com/getsyntegrity/go-specs/issues/115).
 
 - Narrowing `go test -run` to a single `ExploreCoverage`/`ExploreSmart` generated candidate's
   subtest — the natural way to isolate a failure and re-run it — does not isolate it from the
