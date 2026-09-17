@@ -66,6 +66,17 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `go test` package processes — crash safety comes from the rename, not the lock.
   ([#152](https://github.com/getsyntegrity/go-specs/issues/152))
 
+- A failing typed matcher assertion — `specs.ExpectT(ctx, x).To(m)` — now marks the `Context` as
+  failed, as the untyped `ctx.Expect(x).To(m)` already did. `expectT[T].To` reported the failure
+  straight to the backend without calling `recordFailure`, so `go test` still exited red but the
+  spec was reported to `report.EventReporter` with `Failed: false`, `SuiteEndEvent.FailedSpecs`
+  undercounted it, and `Runner{FailFast: true}` kept running the groups after it. This is the same
+  defect class as the snapshot path in [#115](https://github.com/pablogore/go-specs/issues/115);
+  only specs whose failing assertion used the typed `.To(matcher)` form were affected — the typed
+  `.ToEqual` and every untyped form already recorded it. The passing fast path is unchanged
+  (`BenchmarkMatcher_GoSpecs` stays at 0 allocs/op); `recordFailure` runs only on the failure
+  branch.
+
 - A spec whose subtest is discarded by `-run` (e.g. `go test -run 'TestX/suite/when_b'` against a
   suite with a sibling `when_a` spec) is no longer reported to `report.EventReporter` as passed.
   `runSpecIsolated` (`Builder`/`Runner`) and `runSpecProgramIsolated` (`Describe`/`ExecutionPlan`)
