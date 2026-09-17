@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.3** (amended by #148)
+Contract version: **v1.2.4** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.3 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.4 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,6 +17,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
+| v1.2.4 | #148 (review follow-up 4) | Scope fixes on v1.2.3's own rule: the disabled-path `os.Environ()` requirement covers **every** variable this contract introduces (`GO_SPECS_REPORT_DIR` included — a realistic per-invocation value, and the easy one to miss), with later additions inheriting it by default; the cache-stability test must vary at least two variables, since a run-ID-only test passes while another variable still leaks through `os.Getenv`. Adds the macOS `shasum -a 256` form to §7, and a §13 planning item asking #145 to enumerate normative claims that rest on unpinned runtime behaviour (network-mount create-no-replace and the `link`/`st_nlink` fallback being the two currently unpinned). |
 | v1.2.3 | #148 (review follow-up 3) | Closes a regression introduced by v1.2.1's own warn-only diagnostic: reading the identity variables with `os.Getenv` on the **disabled** path enrolls them in the test-cache key (`os.Getenv`/`os.LookupEnv` call `testlog.Getenv`; `os.Environ` does not), so a stale per-invocation `GO_SPECS_RUN_ID` would defeat caching for every package on every run while producing no reporting at all. §5 now requires an `os.Environ()` scan on that path, explains why the unusual access pattern is load-bearing, and mandates a cache-stability regression test. Also: the GitHub Actions `RunID` recipe gains `github.job`, since `strategy.job-index` is unique only within one matrix and two job definitions both yield index `0`; §7 records the `xxd -r -p` step needed to reproduce the token digest by hand; digest-of-decoded-bytes wording made consistent across §3, §5 and §7. |
 | v1.2.2 | #148 (review follow-up 2) | Correctness fixes, no design change: the run-token digest is taken over the token's **decoded bytes**, not its hex text (the pattern accepts either case, so `AB…` and `ab…` would otherwise hash differently despite being byte-identical); §3 and the partial-combination table restate gate-off behaviour as "read and checked for well-formedness, never acted on" rather than "unread", matching the warn-only diagnostic; the GitHub Actions `RunID` recipe gains the matrix leg (`GITHUB_RUN_ID` + `GITHUB_RUN_ATTEMPT` are shared by every matrix leg) and §5 states normatively that a run is scoped to one job, never a whole matrix; the `st_nlink == 2` inference's two preconditions are made explicit; an NTFS per-component note records that `\\?\` lifts `MAX_PATH` but not the 255-character component limit. |
 | v1.2.1 | #148 (review follow-up) | Corrections from a second review pass, no design change: the run-token pattern becomes `^([0-9a-fA-F]{2}){16,64}$` (the previous form admitted odd, undecodable lengths); the shard filename is described as **bounded** at 117 bytes rather than fixed, with the arithmetic tabulated; §8's correction note states the `cmd/go` mechanism precisely (a child's exit code is never propagated — `base.SetExitStatus` keeps a maximum but only ever receives the constant `1`); §5's Windows rationale corrected (Go's `os.fixLongPath` handles `MAX_PATH` itself, so the real constraint is consumer tooling); `renameat2`/`RENAME_NOREPLACE` downgraded from "alternative" to "needs a mandatory `link` fallback"; added the `link`-over-NFS false-`EEXIST` recipe; finalize-on-red extended to cancellation/timeout paths; per-CI `RunID` recipes for GitHub Actions and GitLab; gate-off warn-only stderr validation added so typo detection survives without the power to fail a run. |
@@ -410,8 +411,18 @@ indistinguishably from a crash. This is a supporting reason for the `-count=1` r
 not a replacement for it: `-count=1` remains mandatory for reporting runs.
 
 **On the disabled path the access pattern inverts, and this is load-bearing.** When the gate is
-off, the warn-only validation (above) MUST obtain `GO_SPECS_RUN_ID` and `GO_SPECS_RUN_TOKEN` by
-scanning `os.Environ()`, and MUST NOT call `os.Getenv` or `os.LookupEnv` for them.
+off, **every** variable this contract introduces — `GO_SPECS_RUN_ID`, `GO_SPECS_RUN_TOKEN` and
+`GO_SPECS_REPORT_DIR` — MUST be obtained by scanning `os.Environ()`, and MUST NOT be read with
+`os.Getenv` or `os.LookupEnv`. The rule is the **whole variable set, not just the ones the
+diagnostic happens to mention**: `GO_SPECS_REPORT_DIR` is the easy one to miss, and it is a
+realistic per-invocation value (CI routinely points it at a run-scoped temp directory), so a
+single stray `LookupEnv` for it reintroduces the same cache enrollment at a fraction of the
+visibility. Any variable added to the table above later inherits this rule by default; an
+exception must be argued explicitly, not assumed from silence.
+
+`GO_SPECS_REPORT` (#142) is deliberately outside this rule: it is read by the existing
+per-process reporter on its own path, is not part of run coordination, and its semantics are
+unchanged by this contract.
 
 The reason is the same cache mechanism, working against us. `cmd/go` derives test-cache validity
 from the testlog, which records every `getenv` event the binary emits; `os.Getenv` and
@@ -432,9 +443,15 @@ Two consequences #145 must honour:
   the call site stating why `Getenv` is forbidden there, or the first person tidying the code
   reintroduces the problem with a change that looks like a pure simplification.
 - It MUST be covered by a regression test asserting that a gate-off run is **cache-stable**: run
-  a package twice with a *different* `GO_SPECS_RUN_ID` exported and the gate off, and assert the
-  second run reports `(cached)`. A test that only checks the diagnostic text will not catch a
-  `Getenv` creeping back in.
+  a package twice with the gate off and assert the second run reports `(cached)`. A test that
+  only checks the diagnostic text will not catch a `Getenv` creeping back in.
+
+  The test MUST vary **at least two** of the contract's variables between the two runs — use
+  `GO_SPECS_RUN_ID` *and* `GO_SPECS_REPORT_DIR` — because a test that varies only the run ID
+  passes even when some other variable is still read through `os.Getenv`. That is the exact shape
+  of the leak this rule exists to prevent, and a one-variable test would certify the codebase
+  against it while leaving it open. Ideally the test varies every variable in the set, so adding
+  a variable without extending the test is the thing that fails.
 
 The gate variable itself may be read either way: it is stable within an environment, so enrolling
 `GO_SPECS_REPORT_SHARDS` in the cache key costs nothing. Only the identity variables vary per
@@ -792,6 +809,10 @@ func GenerateRunToken() (RunToken, error)
 //
 //	printf %s "$GO_SPECS_RUN_TOKEN" | sha256sum                 # wrong — hashes the hex text
 //	printf %s "$GO_SPECS_RUN_TOKEN" | xxd -r -p | sha256sum     # correct — hashes the bytes
+//
+// On macOS, sha256sum is not installed by default; use shasum -a 256 instead:
+//
+//	printf %s "$GO_SPECS_RUN_TOKEN" | xxd -r -p | shasum -a 256
 //
 // The `xxd -r -p` step (or `basenc --decode --base16` on an uppercase token) is what makes the
 // result match run.json. Expect to need this exactly once, at 2am.
@@ -1235,9 +1256,10 @@ Recommended (non-blocking) updates:
   Contract v1.2 adds the following producer-side requirements, each of which needs a test:
   `GO_SPECS_REPORT_SHARDS` as the sole activation gate, with a gate-off run that cannot fail and
   a gate-off warn-only stderr diagnostic for a malformed identity variable; the `os.Environ()`
-  access pattern on the disabled path, with the call-site comment and the **cache-stability
-  regression test** §5 requires (two runs, differing `GO_SPECS_RUN_ID`, gate off, second must
-  report `(cached)`); every partial-variable row in §5 with the exact variable named in the
+  access pattern on the disabled path for **every** variable this contract introduces, with the
+  call-site comment and the **cache-stability regression test** §5 requires (two runs, gate off,
+  varying at least `GO_SPECS_RUN_ID` *and* `GO_SPECS_REPORT_DIR`, second must report `(cached)`);
+  every partial-variable row in §5 with the exact variable named in the
   diagnostic; the
   `config-error.json` record on the pre-test failure path (and *no* reliance on a distinguishable
   `go test` exit code); the atomic create-no-replace publish, with a concurrency test (and an NFS-style false-EEXIST unit test for the nlink recipe) proving two
@@ -1314,6 +1336,33 @@ line should be restated as:
   and failing clearly, rather than requiring `\\?\` prefixing or the `LongPathsEnabled` manifest
   setting. Whether #145 additionally opts in to long paths is left open — it changes the failure
   threshold, not the contract.
+- **Which normative claims rest on unpinned runtime behaviour** (v1.2.4, flagged for #145 to
+  answer early rather than at the end). Three of the four defects found while reviewing this
+  amendment — the token digest's case sensitivity, the matrix `RunID` collision, and the
+  test-cache enrollment on the disabled path — shared a shape: the contract was internally
+  consistent, and the failure lived in what the environment does *underneath* it. Internal review
+  does not catch that class; only a test that exercises the real behaviour does. The
+  cache-stability test above is the pattern.
+
+  #145 should therefore enumerate, before implementation ends, every normative claim in this
+  contract that depends on runtime or platform behaviour and is not pinned by a test. Known
+  members of that list today:
+  - **Atomic create-no-replace under concurrency** — pinned by the concurrent-writer test §12
+    already requires, on a local filesystem.
+  - **Create-no-replace on a network mount** — *not* pinned, and the hardest of these to test,
+    since it needs a real NFS/CIFS mount in CI. §10 currently handles it by declaring network
+    mounts unsupported; if that declaration is to be enforced rather than merely stated, the
+    detection it mentions needs a test of its own.
+  - **The `link`-over-NFS `st_nlink == 2` fallback** — *not* pinned, and the clearest example of
+    the risk: it is written once, never exercised, and only becomes load-bearing at the moment it
+    is also least observable. At minimum it should be unit-tested against an injected `EEXIST`
+    with a stubbed `stat`, so the branch is exercised even when the environment that triggers it
+    is not.
+  - **`os.Environ` not routing through testlog** — pinned by the cache-stability test above,
+    deliberately, because it is an implementation detail rather than a documented guarantee.
+
+  This is a #145 planning item, not a blocker for this contract; recorded here so the question is
+  asked while the code is being written rather than after.
 - **Producer-manifest generation recipe** (v1.2): §5 defines *what* belongs in the
   expected-producer set and what is excluded, but deliberately does not prescribe the tooling that
   produces it (a checked-in file, a `go list` pipeline filtered by a go-specs import check, a
