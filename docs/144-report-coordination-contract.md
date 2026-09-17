@@ -275,8 +275,8 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
    make loud.
 6. Finalize reads the run marker first and confirms `RunToken` ownership before touching any
    shard; a missing or mismatched marker is a fail-closed error (§8), not a partial report.
-   Finalize then discovers the run's shard directory, accepts only complete (atomically-renamed)
-   and valid shards, checks them against the authoritative expected-producer manifest, merges
+   Finalize then discovers the run's shard directory, accepts only complete (atomically-published,
+   §5) and valid shards, checks them against the authoritative expected-producer manifest, merges
    execution data deterministically, merges coverage by deduplicating blocks from the single
    combined profile (§9), and renders XML/HTML/TXT/JSON through the existing #142 renderers,
    unchanged.
@@ -647,8 +647,9 @@ Filesystem layout:
   group/other-writable refusal, and the local-filesystem requirement — are in §10 and are
   normative for #145/#146, not advisory.
 - **Write protocol**: write to `<final-name>.tmp-<pid>` inside the *same* shard directory (never
-  `/tmp` or another mount — cross-filesystem `rename` is not atomic on POSIX and must be
-  documented as a hard constraint on `GO_SPECS_REPORT_DIR`), `Sync()`, `Close()`, then publish via
+  `/tmp` or another mount — neither `rename` nor `link` works across filesystems on POSIX
+  (`link` fails `EXDEV`), so this is a hard constraint on `GO_SPECS_REPORT_DIR`), `Sync()`,
+  `Close()`, then publish via
   an **atomic create-no-replace** operation. A final shard destination that already exists is
   reported as a duplicate-producer error, never silently overwritten.
 
