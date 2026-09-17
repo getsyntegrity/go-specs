@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.2** (amended by #148)
+Contract version: **v1.2.3** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.2 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.3 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,6 +17,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
+| v1.2.3 | #148 (review follow-up 3) | Closes a regression introduced by v1.2.1's own warn-only diagnostic: reading the identity variables with `os.Getenv` on the **disabled** path enrolls them in the test-cache key (`os.Getenv`/`os.LookupEnv` call `testlog.Getenv`; `os.Environ` does not), so a stale per-invocation `GO_SPECS_RUN_ID` would defeat caching for every package on every run while producing no reporting at all. §5 now requires an `os.Environ()` scan on that path, explains why the unusual access pattern is load-bearing, and mandates a cache-stability regression test. Also: the GitHub Actions `RunID` recipe gains `github.job`, since `strategy.job-index` is unique only within one matrix and two job definitions both yield index `0`; §7 records the `xxd -r -p` step needed to reproduce the token digest by hand; digest-of-decoded-bytes wording made consistent across §3, §5 and §7. |
 | v1.2.2 | #148 (review follow-up 2) | Correctness fixes, no design change: the run-token digest is taken over the token's **decoded bytes**, not its hex text (the pattern accepts either case, so `AB…` and `ab…` would otherwise hash differently despite being byte-identical); §3 and the partial-combination table restate gate-off behaviour as "read and checked for well-formedness, never acted on" rather than "unread", matching the warn-only diagnostic; the GitHub Actions `RunID` recipe gains the matrix leg (`GITHUB_RUN_ID` + `GITHUB_RUN_ATTEMPT` are shared by every matrix leg) and §5 states normatively that a run is scoped to one job, never a whole matrix; the `st_nlink == 2` inference's two preconditions are made explicit; an NTFS per-component note records that `\\?\` lifts `MAX_PATH` but not the 255-character component limit. |
 | v1.2.1 | #148 (review follow-up) | Corrections from a second review pass, no design change: the run-token pattern becomes `^([0-9a-fA-F]{2}){16,64}$` (the previous form admitted odd, undecodable lengths); the shard filename is described as **bounded** at 117 bytes rather than fixed, with the arithmetic tabulated; §8's correction note states the `cmd/go` mechanism precisely (a child's exit code is never propagated — `base.SetExitStatus` keeps a maximum but only ever receives the constant `1`); §5's Windows rationale corrected (Go's `os.fixLongPath` handles `MAX_PATH` itself, so the real constraint is consumer tooling); `renameat2`/`RENAME_NOREPLACE` downgraded from "alternative" to "needs a mandatory `link` fallback"; added the `link`-over-NFS false-`EEXIST` recipe; finalize-on-red extended to cancellation/timeout paths; per-CI `RunID` recipes for GitHub Actions and GitLab; gate-off warn-only stderr validation added so typo detection survives without the power to fail a run. |
 | v1.2 | #148 (initial revision) | **Normative changes**: §8's distinct configuration-failure exit code no longer comes from the test binary — a pre-test failure inside a package binary writes a `config-error.json` record and the preflight/finalize layer maps it to `78` (`EX_CONFIG`); §5 replaces `os.Rename` and the pre-rename existence check with a mandatory atomic create-no-replace publish; §5 bounds the readable shard-name prefix to 40 bytes; §3/§5 add `GO_SPECS_REPORT_SHARDS` as the explicit activation switch and define the partial-variable cases; §10 sets a `GO_SPECS_RUN_TOKEN` entropy floor and reframes it as an ownership, not a security, mechanism; §5 defines `run.json` lifecycle/uniqueness and cleanup; §5/§9 define the expected-producer set and its exclusions; §5/§10 add shard-payload ownership binding, symlink/permission hardening, and the NFS/CIFS `O_EXCL` caveat. |
@@ -227,7 +228,7 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
 2. **Still before `go test` runs**, the same step calls `InitializeRun` (library call or a thin
    `go-specs-report init` CLI), which exclusively creates the run marker
    `<GO_SPECS_REPORT_DIR>/<run-id>/run.json` (§5) recording the run's schema version, `RunID`, and
-   the hex SHA-256 digest of `RunToken`. Exclusive creation (fails if the file already exists) is
+   the hex SHA-256 digest of `RunToken`'s **decoded bytes** (§5). Exclusive creation (fails if the file already exists) is
    what turns "two invocations reused the same `RunID`" into an immediate, loud, pre-test error
    instead of a silent race to write into the same directory. `RunID` therefore **MUST be unique
    per invocation**, including across reruns of the same CI job (§5, *Run marker lifecycle*). If
@@ -398,14 +399,46 @@ shell) or `unset GO_SPECS_RUN_ID GO_SPECS_RUN_TOKEN GO_SPECS_REPORT_SHARDS`. "In
 configuration" without a variable name is not an acceptable diagnostic: the whole point of the
 gate is that the person hitting this is usually a developer who does not know the variable is set.
 
-**Environment, not files, is the transport.** Producers MUST read run identity through environment
-variables (`os.Getenv`) and MUST NOT source it from a config file, a build flag, or a compiled-in
-value. `go test` records the environment variables a test binary actually reads into its test-cache
-key, so an env-var read makes a new `GO_SPECS_RUN_ID` invalidate the cached result for that
-package; a value smuggled in by any other route leaves the cache key unchanged, the package is
-served from cache, its binary never executes, and it therefore never publishes a shard (F4) —
-silently, and indistinguishably from a crash. This is a supporting reason for the `-count=1`
-requirement in §6, not a replacement for it: `-count=1` remains mandatory for reporting runs.
+**Environment, not files, is the transport — and how it is read is normative.** When the gate is
+on, producers MUST read run identity through environment variables using `os.Getenv` /
+`os.LookupEnv`, and MUST NOT source it from a config file, a build flag, or a compiled-in value.
+`go test` records the environment variables a test binary actually reads into its test-cache key,
+so an env-var read makes a new `GO_SPECS_RUN_ID` invalidate the cached result for that package; a
+value smuggled in by any other route leaves the cache key unchanged, the package is served from
+cache, its binary never executes, and it therefore never publishes a shard (F4) — silently, and
+indistinguishably from a crash. This is a supporting reason for the `-count=1` requirement in §6,
+not a replacement for it: `-count=1` remains mandatory for reporting runs.
+
+**On the disabled path the access pattern inverts, and this is load-bearing.** When the gate is
+off, the warn-only validation (above) MUST obtain `GO_SPECS_RUN_ID` and `GO_SPECS_RUN_TOKEN` by
+scanning `os.Environ()`, and MUST NOT call `os.Getenv` or `os.LookupEnv` for them.
+
+The reason is the same cache mechanism, working against us. `cmd/go` derives test-cache validity
+from the testlog, which records every `getenv` event the binary emits; `os.Getenv` and
+`os.LookupEnv` both call `testlog.Getenv(key)`, while `os.Environ` delegates straight to
+`syscall.Environ` and records nothing. So reading these variables with `Getenv` on the disabled
+path enrolls them in the inputs ID of **every package in the module**, and a stale or
+per-invocation-varying `GO_SPECS_RUN_ID` sitting in a developer's environment then invalidates the
+cache for every package on every run — with no reporting produced in exchange, since the gate is
+off. Before this contract added the diagnostic, a gate-off run touched nothing and cached
+normally. That regression is silent, cumulative, and typically diagnosed months later as "our CI
+got slow"; it is strictly worse than the typo it would be paying for.
+
+Two consequences #145 must honour:
+
+- The `os.Environ()` scan is a **deliberate use of an implementation detail** — that testlog
+  instrumentation lives in `os.Getenv`/`os.LookupEnv` and not in `os.Environ` — rather than a
+  stylistic choice. It is not a documented API guarantee. It MUST therefore carry a comment at
+  the call site stating why `Getenv` is forbidden there, or the first person tidying the code
+  reintroduces the problem with a change that looks like a pure simplification.
+- It MUST be covered by a regression test asserting that a gate-off run is **cache-stable**: run
+  a package twice with a *different* `GO_SPECS_RUN_ID` exported and the gate off, and assert the
+  second run reports `(cached)`. A test that only checks the diagnostic text will not catch a
+  `Getenv` creeping back in.
+
+The gate variable itself may be read either way: it is stable within an environment, so enrolling
+`GO_SPECS_REPORT_SHARDS` in the cache key costs nothing. Only the identity variables vary per
+invocation, and only they must avoid the testlog.
 
 Filesystem layout:
 
@@ -418,8 +451,8 @@ Filesystem layout:
 
 - **Run marker (`run.json`)**: created exclusively (fails if already present, e.g. `O_CREATE |
   O_EXCL | O_NOFOLLOW`) by `InitializeRun`, *before* `go test` runs (§3 step 2). Contains a marker
-  schema version, the `RunID`, and the **hex-encoded SHA-256 digest** (not the raw value) of
-  `RunToken`. Every subsequent reader (producer or finalizer) recomputes the digest of its own
+  schema version, the `RunID`, and the **lowercase hex SHA-256 digest of `RunToken`'s decoded
+  bytes** (never the raw token, and never a digest of its hex text — see below). Every subsequent reader (producer or finalizer) recomputes the digest of its own
   `GO_SPECS_RUN_TOKEN` and compares it to the marker's stored digest using a **constant-time
   comparison** (`crypto/subtle.ConstantTimeCompare`, never `==` on the decoded values).
 
@@ -458,9 +491,18 @@ Filesystem layout:
       `${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` makes a fan-out of `go test` jobs derive the
       *same* `RunID` — reintroducing precisely the collision this rule forbids. GitHub exposes no
       environment variable for matrix values, so the leg must be interpolated in the workflow
-      itself: `${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}`, or the
-      matrix keys spelled out. Add `${{ github.job }}` when several distinct jobs report
-      separately.
+      itself. **`strategy.job-index` alone is not sufficient**: it is unique within *one* matrix,
+      not within the workflow, so two separate matrix job definitions both yield index `0` and
+      collide again. The conforming recipe includes the job identity as well:
+
+      ```
+      ${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}
+      ```
+
+      (or the matrix keys spelled out in place of `job-index`). All four parts are load-bearing:
+      `run_id` identifies the workflow run, `run_attempt` separates re-runs, `github.job`
+      separates job definitions, and `job-index` separates legs within one definition. Drop any
+      one and there is a real configuration that collides while looking correct.
     - **GitLab CI**: `CI_JOB_ID` is **already unique per retry** — a retried job is a new job with
       a new ID — so `${CI_JOB_ID}` alone is conforming, and `parallel:matrix` legs get distinct
       job IDs, so the fan-out problem above does not arise. There is no `CI_JOB_ATTEMPT`
@@ -629,7 +671,7 @@ Filesystem layout:
   finalizer additionally rejects, as corrupt/ambiguous (§9), any case in which it still observes
   two valid shard files whose envelopes report the same `PackagePath` — never "pick one."
 - **Shard payload ownership binding**: every shard envelope carries the `RunID` **and** the same
-  hex SHA-256 digest of `RunToken` stored in `run.json` (§7, `ShardEnvelope.RunTokenHash`), and
+  hex SHA-256 digest of `RunToken`'s decoded bytes stored in `run.json` (§7, `ShardEnvelope.RunTokenHash`), and
   the finalizer verifies both — with a constant-time comparison for the digest — before the shard
   contributes anything to the merge. The filename digest proves *which package* a shard claims to
   be; it proves nothing about *which run* wrote it. Without the payload binding, any process that
@@ -744,6 +786,18 @@ func GenerateRunToken() (RunToken, error)
 // despite decoding to identical bytes (§5). This is the only form ever written to disk, in
 // run.json (§5) and in every ShardEnvelope. Comparisons of these digests normalize to lowercase
 // and then use crypto/subtle.ConstantTimeCompare, never ==.
+//
+// Reproducing the digest by hand, for anyone debugging an ownership mismatch: the obvious
+// one-liner is WRONG, because it hashes the hex text rather than the bytes it encodes.
+//
+//	printf %s "$GO_SPECS_RUN_TOKEN" | sha256sum                 # wrong — hashes the hex text
+//	printf %s "$GO_SPECS_RUN_TOKEN" | xxd -r -p | sha256sum     # correct — hashes the bytes
+//
+// The `xxd -r -p` step (or `basenc --decode --base16` on an uppercase token) is what makes the
+// result match run.json. Expect to need this exactly once, at 2am.
+//
+// It returns an error because hex decoding can fail; callers that already ran ValidateRunToken
+// may treat that error as unreachable, but must not discard it silently.
 func HashRunToken(t RunToken) (string, error)
 
 // RunOwnership is the result of successfully claiming or verifying a run's marker file. It is
@@ -752,7 +806,8 @@ func HashRunToken(t RunToken) (string, error)
 type RunOwnership struct {
 	RunID       RunID
 	MarkerPath  string // <BaseDir>/<RunID>/run.json
-	TokenHash   string // sha256(RunToken), matching the marker's stored value
+	TokenHash   string // lowercase hex sha256 of RunToken's DECODED BYTES (§5), matching the
+	                   // marker's stored value
 }
 
 // InitializeRunOptions configures the pre-flight step that must run once, before `go test`,
@@ -787,8 +842,10 @@ type ShardConfig struct {
 // returns a disabled config with no error — a stale export in a developer shell must never
 // hard-fail a test run (§3 step 1, §5). In that state it may still emit the single warn-only
 // stderr diagnostic for a present-but-invalid GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN (§5), which
-// never affects the returned error or the process's exit status. When the gate is on, it reads
-// GO_SPECS_RUN_ID /
+// never affects the returned error or the process's exit status — and it MUST obtain those two
+// values by scanning os.Environ(), never via os.Getenv/os.LookupEnv, which would enroll them in
+// the test cache key and defeat caching for every package on the disabled path (§5).
+// When the gate is on, it reads GO_SPECS_RUN_ID /
 // GO_SPECS_RUN_TOKEN / GO_SPECS_REPORT_DIR and verifies the run marker (§5), populating
 // ShardConfig.Ownership on success. When either identity variable is absent or invalid, the
 // marker is missing, or the marker's stored digest does not match this process's Token,
@@ -831,7 +888,8 @@ func (w *ShardWriter) Write(rep NormalizedReport) error
 type ShardEnvelope struct {
 	ShardSchemaVersion string // versions this envelope, independent of report.SchemaVersion
 	RunID              RunID
-	RunTokenHash       string // hex sha256(RunToken), identical to run.json's stored digest (§5).
+	RunTokenHash       string // lowercase hex sha256 of RunToken's DECODED BYTES, identical to
+	                          // run.json's stored digest (§5).
 	                          // Binds the shard to the run that owns the directory, so a shard
 	                          // dropped in by a foreign process is rejected, not merged. Verified
 	                          // by the finalizer with a constant-time comparison. The raw token is
@@ -1176,8 +1234,11 @@ Recommended (non-blocking) updates:
   should reference `ShardConfig`/`ShardWriter`/`ShardEnvelope` (§7) as its contract surface.
   Contract v1.2 adds the following producer-side requirements, each of which needs a test:
   `GO_SPECS_REPORT_SHARDS` as the sole activation gate, with a gate-off run that cannot fail and
-  a gate-off warn-only stderr diagnostic for a malformed identity variable; every partial-variable
-  row in §5 with the exact variable named in the diagnostic; the
+  a gate-off warn-only stderr diagnostic for a malformed identity variable; the `os.Environ()`
+  access pattern on the disabled path, with the call-site comment and the **cache-stability
+  regression test** §5 requires (two runs, differing `GO_SPECS_RUN_ID`, gate off, second must
+  report `(cached)`); every partial-variable row in §5 with the exact variable named in the
+  diagnostic; the
   `config-error.json` record on the pre-test failure path (and *no* reliance on a distinguishable
   `go test` exit code); the atomic create-no-replace publish, with a concurrency test (and an NFS-style false-EEXIST unit test for the nlink recipe) proving two
   producers for the same package path do not silently collapse; the 40-byte bounded prefix plus
