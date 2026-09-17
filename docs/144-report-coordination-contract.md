@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.4** (amended by #148)
+Contract version: **v1.2.5** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.4 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.5 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,6 +17,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
+| v1.2.5 | #148 (review follow-up 5) | Resolves an ambiguity in §10: the local-filesystem requirement is a **declaration, not an enforcement** — no network-mount detection is required or should be implemented, because portable detection does not exist (`statfs` `f_type`, `getmntinfo`, `GetDriveType` disagree and are incomplete against overlay and bind mounts) and a check that reports "local" for an NFS-backed bind mount is worse than none. §10 now states the cost plainly: a `run.json` `O_EXCL` failure on a network mount is unmitigated and unrecoverable by design, while the `link` false-`EEXIST` case is mitigated by the `st_nlink` recipe — making that branch the contract's only network-filesystem defence, and therefore a required test rather than an optional one (§13). |
 | v1.2.4 | #148 (review follow-up 4) | Scope fixes on v1.2.3's own rule: the disabled-path `os.Environ()` requirement covers **every** variable this contract introduces (`GO_SPECS_REPORT_DIR` included — a realistic per-invocation value, and the easy one to miss), with later additions inheriting it by default; the cache-stability test must vary at least two variables, since a run-ID-only test passes while another variable still leaks through `os.Getenv`. Adds the macOS `shasum -a 256` form to §7, and a §13 planning item asking #145 to enumerate normative claims that rest on unpinned runtime behaviour (network-mount create-no-replace and the `link`/`st_nlink` fallback being the two currently unpinned). |
 | v1.2.3 | #148 (review follow-up 3) | Closes a regression introduced by v1.2.1's own warn-only diagnostic: reading the identity variables with `os.Getenv` on the **disabled** path enrolls them in the test-cache key (`os.Getenv`/`os.LookupEnv` call `testlog.Getenv`; `os.Environ` does not), so a stale per-invocation `GO_SPECS_RUN_ID` would defeat caching for every package on every run while producing no reporting at all. §5 now requires an `os.Environ()` scan on that path, explains why the unusual access pattern is load-bearing, and mandates a cache-stability regression test. Also: the GitHub Actions `RunID` recipe gains `github.job`, since `strategy.job-index` is unique only within one matrix and two job definitions both yield index `0`; §7 records the `xxd -r -p` step needed to reproduce the token digest by hand; digest-of-decoded-bytes wording made consistent across §3, §5 and §7. |
 | v1.2.2 | #148 (review follow-up 2) | Correctness fixes, no design change: the run-token digest is taken over the token's **decoded bytes**, not its hex text (the pattern accepts either case, so `AB…` and `ab…` would otherwise hash differently despite being byte-identical); §3 and the partial-combination table restate gate-off behaviour as "read and checked for well-formedness, never acted on" rather than "unread", matching the warn-only diagnostic; the GitHub Actions `RunID` recipe gains the matrix leg (`GITHUB_RUN_ID` + `GITHUB_RUN_ATTEMPT` are shared by every matrix leg) and §5 states normatively that a run is scoped to one job, never a whole matrix; the `st_nlink == 2` inference's two preconditions are made explicit; an NTFS per-component note records that `\\?\` lifts `MAX_PATH` but not the 255-character component limit. |
@@ -1179,12 +1180,37 @@ Responsibility split:
   single local filesystem; temp files are written inside the destination shard directory
   specifically so the create-no-replace publish stays atomic (neither POSIX `rename` nor `link`
   atomicity holds across filesystem/mount boundaries).
-- **Network filesystems**: the exclusivity this contract depends on — `O_EXCL` for `run.json` and
-  `link`'s `EEXIST` for shard publication — **degrades on NFS and CIFS/SMB**, where client-side
-  caching and non-atomic server semantics can let two clients both believe they won. The
-  reporting base directory MUST therefore be on a local filesystem; `GO_SPECS_REPORT_DIR` pointing
-  at a network mount is unsupported and, where detectable, should be rejected with a clear
-  diagnostic rather than silently trusted.
+- **Network filesystems — a declaration, not an enforcement.** The exclusivity this contract
+  depends on — `O_EXCL` for `run.json` and `link`'s `EEXIST` for shard publication — **degrades on
+  NFS and CIFS/SMB**, where client-side caching and non-atomic server semantics can let two
+  clients both believe they won. The reporting base directory MUST therefore be on a local
+  filesystem.
+
+  **No detection is required, and none should be implemented.** This is a documented constraint on
+  the caller, not a runtime check: `GO_SPECS_REPORT_DIR` pointing at a network mount is
+  unsupported, and the implementation will not notice. The reason is that portable detection does
+  not exist — it would mean `statfs`/`fstatfs` `f_type` constants on Linux, `getmntinfo` on macOS
+  and `GetDriveType` on Windows, none of which agree with each other and all of which are
+  incomplete against overlay and bind mounts. A check that confidently reports "local" for an
+  NFS-backed bind mount is **worse than no check**, because it converts a documented constraint the
+  operator can reason about into a false assurance they cannot. If an implementation offers such a
+  check at all it must be opt-in and advisory, and nothing in the contract may depend on it.
+
+  Stated plainly, because a declaration without its consequences is not honest: on a network
+  mount, an exclusivity failure is **not distinguished from a local one**, and the contract
+  degrades silently. The two exposures are not equally mitigated:
+  - **`run.json` `O_EXCL` may not be exclusive** ⇒ two independent invocations can both believe
+    they own the run and write into the same namespace. **Nothing in this contract mitigates
+    this.** It is the whole reason the local-filesystem constraint exists, and it is unrecoverable
+    by design rather than by oversight.
+  - **`link` may report a false `EEXIST`** ⇒ a correct publish looks like a duplicate-producer
+    error. The `st_nlink` recipe in the next bullet mitigates this one, and is the *only*
+    mitigation the contract offers for any network-filesystem behaviour.
+
+  That asymmetry raises the stakes on the `st_nlink` branch rather than lowering them: it is the
+  contract's single line of defence in an environment it has declared unsupported, which is
+  exactly the branch least likely to be exercised before it matters. §13 records it as a claim
+  that must be pinned by a test.
 - **`link(2)` false-negative over NFS**: related, and worth stating explicitly because it produces
   the *opposite* error from the one an implementer expects. Over NFS, `link` can report `EEXIST`
   for an operation that actually **succeeded** — the server performed the link, the reply was
@@ -1349,15 +1375,18 @@ line should be restated as:
   members of that list today:
   - **Atomic create-no-replace under concurrency** — pinned by the concurrent-writer test §12
     already requires, on a local filesystem.
-  - **Create-no-replace on a network mount** — *not* pinned, and the hardest of these to test,
-    since it needs a real NFS/CIFS mount in CI. §10 currently handles it by declaring network
-    mounts unsupported; if that declaration is to be enforced rather than merely stated, the
-    detection it mentions needs a test of its own.
+  - **Create-no-replace on a network mount** — *not* pinned, and now *not required to be*: §10
+    resolves this as a **declaration rather than an enforcement**, with no detection implemented,
+    so there is no detection code to test. What that costs is stated there explicitly — a
+    `run.json` exclusivity failure on a network mount is unmitigated and unrecoverable by design.
+    The item stays on this list only so that the decision is re-read rather than re-litigated.
   - **The `link`-over-NFS `st_nlink == 2` fallback** — *not* pinned, and the clearest example of
-    the risk: it is written once, never exercised, and only becomes load-bearing at the moment it
-    is also least observable. At minimum it should be unit-tested against an injected `EEXIST`
-    with a stubbed `stat`, so the branch is exercised even when the environment that triggers it
-    is not.
+    the risk: written once, never exercised, and load-bearing at the moment it is least
+    observable. Because §10 declines to detect network mounts, this branch is the **only**
+    mitigation the contract offers for any network-filesystem behaviour, which makes pinning it a
+    requirement rather than a nicety. At minimum it must be unit-tested against an injected
+    `EEXIST` with a stubbed `stat` returning `st_nlink == 2` (publish accepted) and `st_nlink == 1`
+    (duplicate reported), so both arms run even where the environment that triggers them does not.
   - **`os.Environ` not routing through testlog** — pinned by the cache-stability test above,
     deliberately, because it is an implementation detail rather than a documented guarantee.
 
