@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2** (amended by #148)
+Contract version: **v1.2.1** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.1 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,7 +17,8 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
-| v1.2 | #148 (this revision) | **Normative changes**: §8's distinct configuration-failure exit code no longer comes from the test binary — a pre-test failure inside a package binary writes a `config-error.json` record and the preflight/finalize layer maps it to `78` (`EX_CONFIG`); §5 replaces `os.Rename` and the pre-rename existence check with a mandatory atomic create-no-replace publish; §5 bounds the readable shard-name prefix to 40 bytes; §3/§5 add `GO_SPECS_REPORT_SHARDS` as the explicit activation switch and define the partial-variable cases; §10 sets a `GO_SPECS_RUN_TOKEN` entropy floor and reframes it as an ownership, not a security, mechanism; §5 defines `run.json` lifecycle/uniqueness and cleanup; §5/§9 define the expected-producer set and its exclusions; §5/§10 add shard-payload ownership binding, symlink/permission hardening, and the NFS/CIFS `O_EXCL` caveat. |
+| v1.2.1 | #148 (review follow-up) | Corrections from a second review pass, no design change: the run-token pattern becomes `^([0-9a-fA-F]{2}){16,64}$` (the previous form admitted odd, undecodable lengths); the shard filename is described as **bounded** at 117 bytes rather than fixed, with the arithmetic tabulated; §8's correction note states the `cmd/go` mechanism precisely (a child's exit code is never propagated — `base.SetExitStatus` keeps a maximum but only ever receives the constant `1`); §5's Windows rationale corrected (Go's `os.fixLongPath` handles `MAX_PATH` itself, so the real constraint is consumer tooling); `renameat2`/`RENAME_NOREPLACE` downgraded from "alternative" to "needs a mandatory `link` fallback"; added the `link`-over-NFS false-`EEXIST` recipe; finalize-on-red extended to cancellation/timeout paths; per-CI `RunID` recipes for GitHub Actions and GitLab; gate-off warn-only stderr validation added so typo detection survives without the power to fail a run. |
+| v1.2 | #148 (initial revision) | **Normative changes**: §8's distinct configuration-failure exit code no longer comes from the test binary — a pre-test failure inside a package binary writes a `config-error.json` record and the preflight/finalize layer maps it to `78` (`EX_CONFIG`); §5 replaces `os.Rename` and the pre-rename existence check with a mandatory atomic create-no-replace publish; §5 bounds the readable shard-name prefix to 40 bytes; §3/§5 add `GO_SPECS_REPORT_SHARDS` as the explicit activation switch and define the partial-variable cases; §10 sets a `GO_SPECS_RUN_TOKEN` entropy floor and reframes it as an ownership, not a security, mechanism; §5 defines `run.json` lifecycle/uniqueness and cleanup; §5/§9 define the expected-producer set and its exclusions; §5/§10 add shard-payload ownership binding, symlink/permission hardening, and the NFS/CIFS `O_EXCL` caveat. |
 
 **Amendment note (v1.1)**: §3, §5, §7, §8, and §10 were revised after an adversarial re-read
 surfaced three gaps between this contract and the hardening requirements now recorded on
@@ -251,8 +252,9 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
    Packages that never link go-specs do nothing and are never broken by the env vars being
    present (F1 vs F2).
 4. **`go test` returns.** Its exit code reflects test results, and nothing else — a pre-test
-   configuration/ownership failure detected in step 3 collapses into the toolchain's ordinary
-   failure status and is *not* independently distinguishable there (§8). The distinction is
+   configuration/ownership failure detected in step 3 surfaces only as the toolchain's ordinary
+   failure status — `cmd/go` reports the package `FAIL` and never propagates the binary's own
+   exit code — so it is *not* independently distinguishable there (§8). The distinction is
    carried by the `config-error.json` record, not by `go test`'s exit code.
 5. **After `go test` returns**, the same script/CI step — only if it wants a merged module report
    — runs a separate, explicit finalization command/library call
@@ -304,7 +306,7 @@ sequenceDiagram
         PA->>FS: read run.json, constant-time compare sha256hex(T)
         alt ownership/config check fails (pre-test)
             PA->>FS: write <base>/<R>/config-error.json (create-no-replace)
-            PA-->>GT: fail before m.Run(); go test collapses this to its ordinary failure status
+            PA-->>GT: fail before m.Run(); go test reports pkg FAIL; child exit code not propagated
         else ownership confirmed
             PA->>PA: m.Run()
             PA->>FS: write .tmp, fsync, close, atomic create-no-replace publish -> prefix(max 40B)--sha256(pkgPath).shard.json
@@ -342,9 +344,9 @@ configuration error and must fail loudly rather than silently degrading to disab
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `GO_SPECS_REPORT_SHARDS` | invoking script/CI, before `go test` | **Activation gate.** `1`/`true` (case-insensitive) ⇒ shard emission requested. Absent, empty, `0`/`false` ⇒ shard emission disabled and every other variable in this table below `GO_SPECS_REPORT` is ignored entirely, *including* stale or invalid values. Any other value ⇒ configuration error (an unparseable gate must not be guessed either way). |
+| `GO_SPECS_REPORT_SHARDS` | invoking script/CI, before `go test` | **Activation gate.** `1`/`true` (case-insensitive) ⇒ shard emission requested. Absent, empty, `0`/`false` ⇒ shard emission disabled: no shard is written and no failure can originate from reporting, though an invalid run identity may still be *reported* on stderr (see *Warn-only validation* below). Any other value ⇒ configuration error (an unparseable gate must not be guessed either way). |
 | `GO_SPECS_RUN_ID` | invoking script/CI, before `go test` | Readable, logical run identifier, `^[A-Za-z0-9_.-]{1,128}$`, **unique per invocation** (see *Run marker lifecycle*). Identifies the run for humans and for directory naming. Required whenever the gate is on; absent or invalid while the gate is on ⇒ configuration error. **Not, by itself, proof of ownership** — see `GO_SPECS_RUN_TOKEN` — and not, by itself, an activation signal. |
-| `GO_SPECS_RUN_TOKEN` | invoking script/CI, before `go test`, once per invocation | Per-invocation ownership nonce: **at least 16 bytes read from `crypto/rand`, hex-encoded**, matching `^[0-9a-fA-F]{32,128}$` with an even length (§10). Required whenever the gate is on. This is what distinguishes a legitimate second producer of *this* run from an unrelated invocation that happens to reuse the same `RunID`: both would present an identical `GO_SPECS_RUN_ID`, but only the genuine invocation holds the matching token. Absent or invalid while the gate is on ⇒ configuration error, fails loudly, same as an invalid run ID. |
+| `GO_SPECS_RUN_TOKEN` | invoking script/CI, before `go test`, once per invocation | Per-invocation ownership nonce: **at least 16 bytes read from `crypto/rand`, hex-encoded**, matching `^([0-9a-fA-F]{2}){16,64}$` (§10). Required whenever the gate is on. This is what distinguishes a legitimate second producer of *this* run from an unrelated invocation that happens to reuse the same `RunID`: both would present an identical `GO_SPECS_RUN_ID`, but only the genuine invocation holds the matching token. Absent or invalid while the gate is on ⇒ configuration error, fails loudly, same as an invalid run ID. |
 | `GO_SPECS_REPORT_DIR` | invoking script/CI (optional) | Base directory for run subdirectories. Default `.go-specs/runs`. Must be on a local filesystem (§10). |
 | `GO_SPECS_REPORT` | existing, #142 | Unchanged: per-process local format:path target(s), orthogonal to shard emission. |
 
@@ -354,7 +356,7 @@ implementation:
 
 | `GO_SPECS_REPORT_SHARDS` | `GO_SPECS_RUN_ID` | `GO_SPECS_RUN_TOKEN` | Behaviour |
 |---|---|---|---|
-| off / absent | any | any | Disabled. No validation, no error, no shard, regardless of how stale or malformed the other two are. This is the case that protects a developer shell with a leftover export. |
+| off / absent | any | any | Disabled: no shard, and **no effect on exit status whatsoever**, regardless of how stale or malformed the other two are. This is the case that protects a developer shell with a leftover export. A *present but invalid* run ID or token still produces a one-line stderr diagnostic (*Warn-only validation* below) so a typo is not silently swallowed. |
 | on | present, valid | present, valid | Normal operation: verify ownership against `run.json`, then emit (§3 step 3). |
 | on | present, valid | **absent** | Configuration error before `m.Run()`. Message MUST name `GO_SPECS_RUN_TOKEN` as the missing variable and state that it is generated by the same preflight step that created the run marker. |
 | on | **absent** | present, valid | Configuration error before `m.Run()`. Message MUST name `GO_SPECS_RUN_ID` as the missing variable. |
@@ -362,7 +364,28 @@ implementation:
 | on | present, **invalid** | any | Configuration error before `m.Run()`, naming `GO_SPECS_RUN_ID` and the pattern it violated. |
 | on | any | present, **invalid** | Configuration error before `m.Run()`, naming `GO_SPECS_RUN_TOKEN` and the pattern it violated. Never echo the token value itself into the message or the record. |
 
-Every one of these error messages MUST name **the exact environment variable** at fault and, when
+**Warn-only validation (gate off).** When the gate is off and `GO_SPECS_RUN_ID` or
+`GO_SPECS_RUN_TOKEN` is present but does not match its pattern, the process emits **one** line to
+stderr naming the variable and the pattern it violated, and then continues exactly as if
+reporting were disabled. This path:
+
+- MUST NOT affect the process's exit status, fail the package, or write anything to disk;
+- MUST NOT fire when the value is present and *valid* — a correctly-formed leftover export is
+  silent, because there is nothing to tell the user;
+- MUST be emitted at most once per process, before `m.Run()`, prefixed distinctly (e.g.
+  `go-specs: `) so it is attributable and greppable;
+- is a diagnostic, not a contract signal: no tooling may key behaviour off it.
+
+The rationale is that "reject a present invalid value" was protecting against a **typo** —
+`GO_SPECS_RUN_TOEKN`, a truncated ID pasted into a CI config — and typo detection does not
+require the power to fail a test run. Splitting the two keeps the detection and discards the
+falsification. The tradeoff, stated plainly: this emits one stderr line per package binary, so a
+malformed leftover export in a shell running `go test ./...` across 30 packages prints 30 lines.
+That is noisy but harmless, and it is strictly better than the alternative of 30 hard failures;
+implementations that find it unacceptable may gate the diagnostic behind the gate variable being
+*present* (rather than *true*), which is where a typo'd value realistically comes from.
+
+Every one of these *error* messages MUST name **the exact environment variable** at fault and, when
 the likely cause is a leftover export rather than a genuine CI misconfiguration, MUST state the
 exact remedy verbatim — for example: `unset GO_SPECS_REPORT_SHARDS` (turn reporting off for this
 shell) or `unset GO_SPECS_RUN_ID GO_SPECS_RUN_TOKEN GO_SPECS_REPORT_SHARDS`. "Invalid reporting
@@ -405,10 +428,18 @@ Filesystem layout:
   two explicit paths below. Nothing else — no producer, no test binary, no finalizer running
   mid-`go test` — may delete it.
   - **Primary rule, normative: `RunID` MUST be unique per invocation.** "Per invocation" includes
-    reruns: a bare CI job ID is *not* a conforming `RunID`, because rerunning that job reuses it
-    and every rerun would then fail marker creation permanently. A conforming derivation appends
-    the attempt/rerun counter the CI system already exposes (for example
-    `${CI_JOB_ID}-${CI_JOB_ATTEMPT}`), or simply appends random bytes. **Why this is the primary
+    reruns: **any** identifier that a rerun reuses is *not* a conforming `RunID`, because every
+    rerun would then fail marker creation permanently. The correct derivation is CI-specific, and
+    the two major systems differ in a way that is easy to get wrong when copying an example:
+    - **GitHub Actions**: `GITHUB_RUN_ID` is **stable across re-runs** and must not be used
+      alone; combine it with the attempt counter, e.g. `${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`
+      (add `${GITHUB_JOB}` when several jobs in one workflow report separately).
+    - **GitLab CI**: `CI_JOB_ID` is **already unique per retry** — a retried job is a new job with
+      a new ID — so `${CI_JOB_ID}` alone is conforming. There is no `CI_JOB_ATTEMPT` variable;
+      do not port the GitHub shape across.
+
+    When in doubt, or on a CI system whose rerun semantics are unclear, append random bytes and
+    stop reasoning about it. **Why this is the primary
     rule rather than a TTL**: exclusive creation is only fail-closed if reuse is genuinely
     abnormal. Any scheme that makes reuse routine — and then relies on a heuristic to decide
     whether the previous holder is dead — reintroduces exactly the stale-directory ambiguity §2
@@ -459,24 +490,46 @@ Filesystem layout:
   produce the same filename under the sanitized-only scheme this section originally specified.
 
   The prefix is produced by the existing sanitization rule (`/` → `_`, any byte outside
-  `[A-Za-z0-9_.-]` percent-escaped) and then **bounded to at most 40 bytes**. Truncation takes
-  the leading bytes and MUST NOT split a multi-byte UTF-8 sequence or a `%XY` percent-escape
-  triplet; if the boundary falls inside either, back off to the preceding safe boundary. The
-  budget is fixed so that a filename is bounded regardless of import-path length: `40 + 2 ("--")
-  + 64 (digest) + 11 (".shard.json") = 117 bytes`, well inside the common 255-byte
-  **component** limit even after escaping. Without the bound, the fixed 77 bytes of digest,
-  separator and suffix leave only 178 bytes for the prefix, and percent-escaping consumes up to
-  three bytes per unsafe byte — so a legal Go import path spanning enough directory components
-  would fail to produce a filename even though the package itself builds and tests normally.
+  `[A-Za-z0-9_.-]` percent-escaped) and then **bounded to at most 40 bytes**. Truncation applies
+  to the *sanitized* string, which is pure ASCII by construction — every byte outside
+  `[A-Za-z0-9_.-]` has already become a `%XY` triplet — so the only rule that actually bites is
+  that truncation MUST NOT split a `%XY` triplet: if the 40-byte boundary falls inside one, back
+  off to the preceding safe boundary, yielding a prefix of 38–40 bytes. (Stated for completeness:
+  truncation must likewise never split a multi-byte UTF-8 sequence, which is vacuous after
+  sanitization but matters if an implementation ever bounds the path *before* sanitizing.)
 
-  **Total path length, not just the component, is the binding constraint on Windows.** Without
-  the long-path opt-in (`\\?\` prefixing or the per-application/manifest `LongPathsEnabled`
-  setting), the whole path is limited to 260 characters, and `<base>/<run-id>/shards/<117-byte
-  name>` reaches that with a fairly ordinary base directory once `<run-id>` approaches its
-  128-character maximum. Implementations MUST validate the *assembled absolute path* before
-  attempting to create a shard and fail with a clear diagnostic naming the total length and the
-  offending components rather than surfacing a raw OS error. For Windows CI, recommend a short
-  `GO_SPECS_REPORT_DIR` and a `GO_SPECS_RUN_ID` of ≤32 characters.
+  The resulting filename is therefore **bounded at 117 bytes, not fixed at 117** — nothing is
+  padded, and a short import path produces a short prefix. The budget:
+
+  | Component | Bytes |
+  |---|---|
+  | sanitized prefix | ≤ 40 |
+  | `--` separator | 2 |
+  | SHA-256 as lowercase hex (32 bytes × 2) | 64 |
+  | `.shard.json` suffix | 11 |
+  | **total** | **≤ 117** |
+
+  That is well inside the common 255-byte **component** limit even after escaping. Without the
+  bound, the fixed 77 bytes of digest, separator and suffix leave only 178 bytes for the prefix,
+  and percent-escaping consumes up to three bytes per unsafe byte — so a legal Go import path
+  spanning enough directory components would fail to produce a filename even though the package
+  itself builds and tests normally. Nothing may parse this filename by byte offset; the prefix is
+  variable-length and the digest is located by splitting on the final `--`, or simply by
+  recomputing it from the envelope (§9).
+
+  **On Windows, `MAX_PATH` is a downstream-tooling constraint, not a Go one.** Go's `os` package
+  handles this itself: `fixLongPath` transparently rewrites a path to the extended-length
+  `\\?\` form once it approaches the 248-byte threshold, and it does so for relative paths too by
+  joining them with the working directory first — and it skips the rewrite entirely when the
+  system already has `LongPathsEnabled`. So shard creation by go-specs will not fail at 260
+  characters, and requiring a long-path opt-in would be redundant. What *does* break is the
+  **consumer** side: archivers, artifact uploaders, CI runners and editors that still assume
+  `MAX_PATH` will choke on a deep run directory that Go itself wrote without complaint.
+  Implementations MUST therefore still validate the *assembled absolute path* before creating a
+  shard and fail with a clear diagnostic naming the total length and the offending components —
+  not because the write would fail, but because a silently-created path that downstream tooling
+  cannot read is a worse failure, discovered later and further away. For Windows CI, recommend a
+  short `GO_SPECS_REPORT_DIR` and a `GO_SPECS_RUN_ID` of ≤32 characters.
 
   The `ShardEnvelope` (§7) still carries the original, unsanitized `PackagePath`; the finalizer
   recomputes its SHA-256 and rejects any shard whose filename digest does not match the digest of
@@ -502,9 +555,16 @@ Filesystem layout:
   legitimate invocation, which is precisely the case a duplicate-producer error must catch. The
   atomicity must come from a single filesystem operation that fails when the destination exists:
   - **Unix**: `link(2)` the temp file to the final name — it fails with `EEXIST` if the name is
-    taken — then `unlink(2)` the temp file. (`renameat2` with `RENAME_NOREPLACE` is an acceptable
-    alternative where available, but it is Linux-specific and not universally supported across
-    filesystems, so `link`+`unlink` is the portable baseline.)
+    taken — then `unlink(2)` the temp file. This is the baseline, and implementations should
+    simply use it.
+
+    `renameat2` with `RENAME_NOREPLACE` is **not** offered as a general alternative. It is not
+    merely Linux-specific: support is per-*filesystem*, and the flag returns `EINVAL` or
+    `ENOSYS` on filesystems whose `rename` implementation does not handle it — including some
+    overlay and network mounts. An implementation that reaches for it must therefore treat
+    `EINVAL`/`ENOSYS` as "unsupported here" and fall back to `link`+`unlink`, never as a publish
+    failure, and never as licence to fall back to a replacing rename. Given that fallback is
+    mandatory anyway, `link`+`unlink` alone is the simpler conforming choice.
   - **Windows**: note explicitly that Go's `os.Rename` maps to `MoveFileEx` **with**
     `MOVEFILE_REPLACE_EXISTING`, so it is a replacing rename and cannot be used here. A no-replace
     publish requires either creating the destination with `CREATE_NEW` disposition (which fails
@@ -622,7 +682,7 @@ type RunToken string
 // could act as a path separator or traversal segment.
 func ValidateRunID(s string) (RunID, error)
 
-// ValidateRunToken enforces ^[0-9a-fA-F]{32,128}$ with an even length: the hex encoding of at
+// ValidateRunToken enforces ^([0-9a-fA-F]{2}){16,64}$: the hex encoding of at
 // least 16 bytes drawn from crypto/rand (§10). Validation is a length/charset check — it cannot
 // verify the *source* of the entropy, which is why §10 states the crypto/rand requirement
 // normatively rather than leaving "recommend high entropy" to implementers.
@@ -676,9 +736,11 @@ type ShardConfig struct {
 }
 
 // ShardConfigFromEnv reads GO_SPECS_REPORT_SHARDS first. When the gate is absent or false it
-// returns a disabled config with no error and WITHOUT reading, validating, or failing on
-// GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN — a stale export in a developer shell must never hard-fail
-// a test run (§3 step 1, §5). When the gate is on, it reads GO_SPECS_RUN_ID /
+// returns a disabled config with no error — a stale export in a developer shell must never
+// hard-fail a test run (§3 step 1, §5). In that state it may still emit the single warn-only
+// stderr diagnostic for a present-but-invalid GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN (§5), which
+// never affects the returned error or the process's exit status. When the gate is on, it reads
+// GO_SPECS_RUN_ID /
 // GO_SPECS_RUN_TOKEN / GO_SPECS_REPORT_DIR and verifies the run marker (§5), populating
 // ShardConfig.Ownership on success. When either identity variable is absent or invalid, the
 // marker is missing, or the marker's stored digest does not match this process's Token,
@@ -813,9 +875,16 @@ but the library entry point is the actual contract; the CLI is optional sugar.
 > **Correction in contract v1.2.** v1.1 of this section stated that a pre-test
 > configuration/ownership failure detected inside a package binary would surface as a distinct
 > `go test` exit code, "recommended `2`". **That is not achievable and the promise is withdrawn.**
-> `cmd/go`'s test driver calls `base.SetExitStatus(1)` for *any* failed test action, so a
-> `TestMain` that calls `os.Exit(2)` produces the text `exit status 2` in the output while
-> `go test` itself still exits `1` — CI cannot branch on it. Independently, `2` would be a poor
+>
+> The precise mechanism, since an imprecise one invites a bug report against this note: a test
+> binary's own exit code is **never propagated** to the `go` command's exit status at all. On a
+> failed test action `cmd/go` calls `base.SetExitStatus(1)` with the literal constant `1`,
+> having already reported the package as `FAIL`; it never passes the child's status through.
+> `base.SetExitStatus` itself keeps the *maximum* of the values it is given
+> (`if exitStatus < n { exitStatus = n }`), so it is not the call that discards the `2` — the `2`
+> simply never reaches it. A `TestMain` calling `os.Exit(2)` therefore produces the text
+> `exit status 2` in the output while `go test` exits `1`, and CI cannot branch on it.
+> Independently, `2` would be a poor
 > reservation even when a test binary is executed directly, because the Go runtime already exits
 > with status `2` on an unrecovered panic, so the value is ambiguous on its own terms. Any
 > reserved code must therefore sit outside the runtime's range: this contract uses **`78`
@@ -845,7 +914,7 @@ framing is unchanged; only the carrier of the third distinction moved:
 
 Multi-package coordination therefore adds **no** way for a test binary to change its own exit
 status meaningfully based on reporting outcome. F5 already makes that impossible for the kill
-case; the toolchain's exit-status collapsing makes it impossible for the configuration case; and
+case; the toolchain never propagating a child's exit code makes it impossible for the configuration case; and
 the design keeps it impossible for every post-`m.Run()` case too, for consistency.
 
 **CI wiring implication.** Because `78` can only arrive from the preflight or finalize step, a
@@ -853,6 +922,17 @@ pipeline that runs `go test` and skips finalize when it fails will see a misconf
 run as an ordinary red test run. Recommended wiring: preflight → `go test` (record its status,
 do not abort the job on it) → finalize (always) → fail the job on either status, reported
 separately.
+
+"Always" here means **every termination path, not merely a non-zero exit**. A job that is
+cancelled, or whose test step is killed by a step/job timeout, is exactly where the
+`config-error.json` record and the `PackagesMissing` list are most informative — and exactly where
+naive wiring skips finalize. Concretely, on GitHub Actions a condition keyed on `failure()` does
+**not** run on cancellation, so the finalize step needs `if: always()` (which per GitHub's own
+documentation does run when cancelled) or `if: !cancelled()` when cancellation should be exempt.
+The one case no workflow condition can rescue is a hard kill of the runner itself on job timeout,
+where nothing further executes; that is a genuine limitation of the environment, not of this
+contract, and it is why the shard directory is left in place for the `gc` path (§5) rather than
+assumed to be cleaned up by the run that created it.
 
 Finalize's exit code is a **separate command's** exit code by construction (§3 step 5), so it can
 never retroactively overwrite what `go test` already returned. Recommended CI wiring keeps `go
@@ -907,8 +987,12 @@ Responsibility split:
   running code as the invoking user. Nothing in #145/#146 may treat a matching token as an
   authorization decision.
 - **Run Token — entropy floor (normative).** The token MUST be **at least 16 bytes read from
-  `crypto/rand`**, hex-encoded, and is validated against `^[0-9a-fA-F]{32,128}$` with an even
-  length. It is never used as a path segment; it exists solely to be hashed and compared against
+  `crypto/rand`**, hex-encoded, and is validated against `^([0-9a-fA-F]{2}){16,64}$` — the pair
+  quantifier is deliberate: `^[0-9a-fA-F]{32,128}$` would admit odd lengths (33, 35, …), which
+  are not valid hex encodings of any byte string and fail in `hex.DecodeString` at the point of
+  use rather than at validation. The pair form matches the ≥16-byte generator rule exactly, so
+  validation accepts precisely the values the generator can produce.
+  It is never used as a path segment; it exists solely to be hashed and compared against
   the run marker (§5). The floor is normative rather than a recommendation because without it a
   perfectly conformant implementation may seed `math/rand` from the wall clock — and two CI jobs
   starting in the same second then produce the *same* token, reproducing exactly the collision the
@@ -974,6 +1058,19 @@ Responsibility split:
   reporting base directory MUST therefore be on a local filesystem; `GO_SPECS_REPORT_DIR` pointing
   at a network mount is unsupported and, where detectable, should be rejected with a clear
   diagnostic rather than silently trusted.
+- **`link(2)` false-negative over NFS**: related, and worth stating explicitly because it produces
+  the *opposite* error from the one an implementer expects. Over NFS, `link` can report `EEXIST`
+  for an operation that actually **succeeded** — the server performed the link, the reply was
+  dropped, and the client's automatic retry then collided with the client's own earlier,
+  successful link. Treating that as a duplicate-producer error would fail a perfectly correct
+  publish. The conforming sequence is therefore: `link` → on error, `stat` the **temp** file and
+  accept the publish if `st_nlink == 2`, otherwise report the duplicate. Checking the temp file's
+  link count (not the destination's) is what preserves genuine duplicate detection: if our own
+  link succeeded the temp file has two names, whereas if another producer created the destination
+  first our temp file still has exactly one. This is defence in depth — the local-filesystem
+  requirement above already puts the contract outside NFS's semantics — but the check costs one
+  `stat` on an error path that should never be hit, and its absence turns a dropped packet into a
+  spurious hard failure.
 - **Concurrent independent runs**: isolated by construction, since each run's shards live under
   `<base>/<run-id>/shards/` and run IDs are validated to be non-empty path segments supplied by
   the caller. A caller reusing the same `RunID` across two independent invocations is no longer a
@@ -995,7 +1092,7 @@ Responsibility split:
 | 4 | Existing Go flags and package discovery retain normal behavior | No new required test flags (§1 F1, §2); activation is env-var only (`GO_SPECS_REPORT_SHARDS`, §5), `go test`'s own discovery remains untouched. Expected shard producers are supplied separately and authoritatively, with membership and exclusions defined in §5, never inferred by changing or reinterpreting `go test` discovery. |
 | 5 | Packages without go-specs integration do not fail due to unknown flags | §1 F1/F2: no forwarded flag is used for module-wide activation; env vars are silently ignored by non-participating packages. §5 additionally makes the identity variables inert unless `GO_SPECS_REPORT_SHARDS` is on, so an integrating package is not broken by a stale export either. |
 | 6 | Cache behavior explicit and tested in the later integration slice | §6/§1 F4: `-count=1` required, documented as a stated tradeoff; §5 additionally requires run identity to be read from the environment so it participates in the test-cache key; the finalizer compares shards with the authoritative expected-producer list, so a cache-skipped producer is reported missing and specified for #146 to test |
-| 7 | Test failure and reporting failure exit semantics defined independently | §8, full 8-state table. The two signals are carried by **different commands**: `go test`'s exit code reports test results only, while configuration failures and reporting failures are reported by the preflight/finalize commands (`78` = `EX_CONFIG` for configuration, other non-zero for reporting). A configuration failure detected inside a package binary is carried by the `config-error.json` record (§5), not by an exit code, because `cmd/go` collapses every failed test action to status `1`. |
+| 7 | Test failure and reporting failure exit semantics defined independently | §8, full 8-state table. The two signals are carried by **different commands**: `go test`'s exit code reports test results only, while configuration failures and reporting failures are reported by the preflight/finalize commands (`78` = `EX_CONFIG` for configuration, other non-zero for reporting). A configuration failure detected inside a package binary is carried by the `config-error.json` record (§5), not by an exit code, because `cmd/go` never propagates a test binary's own exit code — it reports the package `FAIL` and sets status `1` for any failed test action. |
 | 8 | Run directories cannot collide across concurrent invocations | §3/§5/§10: run ID is a validated, caller-supplied, non-empty path segment namespacing `<base>/<run-id>/shards/`, and `InitializeRun`'s exclusively-created `run.json` marker plus per-participant `RunToken` verification makes an actual `RunID` reuse a fail-closed error rather than a probabilistic non-event. §5 closes the lifecycle around that marker (uniqueness per invocation including reruns, explicit `--force` recovery, `gc` for abandoned markers) and §10 sets the token's `crypto/rand` entropy floor, without which two clock-seeded invocations could produce identical tokens and defeat the check |
 | 9 | #141 and #143 contain no contradictory execution requirements after this decision | §12: no contradiction found; #141 explicitly pre-authorized exactly this "document the limitation, propose an external coordinator" outcome |
 | 10 | Design identifies exact work owned by REPORT-002B and REPORT-002C | §7 (API sketch split), §9 (coverage responsibility split), §12 |
@@ -1020,10 +1117,11 @@ Recommended (non-blocking) updates:
   path — and
   should reference `ShardConfig`/`ShardWriter`/`ShardEnvelope` (§7) as its contract surface.
   Contract v1.2 adds the following producer-side requirements, each of which needs a test:
-  `GO_SPECS_REPORT_SHARDS` as the sole activation gate with the identity variables inert when it
-  is off; every partial-variable row in §5 with the exact variable named in the diagnostic; the
+  `GO_SPECS_REPORT_SHARDS` as the sole activation gate, with a gate-off run that cannot fail and
+  a gate-off warn-only stderr diagnostic for a malformed identity variable; every partial-variable
+  row in §5 with the exact variable named in the diagnostic; the
   `config-error.json` record on the pre-test failure path (and *no* reliance on a distinguishable
-  `go test` exit code); the atomic create-no-replace publish, with a concurrency test proving two
+  `go test` exit code); the atomic create-no-replace publish, with a concurrency test (and an NFS-style false-EEXIST unit test for the nlink recipe) proving two
   producers for the same package path do not silently collapse; the 40-byte bounded prefix plus
   assembled-total-path validation; `crypto/rand`-sourced tokens and constant-time digest
   comparison; and `RunTokenHash` in the envelope.
@@ -1040,18 +1138,22 @@ recorded on an issue). #145's scope currently reads:
 > Treat `GO_SPECS_RUN_ID` absence as disabled coordination, but reject a present invalid value
 > explicitly; never silently downgrade invalid configuration to disabled reporting.
 
-Under v1.2 the trigger for "reject a present invalid value" is the **activation gate**, not the
-presence of `GO_SPECS_RUN_ID`. With `GO_SPECS_REPORT_SHARDS` off, a present-but-invalid
-`GO_SPECS_RUN_ID` is ignored rather than rejected. That is deliberate: the old rule means a stale
-`GO_SPECS_RUN_ID` exported in a developer's shell hard-fails every subsequent `go test` in that
-shell with zero tests executed, which is report generation falsifying a test result — exactly what
-§8's own principle forbids, and a far more likely event than the misconfiguration the rule was
-written to catch. The anti-downgrade half of the rule is untouched and still absolute: once the
-gate is on, invalid configuration is never silently downgraded to disabled reporting. #145's
-scope line should be restated as:
+Under v1.2 the trigger for *failing* on a present invalid value is the **activation gate**, not
+the presence of `GO_SPECS_RUN_ID`. The old rule means a stale `GO_SPECS_RUN_ID` exported in a
+developer's shell hard-fails every subsequent `go test` in that shell with zero tests executed —
+report generation falsifying a test result, exactly what §8's own principle forbids, and a far
+more likely event than the misconfiguration the rule was written to catch.
 
-> Treat an absent or false `GO_SPECS_REPORT_SHARDS` as disabled coordination, leaving every other
-> reporting variable unread and inert. When it is on, reject an absent or invalid
+What that rule was actually protecting, though, is **typo detection**, and v1.2 keeps it: with the
+gate off, a present-but-invalid run ID or token still produces a one-line stderr diagnostic naming
+the variable (§5, *Warn-only validation*). Detection is preserved; only the power to fail a test
+run is withdrawn. The anti-downgrade half of the rule is untouched and still absolute: once the
+gate is on, invalid configuration is never silently downgraded to disabled reporting. #145's scope
+line should be restated as:
+
+> Treat an absent or false `GO_SPECS_REPORT_SHARDS` as disabled coordination: write no shard and
+> never affect exit status, but still emit a single stderr diagnostic if `GO_SPECS_RUN_ID` or
+> `GO_SPECS_RUN_TOKEN` is present and malformed. When the gate is on, reject an absent or invalid
 > `GO_SPECS_RUN_ID`/`GO_SPECS_RUN_TOKEN` explicitly; never silently downgrade invalid
 > configuration to disabled reporting.
 - **#146**: scope should explicitly add (a) a block-deduplicating coverage merge keyed by
