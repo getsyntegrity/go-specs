@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.1** (amended by #148)
+Contract version: **v1.2.2** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.1 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.2 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,6 +17,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
+| v1.2.2 | #148 (review follow-up 2) | Correctness fixes, no design change: the run-token digest is taken over the token's **decoded bytes**, not its hex text (the pattern accepts either case, so `AB…` and `ab…` would otherwise hash differently despite being byte-identical); §3 and the partial-combination table restate gate-off behaviour as "read and checked for well-formedness, never acted on" rather than "unread", matching the warn-only diagnostic; the GitHub Actions `RunID` recipe gains the matrix leg (`GITHUB_RUN_ID` + `GITHUB_RUN_ATTEMPT` are shared by every matrix leg) and §5 states normatively that a run is scoped to one job, never a whole matrix; the `st_nlink == 2` inference's two preconditions are made explicit; an NTFS per-component note records that `\\?\` lifts `MAX_PATH` but not the 255-character component limit. |
 | v1.2.1 | #148 (review follow-up) | Corrections from a second review pass, no design change: the run-token pattern becomes `^([0-9a-fA-F]{2}){16,64}$` (the previous form admitted odd, undecodable lengths); the shard filename is described as **bounded** at 117 bytes rather than fixed, with the arithmetic tabulated; §8's correction note states the `cmd/go` mechanism precisely (a child's exit code is never propagated — `base.SetExitStatus` keeps a maximum but only ever receives the constant `1`); §5's Windows rationale corrected (Go's `os.fixLongPath` handles `MAX_PATH` itself, so the real constraint is consumer tooling); `renameat2`/`RENAME_NOREPLACE` downgraded from "alternative" to "needs a mandatory `link` fallback"; added the `link`-over-NFS false-`EEXIST` recipe; finalize-on-red extended to cancellation/timeout paths; per-CI `RunID` recipes for GitHub Actions and GitLab; gate-off warn-only stderr validation added so typo detection survives without the power to fail a run. |
 | v1.2 | #148 (initial revision) | **Normative changes**: §8's distinct configuration-failure exit code no longer comes from the test binary — a pre-test failure inside a package binary writes a `config-error.json` record and the preflight/finalize layer maps it to `78` (`EX_CONFIG`); §5 replaces `os.Rename` and the pre-rename existence check with a mandatory atomic create-no-replace publish; §5 bounds the readable shard-name prefix to 40 bytes; §3/§5 add `GO_SPECS_REPORT_SHARDS` as the explicit activation switch and define the partial-variable cases; §10 sets a `GO_SPECS_RUN_TOKEN` entropy floor and reframes it as an ownership, not a security, mechanism; §5 defines `run.json` lifecycle/uniqueness and cleanup; §5/§9 define the expected-producer set and its exclusions; §5/§10 add shard-payload ownership binding, symlink/permission hardening, and the NFS/CIFS `O_EXCL` caveat. |
 
@@ -239,8 +240,11 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
    `GO_SPECS_REPORT_SHARDS`, `GO_SPECS_RUN_ID` and `GO_SPECS_RUN_TOKEN` from its environment
    (F2: harmless to packages that don't; §5 requires these reads to go through the environment
    so the `go test` cache treats them as inputs). If `GO_SPECS_REPORT_SHARDS` is absent or false,
-   shard emission is disabled and **no other variable is inspected or validated** — a stale
-   `GO_SPECS_RUN_ID` or `GO_SPECS_RUN_TOKEN` in the environment is inert. If it is true, the run
+   shard emission is disabled and a stale `GO_SPECS_RUN_ID` or `GO_SPECS_RUN_TOKEN` in the
+   environment is **inert: read and checked for well-formedness, but never acted on**. "Inert"
+   is the precise claim — no effect on exit status, on the filesystem, or on coordination — not
+   "unread". A malformed value still produces the warn-only stderr diagnostic (§5), which is why
+   it must be read at all. If it is true, the run
    ID and the token must both be present and valid, and the package must be able to confirm,
    against the run marker, that its token matches the marker's stored ownership hash (§5); any of
    those checks failing is a configuration error that must fail loudly, before `m.Run()`, and must
@@ -356,7 +360,9 @@ implementation:
 
 | `GO_SPECS_REPORT_SHARDS` | `GO_SPECS_RUN_ID` | `GO_SPECS_RUN_TOKEN` | Behaviour |
 |---|---|---|---|
-| off / absent | any | any | Disabled: no shard, and **no effect on exit status whatsoever**, regardless of how stale or malformed the other two are. This is the case that protects a developer shell with a leftover export. A *present but invalid* run ID or token still produces a one-line stderr diagnostic (*Warn-only validation* below) so a typo is not silently swallowed. |
+| off / absent | absent, or present and valid | absent, or present and valid | Disabled and silent. No shard, no diagnostic, **no effect on exit status whatsoever**. This is the case that protects a developer shell with a leftover export. |
+| off / absent | present, **invalid** | any | Disabled, with **no effect on exit status, filesystem, or coordination** — but one stderr line naming `GO_SPECS_RUN_ID` (*Warn-only validation* below). The value is read and checked for well-formedness; it is simply never acted on. |
+| off / absent | any | present, **invalid** | Disabled, same as the row above, with the diagnostic naming `GO_SPECS_RUN_TOKEN`. Never echo the value. |
 | on | present, valid | present, valid | Normal operation: verify ownership against `run.json`, then emit (§3 step 3). |
 | on | present, valid | **absent** | Configuration error before `m.Run()`. Message MUST name `GO_SPECS_RUN_TOKEN` as the missing variable and state that it is generated by the same preflight step that created the run marker. |
 | on | **absent** | present, valid | Configuration error before `m.Run()`. Message MUST name `GO_SPECS_RUN_ID` as the missing variable. |
@@ -415,7 +421,22 @@ Filesystem layout:
   schema version, the `RunID`, and the **hex-encoded SHA-256 digest** (not the raw value) of
   `RunToken`. Every subsequent reader (producer or finalizer) recomputes the digest of its own
   `GO_SPECS_RUN_TOKEN` and compares it to the marker's stored digest using a **constant-time
-  comparison** (`crypto/subtle.ConstantTimeCompare`, never `==` on the decoded values):
+  comparison** (`crypto/subtle.ConstantTimeCompare`, never `==` on the decoded values).
+
+  **The digest is taken over the token's decoded bytes, never over its hex text.** The token
+  pattern accepts either case, so hashing the ASCII string would make `AB…` and `ab…` produce
+  different digests and fail verification on two values that are byte-identical once decoded.
+  That defect would surface only when some layer between the generator and the test binary
+  case-folds the value — which is exactly what a shell, a CI secret store, or a Windows
+  environment round-trip can do — making it both rare and extremely hard to diagnose.
+  Implementations therefore `hex.DecodeString` the token first and hash the resulting bytes.
+  `run.json` stores that digest as lowercase hex, and a reader normalizes both digests to
+  lowercase *before* the constant-time compare (normalizing a public digest leaks nothing;
+  normalizing the token itself would be a different matter). `GenerateRunToken` MUST emit
+  lowercase hex regardless, so the mixed-case path stays a robustness guarantee rather than a
+  routine one.
+
+  Verification outcomes:
   - **matching digest** ⇒ legitimate participant in this run (a retry within the same invocation,
     or another package's producer, or the finalizer) — proceed;
   - **marker present with a different digest, or marker absent while the activation gate is on**
@@ -431,15 +452,32 @@ Filesystem layout:
     reruns: **any** identifier that a rerun reuses is *not* a conforming `RunID`, because every
     rerun would then fail marker creation permanently. The correct derivation is CI-specific, and
     the two major systems differ in a way that is easy to get wrong when copying an example:
-    - **GitHub Actions**: `GITHUB_RUN_ID` is **stable across re-runs** and must not be used
-      alone; combine it with the attempt counter, e.g. `${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`
-      (add `${GITHUB_JOB}` when several jobs in one workflow report separately).
+    - **GitHub Actions**: `GITHUB_RUN_ID` is **stable across re-runs**, so it must be combined
+      with the attempt counter — and **that pair is still not unique per job**. Every leg of a
+      matrix shares both `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, so
+      `${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` makes a fan-out of `go test` jobs derive the
+      *same* `RunID` — reintroducing precisely the collision this rule forbids. GitHub exposes no
+      environment variable for matrix values, so the leg must be interpolated in the workflow
+      itself: `${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}`, or the
+      matrix keys spelled out. Add `${{ github.job }}` when several distinct jobs report
+      separately.
     - **GitLab CI**: `CI_JOB_ID` is **already unique per retry** — a retried job is a new job with
-      a new ID — so `${CI_JOB_ID}` alone is conforming. There is no `CI_JOB_ATTEMPT` variable;
-      do not port the GitHub shape across.
+      a new ID — so `${CI_JOB_ID}` alone is conforming, and `parallel:matrix` legs get distinct
+      job IDs, so the fan-out problem above does not arise. There is no `CI_JOB_ATTEMPT`
+      variable; do not port the GitHub shape across.
 
-    When in doubt, or on a CI system whose rerun semantics are unclear, append random bytes and
-    stop reasoning about it. **Why this is the primary
+    **One run per job, not one run per matrix.** A run is scoped to a single `go test`
+    invocation on a single machine, and §10 requires the base directory to be on a local
+    filesystem — so a run cannot span matrix legs executing on different runners even in
+    principle. Each leg is its own run, with its own `RunID`, marker, shard directory and
+    finalize step, producing its own module report. This is consistent with the expected-producer
+    set being captured per build configuration (§5): a matrix cell that excludes packages by
+    build tag has a different expected set, so sharing one run across cells would be wrong on
+    two counts, not just one. Combining per-leg reports afterwards is an artifact-collection
+    concern for the CI system, outside this contract.
+
+    When in doubt, or on a CI system whose rerun and fan-out semantics are unclear, append random
+    bytes and stop reasoning about it. **Why this is the primary
     rule rather than a TTL**: exclusive creation is only fail-closed if reuse is genuinely
     abnormal. Any scheme that makes reuse routine — and then relies on a heuristic to decide
     whether the previous holder is dead — reintroduces exactly the stale-directory ambiguity §2
@@ -522,7 +560,15 @@ Filesystem layout:
   `\\?\` form once it approaches the 248-byte threshold, and it does so for relative paths too by
   joining them with the working directory first — and it skips the rewrite entirely when the
   system already has `LongPathsEnabled`. So shard creation by go-specs will not fail at 260
-  characters, and requiring a long-path opt-in would be redundant. What *does* break is the
+  characters, and requiring a long-path opt-in would be redundant.
+
+  Noted so nobody re-derives it: the `\\?\` form lifts the 260-character **total path** limit but
+  **not** NTFS's 255-character per-*component* limit, which still applies. The 117-byte filename
+  budget above is comfortably inside it, so this is a non-issue here — it is recorded only
+  because "extended-length paths remove the limits" is a common over-reading, and the next person
+  sizing a filename should not have to rediscover which limit survives.
+
+  What *does* break is the
   **consumer** side: archivers, artifact uploaders, CI runners and editors that still assume
   `MAX_PATH` will choke on a deep run directory that Go itself wrote without complaint.
   Implementations MUST therefore still validate the *assembled absolute path* before creating a
@@ -688,15 +734,17 @@ func ValidateRunID(s string) (RunID, error)
 // normatively rather than leaving "recommend high entropy" to implementers.
 func ValidateRunToken(s string) (RunToken, error)
 
-// GenerateRunToken produces a conforming token: 16+ bytes from crypto/rand, hex-encoded. Provided
-// so the preflight step has one obviously-correct path and nobody reaches for math/rand or a
-// clock-derived value.
+// GenerateRunToken produces a conforming token: 16+ bytes from crypto/rand, hex-encoded in
+// LOWERCASE. Provided so the preflight step has one obviously-correct path and nobody reaches for
+// math/rand or a clock-derived value.
 func GenerateRunToken() (RunToken, error)
 
-// HashRunToken returns the lowercase hex SHA-256 digest of a token: the only form ever written
-// to disk, in run.json (§5) and in every ShardEnvelope. Comparisons of these digests use
-// crypto/subtle.ConstantTimeCompare, never ==.
-func HashRunToken(t RunToken) string
+// HashRunToken hex-decodes the token and returns the lowercase hex SHA-256 digest of the
+// resulting BYTES — never of the token's hex text, which would make AB… and ab… hash differently
+// despite decoding to identical bytes (§5). This is the only form ever written to disk, in
+// run.json (§5) and in every ShardEnvelope. Comparisons of these digests normalize to lowercase
+// and then use crypto/subtle.ConstantTimeCompare, never ==.
+func HashRunToken(t RunToken) (string, error)
 
 // RunOwnership is the result of successfully claiming or verifying a run's marker file. It is
 // the evidence a ShardWriter (or Finalize) needs before it is allowed to touch a shard: proof
@@ -1067,7 +1115,17 @@ Responsibility split:
   accept the publish if `st_nlink == 2`, otherwise report the duplicate. Checking the temp file's
   link count (not the destination's) is what preserves genuine duplicate detection: if our own
   link succeeded the temp file has two names, whereas if another producer created the destination
-  first our temp file still has exactly one. This is defence in depth — the local-filesystem
+  first our temp file still has exactly one.
+
+  The `st_nlink == 2` inference rests on two preconditions, stated here because they are
+  otherwise invisible dependencies: (a) the temp file is linked **nowhere else** — it is created
+  by this process, inside the destination shard directory, under a name containing its own PID,
+  and nothing in this contract ever links it a second time; and (b) nothing may unlink the
+  published shard while the run is in flight, which the contract already guarantees by giving no
+  producer delete authority and by restricting `gc` to explicit, out-of-run invocation over
+  directories older than the retention window (§5). An implementation that adds any other linking
+  or pruning path invalidates the inference and must revisit it. This is defence in depth — the
+  local-filesystem
   requirement above already puts the contract outside NFS's semantics — but the check costs one
   `stat` on an error path that should never be hit, and its absence turns a dropped packet into a
   spurious hard failure.
