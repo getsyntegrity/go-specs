@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.5** (amended by #148)
+Contract version: **v1.2.6** (amended by #148)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,7 +8,7 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.5 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.6 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
@@ -17,6 +17,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 |---|---|---|
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
+| v1.2.6 | #148 (review follow-up 6) | Internal-consistency sweep, no design change. §7's `ShardConfigFromEnv` sketch still closed with the pre-v1.2.3 blanket "all environment reads go through `os.Getenv`", flatly contradicting the gate-off `os.Environ()` rule stated ten lines above it in the same comment and normatively in §5 — the single most likely way for #145 to reimplement the exact cache-enrollment regression v1.2.3 exists to prevent. The comment now states both paths and why they differ, and its gate-off clause is widened from "those two values" to the full variable set v1.2.4 defined. §7's CLI verb set gains `init`, which §3 step 2 and §5's `init --force` recovery path both require but the sketch omitted. §10's shard-filename bullet no longer implies a shard write fails at Windows' 260-character limit, which §5 (v1.2.1) had already corrected to a downstream-consumer-tooling constraint. |
 | v1.2.5 | #148 (review follow-up 5) | Resolves an ambiguity in §10: the local-filesystem requirement is a **declaration, not an enforcement** — no network-mount detection is required or should be implemented, because portable detection does not exist (`statfs` `f_type`, `getmntinfo`, `GetDriveType` disagree and are incomplete against overlay and bind mounts) and a check that reports "local" for an NFS-backed bind mount is worse than none. §10 now states the cost plainly: a `run.json` `O_EXCL` failure on a network mount is unmitigated and unrecoverable by design, while the `link` false-`EEXIST` case is mitigated by the `st_nlink` recipe — making that branch the contract's only network-filesystem defence, and therefore a required test rather than an optional one (§13). |
 | v1.2.4 | #148 (review follow-up 4) | Scope fixes on v1.2.3's own rule: the disabled-path `os.Environ()` requirement covers **every** variable this contract introduces (`GO_SPECS_REPORT_DIR` included — a realistic per-invocation value, and the easy one to miss), with later additions inheriting it by default; the cache-stability test must vary at least two variables, since a run-ID-only test passes while another variable still leaks through `os.Getenv`. Adds the macOS `shasum -a 256` form to §7, and a §13 planning item asking #145 to enumerate normative claims that rest on unpinned runtime behaviour (network-mount create-no-replace and the `link`/`st_nlink` fallback being the two currently unpinned). |
 | v1.2.3 | #148 (review follow-up 3) | Closes a regression introduced by v1.2.1's own warn-only diagnostic: reading the identity variables with `os.Getenv` on the **disabled** path enrolls them in the test-cache key (`os.Getenv`/`os.LookupEnv` call `testlog.Getenv`; `os.Environ` does not), so a stale per-invocation `GO_SPECS_RUN_ID` would defeat caching for every package on every run while producing no reporting at all. §5 now requires an `os.Environ()` scan on that path, explains why the unusual access pattern is load-bearing, and mandates a cache-stability regression test. Also: the GitHub Actions `RunID` recipe gains `github.job`, since `strategy.job-index` is unique only within one matrix and two job definitions both yield index `0`; §7 records the `xxd -r -p` step needed to reproduce the token digest by hand; digest-of-decoded-bytes wording made consistent across §3, §5 and §7. |
@@ -865,9 +866,10 @@ type ShardConfig struct {
 // returns a disabled config with no error — a stale export in a developer shell must never
 // hard-fail a test run (§3 step 1, §5). In that state it may still emit the single warn-only
 // stderr diagnostic for a present-but-invalid GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN (§5), which
-// never affects the returned error or the process's exit status — and it MUST obtain those two
-// values by scanning os.Environ(), never via os.Getenv/os.LookupEnv, which would enroll them in
-// the test cache key and defeat caching for every package on the disabled path (§5).
+// never affects the returned error or the process's exit status — and it MUST obtain every
+// variable it touches on that path (GO_SPECS_RUN_ID, GO_SPECS_RUN_TOKEN and GO_SPECS_REPORT_DIR)
+// by scanning os.Environ(), never via os.Getenv/os.LookupEnv, which would enroll them in the
+// test cache key and defeat caching for every package on the disabled path (§5).
 // When the gate is on, it reads GO_SPECS_RUN_ID /
 // GO_SPECS_RUN_TOKEN / GO_SPECS_REPORT_DIR and verifies the run marker (§5), populating
 // ShardConfig.Ownership on success. When either identity variable is absent or invalid, the
@@ -876,7 +878,11 @@ type ShardConfig struct {
 // the caller must surface before m.Run() (§3 step 3); invalid configuration or a failed ownership
 // check must never be treated as disabled reporting.
 //
-// All environment reads go through os.Getenv so `go test` records them in its cache key (§5).
+// The two paths read the environment differently, and the difference is normative (§5): on the
+// gate-ON path every read goes through os.Getenv/os.LookupEnv precisely so `go test` records
+// these variables in its cache key and a new GO_SPECS_RUN_ID invalidates a stale cached result;
+// on the gate-OFF path that enrollment is exactly the harm, so the same variables MUST be read
+// only by scanning os.Environ(). Neither rule may be "simplified" into the other.
 func ShardConfigFromEnv(packagePath string) (ShardConfig, error)
 func (c ShardConfig) Enabled() bool
 
@@ -984,9 +990,13 @@ tests were all filtered away by `-run`/`-skip`/`-short` are **in** and must stil
 reporting zero executed tests. #146 must not re-derive or reinterpret that set; the definition
 exists precisely so the rule is not invented in code.
 
-A thin `cmd/go-specs-report` CLI wrapping `Finalize` (subcommands `finalize`, `gc`) is a
-reasonable #146 deliverable given #141 names GitHub Actions/Shipwright/generic-CI as consumers,
-but the library entry point is the actual contract; the CLI is optional sugar.
+A thin `cmd/go-specs-report` CLI is a reasonable deliverable given #141 names GitHub
+Actions/Shipwright/generic-CI as consumers, but the library entry point is the actual contract;
+the CLI is optional sugar. Its verb set is `init`, `finalize` and `gc`, not just the last two:
+§3 step 2 puts marker creation *before* `go test`, and §5 spells the recovery path
+`go-specs-report init --force`. `finalize` and `gc` wrap `Finalize` and are #146 deliverables;
+`init` wraps `InitializeRun` and ships with whichever slice delivers `InitializeRun` first, since
+no run can start without it.
 
 ## 8. Exit semantics
 
@@ -1141,8 +1151,10 @@ Responsibility split:
   and is never parsed or compared. The finalizer recomputes that digest and checks it against each
   shard's own envelope, closing the collision that a sanitized-only filename would allow. Bounding
   the prefix also removes the opposite failure — a legal but long import path producing a filename
-  that exceeds the filesystem's component limit, or the assembled path exceeding Windows'
-  260-character total-path limit (§5).
+  that exceeds the filesystem's component limit. It does **not** exist to stop Go from failing at
+  Windows' 260-character total-path limit: per §5, `os.fixLongPath` already handles that, and the
+  assembled-path check §5 requires is there for *downstream consumer* tooling that still assumes
+  `MAX_PATH`, not for the shard write itself.
 - **Foreign shards in the run directory**: filename identity proves which *package* a shard claims
   to be, never which *run* produced it. Each shard envelope therefore also carries the `RunID` and
   the run's token digest, both verified before merge (§5, §7). Without that binding, anything able
@@ -1344,8 +1356,9 @@ line should be restated as:
   can produce a value shared across independently-launched binaries (F8). Recommend documenting
   2–3 concrete recipes in #146's docs rather than prescribing one.
 - **Thin CLI vs. library-only finalizer**: recommend shipping both (a small `cmd/go-specs-report`
-  wrapping `Finalize`), since #141 names GitHub Actions/Shipwright/generic CI as consumers and a
-  CLI is the lowest-friction integration point — but this is a #146 implementation-time call.
+  wrapping `InitializeRun` and `Finalize` — see §7 for the `init`/`finalize`/`gc` verb set), since
+  #141 names GitHub Actions/Shipwright/generic CI as consumers and a CLI is the lowest-friction
+  integration point — but this is an implementation-time call.
 - **Strict vs. lenient missing-shard default**: the producer list itself is mandatory and
   authoritative; recommend strict-by-default (fail the finalize step when an expected producer
   has no valid shard) with an explicit opt-out for local/dev use. The finalizer must never replace
