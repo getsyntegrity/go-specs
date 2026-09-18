@@ -2,12 +2,10 @@ package specs
 
 import (
 	"math"
-	"math/rand"
 	"reflect"
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 )
 
 // contextPool reuses Context instances in the runner to reduce allocations.
@@ -52,7 +50,6 @@ type Context struct {
 	// Helper() call it feeds cannot be delegated to a wrapper.
 	tb         testing.TB
 	pathValues PathValues
-	rng        *rand.Rand
 	// coverage is set by the runner during coverage-guided exploration; assertions record edges here.
 	coverage *Coverage
 	// failed is set by assertions on failure; used by Runner for FailFast to stop execution.
@@ -72,7 +69,6 @@ func NewContext(tb testing.TB) *Context {
 	if t, ok := tb.(*testing.T); ok {
 		c.T = t
 	}
-	c.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	return c
 }
 
@@ -83,7 +79,6 @@ func (c *Context) Reset(backend testBackend) {
 	}
 	c.backend = backend
 	c.pathValues = PathValues{}
-	c.rng = nil
 	c.T = nil
 	c.tb = nil
 	c.coverage = nil
@@ -457,13 +452,6 @@ func (e *Expectation) ToEqual(expected any) {
 		e.ctx.tb.Helper()
 	}
 	e.ctx.backend.Fatalf("expected %v to equal %v", e.actual, expected)
-}
-
-func (c *Context) randomInt64() int64 {
-	if c == nil || c.rng == nil {
-		return 0
-	}
-	return c.rng.Int63()
 }
 
 // coverageEdgeHash returns a deterministic edge ID from caller location and comparison outcome (branch sampling).
