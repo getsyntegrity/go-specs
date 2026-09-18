@@ -30,6 +30,7 @@ Files:
 | -------------------------------- | ---------------------------------- |
 | assertion_bench_test.go          | single assertion cost (go-specs, Testify, Gomega) |
 | matcher_bench_test.go            | matcher / Expect().To() performance |
+| comparison_bench_test.go         | head-to-head go-specs vs Testify vs Gomega across 8 assertion scenarios (conclusions in [benchmarks/COMPARISON.md](benchmarks/COMPARISON.md)) |
 | runner_bench_test.go            | N specs, one assertion per spec   |
 | hooks_bench_test.go             | before-each + assertion per spec  |
 | large_suite_bench_test.go       | scaling (100, 1000, 10000, 50000)  |
