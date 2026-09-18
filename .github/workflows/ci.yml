@@ -1,4 +1,4 @@
-# CI: build, vet, and test (including -race) on every PR and push to develop/main.
+# CI: gofmt, build, vet, and test (including -race) on every PR and push to develop/main.
 # Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
 # (an OS-specific bug class, a toolchain deprecation window); this repo never
@@ -88,6 +88,13 @@ jobs:
             echo "::error::go.mod declares module '$DECLARED' but this repository is '$EXPECTED' -- external 'go get $EXPECTED' would fail." >&2
             exit 1
           fi
+
+      # Formatting is a gate, not a suggestion: gofmt output is canonical, so
+      # drift is always a mechanical fix (`make fmt`) and never a judgement
+      # call. Running it before build/vet/test means a formatting-only PR fails
+      # in seconds instead of after the full race-detector run.
+      - name: Check formatting
+        run: make fmt-check
 
       - name: Build
         run: go build ./...

@@ -3,12 +3,12 @@
 // Usage: run only the Nth shard of M total (e.g. shard 2 of 10). Filter before execution so
 // the runner's loop is unchanged and allocation-free.
 //
-//   specs := collectSpecs()
-//   if shard, total, ok := ParseShardFlag(os.Args); ok {
-//       specs = ShardSpecs(specs, shard, total)
-//   }
-//   runner := NewMinimalRunnerFromSpecs(specs)
-//   runner.Run(t)
+//	specs := collectSpecs()
+//	if shard, total, ok := ParseShardFlag(os.Args); ok {
+//	    specs = ShardSpecs(specs, shard, total)
+//	}
+//	runner := NewMinimalRunnerFromSpecs(specs)
+//	runner.Run(t)
 package specs
 
 import (

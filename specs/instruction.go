@@ -5,13 +5,13 @@ package specs
 type OpCode uint8
 
 const (
-	OpSetPath     OpCode = iota // ctx.SetPathValues(path); path is passed at run time for path specs
-	OpBeforeHook                // before-each hook (compiler/ExecutionPlan)
-	OpBody                      // spec body
-	OpAfterHook                 // after-each hook
-	OpRunSpec                   // bytecode: run spec body
-	OpBeforeEach                // bytecode: before-each hook
-	OpAfterEach                 // bytecode: after-each hook
+	OpSetPath    OpCode = iota // ctx.SetPathValues(path); path is passed at run time for path specs
+	OpBeforeHook               // before-each hook (compiler/ExecutionPlan)
+	OpBody                     // spec body
+	OpAfterHook                // after-each hook
+	OpRunSpec                  // bytecode: run spec body
+	OpBeforeEach               // bytecode: before-each hook
+	OpAfterEach                // bytecode: after-each hook
 )
 
 // Instruction is a single bytecode step. Fn is invoked for OpBeforeHook, OpBody, OpAfterHook.
