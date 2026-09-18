@@ -47,19 +47,33 @@ Clone:
 git clone https://github.com/getsyntegrity/go-specs
 ```
 
-Run tests (from repo root; use `make test` because there is no root module):
+Run tests (from the repo root -- go-specs is a single module rooted there):
 
 ```
 make test
 ```
 
-Or run tests per module, e.g. `go test ./specs/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...` (see `Makefile` for the full list).
+`make test` is `go test ./...`; run that directly, or narrow it to a package
+(`go test ./specs/...`) while iterating.
 
 Race detector:
 
 ```
 make test-race
 ```
+
+## Formatting and linting
+
+```
+make fmt        # rewrite tracked Go files with gofmt
+make fmt-check  # fail when any tracked Go file is not gofmt-clean
+make lint       # golangci-lint ./... , or go vet ./... when it is not installed
+```
+
+CI runs `make fmt-check`, so formatting drift fails the build. `make lint`
+exits non-zero whenever an installed `golangci-lint` does; the `go vet`
+fallback is only for machines without it, never a second chance after a
+failed lint.
 
 ---
 
