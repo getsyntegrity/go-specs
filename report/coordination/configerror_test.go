@@ -130,3 +130,43 @@ func TestWriteConfigErrorRejectsARelativeReportingDirectory(t *testing.T) {
 		t.Fatalf("got %v, want a *ConfigError with reason %q", err, ReasonInvalidReportDir)
 	}
 }
+
+func TestWriteConfigErrorRefusesASymlinkedTempPath(t *testing.T) {
+	// Contract v1.2.8 §10 rule 1 requires O_NOFOLLOW on every open of run.json, config-error.json,
+	// shard temp files and shard final names. The other three sites had a symlink test; this one
+	// did not, which the inventory reconciliation found — the protection was real (WriteConfigError
+	// publishes through the same writeAndPublish/openFileNoFollow path) but nothing would have
+	// noticed it being dropped from this site alone.
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink on Windows needs a privilege ordinary CI accounts do not hold")
+	}
+	base := secureTempDir(t)
+	elsewhere := secureTempDir(t)
+
+	dir := runDir(base, "run-1")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(elsewhere, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, tempName(configErrorFileName))
+	if err := os.Symlink(victim, tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigError(base, "run-1", "pkg/a", ReasonMissingRunToken, "x"); err == nil {
+		t.Fatal("WriteConfigError wrote through a symlinked temp path")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("the symlink target was modified: %q", got)
+	}
+}
