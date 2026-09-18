@@ -51,6 +51,7 @@ go test ./benchmarks -bench=BenchmarkSuite_ -benchmem
 | `helpers.go` | Suite generation: `BuildSpecsProgram(n)`, `CreateGoSpecsSuite(n)`, `SuiteSize100/1000/10000/50000` |
 | `assertion_bench_test.go` | `BenchmarkAssertion_GoSpecs_EqualTo`, `_ExpectToEqual`, `BenchmarkAssertion_Testify_Equal`, `BenchmarkAssertion_Gomega_ExpectToEqual` |
 | `matcher_bench_test.go` | `BenchmarkMatcher_GoSpecs`, `BenchmarkMatcher_Gomega` |
+| `comparison_bench_test.go` | `BenchmarkCompare_*_GoSpecs`, `_Testify`, `_Gomega` — see [COMPARISON.md](COMPARISON.md) |
 | `runner_bench_test.go` | `BenchmarkRunner_GoSpecs`, `BenchmarkRunner_Testify`, `BenchmarkRunner_Gomega` |
 | `hooks_bench_test.go` | `BenchmarkHooks_GoSpecs`, `BenchmarkHooks_Testify`, `BenchmarkHooks_Gomega` |
 | `large_suite_bench_test.go` | `BenchmarkSuite_100`, `_1000`, `_10000`, `_50000` (large-scale; suite creation outside timed region) |
