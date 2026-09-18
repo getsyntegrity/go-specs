@@ -127,7 +127,7 @@ func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership
 		return RunOwnership{}, fmt.Errorf("go-specs report: create %s: %w", path, err)
 	}
 	if err := writeAndSync(f, body); err != nil {
-		f.Close()
+		_ = f.Close()
 		return RunOwnership{}, fmt.Errorf("go-specs report: write %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
@@ -206,7 +206,7 @@ func readMarker(path string) (runMarker, error) {
 		}
 		return runMarker{}, markerError(ReasonMarkerUnreadable, fmt.Sprintf("cannot read %s: %v", path, err))
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(f, maxMarkerBytes))
 	if err != nil {
