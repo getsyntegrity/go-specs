@@ -2,6 +2,8 @@ package coordination
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -223,6 +225,53 @@ func TestAForeignWritableAncestorIsFoundThroughASymlink(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "0777") {
 		t.Fatalf("error %q does not state the offending mode", err)
+	}
+}
+
+func TestAFailedMarkerPublishLeavesNoMarkerAtAll(t *testing.T) {
+	// The property that makes the atomic publish worth it. If run.json were created with
+	// O_CREATE|O_EXCL and written afterwards, a write or close that failed — ENOSPC, EIO — would
+	// leave an EMPTY marker behind. That file is indistinguishable from a real one to exclusive
+	// creation, so every retry of the run id would fail as "already initialized" and every
+	// producer would fail as marker-unreadable: one transient error would brick the run id
+	// permanently and force the operator onto --force.
+	//
+	// Here the publish fails after the temp file exists, which is exactly that window.
+	base := secureTempDir(t)
+
+	original := markerPublishOps
+	t.Cleanup(func() { markerPublishOps = original })
+	markerPublishOps = func() publishOps {
+		ops := realPublishOps()
+		ops.link = func(string, string) error { return errors.New("simulated failure at publish time") }
+		return ops
+	}
+
+	if _, err := InitializeRun(context.Background(), InitializeRunOptions{
+		RunID: "run-1", Token: validToken, BaseDir: base,
+	}); err == nil {
+		t.Fatal("InitializeRun reported success although the publish failed")
+	}
+
+	if _, err := os.Lstat(markerPath(base, "run-1")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a marker survived a failed publish; this run id is now permanently unusable")
+	}
+	entries, err := os.ReadDir(runDir(base, "run-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Fatalf("a temp marker survived: %s", e.Name())
+		}
+	}
+
+	// And the run id is still usable, which is the whole point.
+	markerPublishOps = original
+	if _, err := InitializeRun(context.Background(), InitializeRunOptions{
+		RunID: "run-1", Token: validToken, BaseDir: base,
+	}); err != nil {
+		t.Fatalf("the run id was bricked by the earlier failure: %v", err)
 	}
 }
 

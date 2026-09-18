@@ -265,3 +265,26 @@ func TestPublishSurfacesANonEEXISTFailureAsItself(t *testing.T) {
 		t.Fatalf("the underlying cause was lost: %v", err)
 	}
 }
+
+func TestAFailedTempCleanupDoesNotFailAnAlreadyDurablePublish(t *testing.T) {
+	// Once link has succeeded the file is complete and durable at its final name, and the
+	// finalizer globs only the final pattern and never opens a .tmp-* file. The sole consequence
+	// of a failed unlink is litter. Returning an error here would turn a successful publish into
+	// a failure the caller cannot act on — and, before the TestMain fix, would have turned a
+	// passing package red.
+	for name, link := range map[string]func(string, string) error{
+		"link succeeded":   func(string, string) error { return nil },
+		"nfs false eexist": func(o, n string) error { return eexist(o, n) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ops := publishOps{
+				link:      link,
+				linkCount: func(string) (uint64, error) { return 2, nil },
+				remove:    func(string) error { return errors.New("unlink refused") },
+			}
+			if err := publishExclusive("/run/shards/x.tmp-1", "/run/shards/x", ops); err != nil {
+				t.Fatalf("a durable publish was reported as a failure because cleanup failed: %v", err)
+			}
+		})
+	}
+}

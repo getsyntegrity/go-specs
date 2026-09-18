@@ -2,7 +2,10 @@ package coordination
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,5 +89,44 @@ func TestWriteConfigErrorRejectsAnUnsafeRunID(t *testing.T) {
 	base := secureTempDir(t)
 	if err := WriteConfigError(base, "../escape", "pkg/a", ReasonInvalidRunID, "x"); err == nil {
 		t.Fatal("WriteConfigError accepted a traversal run id")
+	}
+}
+
+func TestWriteConfigErrorAppliesTheDirectoryGuard(t *testing.T) {
+	// This is the one write path that runs precisely when the configuration is already suspect, so
+	// it is the last place that should skip the guard every other write applies
+	// (contract v1.2.6 §10, rule 2).
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits do not carry the same meaning on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the permission semantics this test asserts")
+	}
+	parent := secureTempDir(t)
+	base := filepath.Join(parent, "runs")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteConfigError(base, "run-1", "pkg/a", ReasonMissingRunToken, "x")
+	if err == nil {
+		t.Fatal("WriteConfigError wrote under a world-writable ancestor")
+	}
+	if !strings.Contains(err.Error(), "0777") {
+		t.Fatalf("error %q does not state the offending mode", err)
+	}
+}
+
+func TestWriteConfigErrorRejectsARelativeReportingDirectory(t *testing.T) {
+	err := WriteConfigError(".go-specs/runs", "run-1", "pkg/a", ReasonMissingRunToken, "x")
+	if err == nil {
+		t.Fatal("WriteConfigError accepted a relative reporting directory")
+	}
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) || cfgErr.Reason != ReasonInvalidReportDir {
+		t.Fatalf("got %v, want a *ConfigError with reason %q", err, ReasonInvalidReportDir)
 	}
 }

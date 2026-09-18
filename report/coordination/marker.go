@@ -21,6 +21,14 @@ const markerSchemaVersion = "1"
 // waiting to happen (contract v1.2.6 §10).
 const maxMarkerBytes = 64 << 10
 
+// markerPublishOps is the publish seam for run.json.
+//
+// It exists so a test can make the publish fail after the temp file has been written, and then
+// assert that no partial marker survives. Without that injection the "never leaves an empty
+// marker" property is unpinnable: every test would exercise only the success path, where writing
+// in place and publishing atomically look identical.
+var markerPublishOps = realPublishOps
+
 // runMarker is the on-disk ownership evidence for one run. It never contains the raw token —
 // only the digest of the token's decoded bytes (contract v1.2.6 §5).
 type runMarker struct {
@@ -135,7 +143,7 @@ func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership
 	// marker-unreadable: a transient ENOSPC or EIO would permanently brick the run id and force
 	// the operator onto the --force path. Publishing atomically means the marker is either wholly
 	// absent or wholly complete.
-	if err := writeAndPublish(runDir(base, runID), markerFileName, body, realPublishOps()); err != nil {
+	if err := writeAndPublish(runDir(base, runID), markerFileName, body, markerPublishOps()); err != nil {
 		if errors.Is(err, ErrDuplicateProducer) {
 			return RunOwnership{}, fmt.Errorf(
 				"go-specs report: run %q is already initialized at %s: either %s was reused across two invocations (it must be unique per invocation, reruns included) or a previous run was abandoned; clear abandoned runs with the gc path, or pass --force / InitializeRunOptions.Force if reusing this run id is deliberate",

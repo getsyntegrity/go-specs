@@ -412,3 +412,32 @@ func TestShardConfigFromEnvTouchesNoFilesystemWhenTheGateIsOff(t *testing.T) {
 		t.Fatal("the disabled path created the reporting directory")
 	}
 }
+
+func TestAnUnparseableGateProducesNoFilesystemSideEffects(t *testing.T) {
+	// The gate exists so that reporting can never act on a run nobody activated. An unparseable
+	// value is a configuration error for this process, but it is not an activated run, so it must
+	// not create directories or records anywhere — a stale export in a developer's shell must
+	// leave no trace.
+	base := secureTempDir(t)
+	reportDir := filepath.Join(base, "runs")
+
+	t.Setenv(EnvGate, "yes")
+	t.Setenv(EnvRunID, "run-1")
+	t.Setenv(EnvRunToken, validToken)
+	t.Setenv(EnvReportDir, reportDir)
+
+	writer, err := ShardWriterFromEnv("example.com/m/pkg")
+	if err == nil {
+		t.Fatal("an unparseable gate was accepted")
+	}
+	if writer != nil {
+		t.Fatal("a writer was returned for a failed configuration")
+	}
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) || cfgErr.Reason != ReasonInvalidGate {
+		t.Fatalf("got %v, want a *ConfigError with reason %q", err, ReasonInvalidGate)
+	}
+	if _, statErr := os.Stat(reportDir); !os.IsNotExist(statErr) {
+		t.Fatal("an unactivated run created its reporting directory")
+	}
+}
