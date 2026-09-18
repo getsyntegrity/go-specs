@@ -68,12 +68,16 @@ Full suite run (1000 specs, one assertion per spec). Time per run:
 
 - **No reflection** — Assertions use generics and direct comparison. The fast path does not use `reflect.DeepEqual` or runtime type switches.
 - **Compiled execution plan** — Suites are compiled once into a flat list of steps. The runner does not resolve hooks or look up specs at run time.
-- **Zero allocations** — the Context is pooled and the expectation never escapes the assertion that consumes it, so it is stack-allocated; the assertion and runner success path allocate nothing in the measured loop.
+- **Zero allocations on the typed equality path** — the Context is pooled and the handle never escapes the assertion that consumes it, so it is stack-allocated; `EqualTo` and `ExpectT(...).ToEqual(...)` also hold the value at its own type, so they allocate nothing for a value of any size. The runner loop allocates nothing per spec.
 - **Simple runner loop** — The runner just iterates over steps and calls `step(ctx)`. No maps, no reflection, no per-spec allocation.
 
 ### Allocation comparison
 
-go-specs performs no allocations during test execution on the success path; other frameworks incur helper or matcher allocations.
+On the typed equality path (`EqualTo`, `ExpectT(...).ToEqual(...)`) go-specs performs no allocations
+during test execution on the success path, for values of any type or size; other frameworks incur
+helper or matcher allocations. The matcher and untyped forms convert the value to an `any` and cost
+one and two allocations respectively for values Go cannot convert for free — see the table in
+[../README.md#allocations-by-value-shape-go-specs](../README.md).
 
 ```mermaid
 flowchart LR

@@ -106,7 +106,25 @@ ctx.Expect(value).To(specs.BeTrue())
 ctx.Expect(value).To(specs.Equal(expected))
 ```
 
-`ExpectT(ctx, x).ToEqual(y)` is the preferred form for typed equality; it avoids matcher allocations.
+`ExpectT(ctx, x).ToEqual(y)` is the preferred form for typed equality, and the only fluent form that
+allocates nothing whatever `x` is. It holds the value at its own type, so no interface conversion
+happens at all.
+
+The other two forms do convert the value to an `any`, and for a value Go cannot convert for free
+(any string, any struct, an integer outside the runtime's static small-integer table) that costs one
+allocation per operand:
+
+| Form                          | allocations on success                |
+| ----------------------------- | ------------------------------------- |
+| `EqualTo(ctx, x, y)`          | 0                                     |
+| `ExpectT(ctx, x).ToEqual(y)`  | 0                                     |
+| `ExpectT(ctx, x).To(m)`       | 1 — `Matcher` is `Match(any)`          |
+| `ctx.Expect(x).ToEqual(y)`    | 2 — both operands are `any`            |
+
+The matcher cost is a property of the `Matcher` interface, not of the handle: a matcher cannot see a
+typed value without one conversion. A generic `Matcher[T]` would remove it; until then, reach for
+`ToEqual` when the comparison is equality. The counts are pinned by
+`TestAssertionAllocationsByValueShape` in `specs/assertion_allocations_test.go`.
 
 ### An expectation is single-use
 

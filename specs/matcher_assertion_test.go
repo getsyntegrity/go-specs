@@ -149,8 +149,8 @@ func TestExpectTToIgnoresANilMatcher(t *testing.T) {
 }
 
 func TestExpectTToIgnoresAnExpectationWithoutAContext(t *testing.T) {
-	expectT[int]{e: nil}.To(Equal(1))
-	expectT[int]{e: &Expectation{actual: 42}}.To(Equal(43))
+	expectT[int]{s: nil}.To(Equal(1))
+	expectT[int]{s: &typedExpectation[int]{actual: 42}}.To(Equal(43))
 }
 
 // A Context with no backend is a real state, not a hypothetical: NewContext(nil) produces one

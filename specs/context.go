@@ -175,10 +175,46 @@ func (c *Context) Expect(actual any) *Expectation {
 	return &Expectation{ctx: c, actual: actual}
 }
 
-// expectT is the generic return type of ExpectT; holds the single-use Expectation it will assert
-// through. Copying the struct copies the pointer, not the handle, so two copies still contend for
-// the one atomic claim and exactly one of them can assert.
-type expectT[T comparable] struct{ e *Expectation }
+// typedExpectation is the single-use state behind a typed handle. It is the typed twin of
+// Expectation, and exists for one reason: it stores the value as a T rather than as an any.
+//
+// Expectation cannot do that. Its actual field is an any because ctx.Expect accepts any value, and
+// storing a T there is an interface conversion — which for every value the runtime does not hand
+// out for free (integers outside runtime.staticuint64s, every string, every struct) copies the
+// value to the heap. That is one allocation per assertion on the path the docs call allocation-free,
+// and it is invisible to a benchmark that asserts 42 against 42 (issue #177). Holding the value at
+// its own type removes the conversion rather than optimising it.
+//
+// The pointer indirection stays, and is load-bearing: single use is claimed with CompareAndSwap on
+// spent, so every copy of a handle must reach the same flag. Inlining these fields into expectT
+// would give each copy its own, and two copies of one handle could then both assert — the silent
+// second assertion issue #170 exists to prevent. The pointer costs nothing: the state does not
+// escape the assertion that consumes it, so escape analysis stack-allocates it, which is why the
+// typed path allocates zero for values of any size.
+type typedExpectation[T comparable] struct {
+	ctx    *Context
+	actual T
+	// spent carries the same contract as Expectation.spent — see its comment for why the claim is
+	// a CompareAndSwap rather than a check followed by a write.
+	spent atomic.Bool
+}
+
+// release drops the handle's references once its assertion has run; see Expectation.release, whose
+// contract this mirrors. Zeroing actual matters more here than it does there: T may be a struct
+// holding pointers, and a retained spent handle must not keep them alive.
+func (s *typedExpectation[T]) release() {
+	if s == nil {
+		return
+	}
+	var zero T
+	s.ctx = nil
+	s.actual = zero
+}
+
+// expectT is the generic return type of ExpectT; holds the single-use state it will assert through.
+// Copying the struct copies the pointer, not the handle, so two copies still contend for the one
+// atomic claim and exactly one of them can assert.
+type expectT[T comparable] struct{ s *typedExpectation[T] }
 
 // EqualTo asserts that actual equals expected. Zero alloc; single comparison, no type switch, no reflection.
 // Helper() is only called on failure so the fast path avoids runtime.Callers().
@@ -213,9 +249,18 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 	c.failf("expected %v to equal %v", actual, expected)
 }
 
-// ExpectT returns a typed expectation for comparable types. Zero allocations (the Expectation does
-// not escape the assertion that consumes it, so it is stack-allocated — see Context.Expect).
-// ToEqual(expected) does one type assertion and direct comparison.
+// ExpectT returns a typed expectation for comparable types. ToEqual(expected) is a direct
+// comparison: no type assertion, no reflection, and no interface conversion.
+//
+// ToEqual allocates nothing, for a T of any size. The handle's state does not escape the assertion
+// that consumes it, so escape analysis stack-allocates it, and the value is held at its own type
+// rather than boxed into an any (see typedExpectation).
+//
+// To(Matcher) is different, and deliberately so: Matcher is Match(any), so the value must become an
+// interface before a matcher can see it. For a value the runtime does not serve from its static
+// small-integer table that conversion costs exactly one allocation. Nothing in ExpectT can remove
+// it — only a generic Matcher[T] would — so it is measured rather than glossed over, by
+// TestAssertionAllocationsByValueShape. Use ToEqual where the comparison is equality.
 //
 // Like Context.Expect, the returned handle is spent by its first To/ToEqual call; a second
 // assertion through it panics (see expectationReusedMessage).
@@ -228,41 +273,38 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 //
 // Example: specs.ExpectT(ctx, 42).ToEqual(42) or specs.ExpectT(ctx, true).To(specs.BeTrue())
 func ExpectT[T comparable](c *Context, v T) expectT[T] {
-	return expectT[T]{e: &Expectation{ctx: c, actual: v}}
+	return expectT[T]{s: &typedExpectation[T]{ctx: c, actual: v}}
 }
 
 // ToEqual asserts that the value equals expected using ==, not reflect.DeepEqual (see ExpectT's doc
-// comment). No reflection. Helper() only on failure, and must stay un-inlined — see the ATTRIBUTION
-// note on EqualTo.
+// comment). No reflection, and no interface conversion. Helper() only on failure, and must stay
+// un-inlined — see the ATTRIBUTION note on EqualTo.
+//
+// There is no type-assertion branch here any more. There used to be one, because the value arrived
+// as an any and had to be asserted back to T; it could not fail — ExpectT is the only constructor
+// and it stores exactly the T it was given — so it was a failure branch no spec could ever reach.
+// Holding the value at its own type removes the question rather than re-answering it.
 func (x expectT[T]) ToEqual(expected T) {
-	e := x.e
-	if e == nil {
+	s := x.s
+	if s == nil {
 		return
 	}
-	if !e.spent.CompareAndSwap(false, true) {
+	if !s.spent.CompareAndSwap(false, true) {
 		panicReused()
 	}
-	defer e.release()
-	if e.ctx == nil || e.ctx.backend == nil {
+	defer s.release()
+	if s.ctx == nil || s.ctx.backend == nil {
 		return
 	}
-	actual, ok := e.actual.(T)
-	if !ok {
-		if e.ctx.tb != nil {
-			e.ctx.tb.Helper()
+	if s.actual != expected {
+		if s.ctx.tb != nil {
+			s.ctx.tb.Helper()
 		}
-		e.reportNotEqual("expected %v to equal %v (type mismatch)", e.actual, expected)
+		reportNotEqual(s.ctx, "expected %v to equal %v", s.actual, expected)
 		return
 	}
-	if actual != expected {
-		if e.ctx.tb != nil {
-			e.ctx.tb.Helper()
-		}
-		e.reportNotEqual("expected %v to equal %v", actual, expected)
-		return
-	}
-	if e.ctx.coverage != nil {
-		e.ctx.RecordCoverage(coverageEdgeHash(2, actual, expected))
+	if s.ctx.coverage != nil {
+		s.ctx.RecordCoverage(coverageEdgeHash(2, s.actual, expected))
 	}
 }
 
@@ -277,34 +319,46 @@ func (x expectT[T]) ToEqual(expected T) {
 // out before Go attributes the failure to the user's line. failf marks its own frame, and
 // backend.Fatalf marks the backend's from inside it (see runnableBackend.Fatalf) — the last one.
 //
+// It is a free function taking the Context rather than a method on the handle so that the typed and
+// untyped paths share one frame. A method on typedExpectation[T] would be compiled once per
+// instantiation, putting a copy of this reporting tail — and the //go:noinline it needs — into
+// every T a suite asserts on, for code that only ever runs as a spec ends.
+//
 //go:noinline
-func (e *Expectation) reportNotEqual(format string, actual, expected any) {
-	if e.ctx.tb != nil {
-		e.ctx.tb.Helper()
+func reportNotEqual(c *Context, format string, actual, expected any) {
+	if c.tb != nil {
+		c.tb.Helper()
 	}
-	e.ctx.failf(format, actual, expected)
+	c.failf(format, actual, expected)
 }
 
 // To asserts that the value matches the matcher (interface path; use ToEqual for comparable T).
 // Helper() only on failure; must stay un-inlined (see EqualTo's ATTRIBUTION note).
+//
+// Unlike ToEqual this path converts the value to an interface, because Matcher is Match(any) and a
+// matcher cannot see a T any other way. For values outside the runtime's static small-integer table
+// that conversion allocates once — see ExpectT's doc comment. The conversion is written out as a
+// named local so it happens once rather than at each use, and so the cost is visible in the code
+// rather than hidden in two call sites.
 func (x expectT[T]) To(m Matcher) {
-	e := x.e
-	if e == nil {
+	s := x.s
+	if s == nil {
 		return
 	}
-	if !e.spent.CompareAndSwap(false, true) {
+	if !s.spent.CompareAndSwap(false, true) {
 		panicReused()
 	}
-	defer e.release()
+	defer s.release()
 	// The backend guard matches EqualTo and ExpectT.ToEqual: with no backend there is nowhere to
 	// report to, and reportMatcherFailure would dereference a nil interface. An assertion must
 	// never turn a misconfigured context into a panic at an unrelated line.
-	if e.ctx == nil || e.ctx.backend == nil || m == nil {
+	if s.ctx == nil || s.ctx.backend == nil || m == nil {
 		return
 	}
-	if m.Match(e.actual) {
-		if e.ctx.coverage != nil {
-			e.ctx.RecordCoverage(coverageEdgeHash(2, e.actual, nil))
+	boxed := any(s.actual)
+	if m.Match(boxed) {
+		if s.ctx.coverage != nil {
+			s.ctx.RecordCoverage(coverageEdgeHash(2, boxed, nil))
 		}
 		return
 	}
@@ -312,10 +366,10 @@ func (x expectT[T]) To(m Matcher) {
 	// reach the authoritative failure record — exactly as the untyped Expectation.To does, because
 	// both go through the same one path. Reaching the backend without recording is the defect class
 	// of #115: the run fails, but every reporter is told Failed=false and FailFast runs on.
-	if e.ctx.tb != nil {
-		e.ctx.tb.Helper()
+	if s.ctx.tb != nil {
+		s.ctx.tb.Helper()
 	}
-	e.reportMatcherFailure(m)
+	reportMatcherFailure(s.ctx, m, boxed)
 }
 
 // Snapshot serializes value as JSON and compares it to the stored snapshot named name.
@@ -418,7 +472,7 @@ func (e *Expectation) To(m Matcher) {
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	e.reportMatcherFailure(m)
+	reportMatcherFailure(e.ctx, m, e.actual)
 }
 
 // reportMatcherFailure builds the matcher's failure message and hands it to Context.failf, the one
@@ -431,12 +485,15 @@ func (e *Expectation) To(m Matcher) {
 // only the function that made it, so every frame between the user's assertion and testing has to
 // opt out before Go will attribute the failure to the user's line. failf marks its own.
 //
+// Like reportNotEqual it is a free function taking the Context, so the typed and untyped paths
+// share one frame instead of compiling a copy of this tail into every instantiation of expectT[T].
+//
 //go:noinline
-func (e *Expectation) reportMatcherFailure(m Matcher) {
-	if e.ctx.tb != nil {
-		e.ctx.tb.Helper()
+func reportMatcherFailure(c *Context, m Matcher, actual any) {
+	if c.tb != nil {
+		c.tb.Helper()
 	}
-	e.ctx.failf("%s", m.FailureMessage(e.actual))
+	c.failf("%s", m.FailureMessage(actual))
 }
 
 // ToEqual asserts that the actual value equals expected (fast path for benchmarks). Helper() only

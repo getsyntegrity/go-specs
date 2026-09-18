@@ -82,6 +82,27 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   is unchanged — still zero allocations, with no measurable difference on
   `BenchmarkAssertion_GoSpecs_EqualTo`, `BenchmarkAssertion_GoSpecs_ExpectToEqual` or
   `BenchmarkMatcher_GoSpecs`. ([#175](https://github.com/getsyntegrity/go-specs/issues/175))
+- `specs.ExpectT(ctx, x).ToEqual(y)` no longer allocates, for a `T` of any type or size. The typed
+  handle used to hold a `*Expectation`, whose `actual` field is an `any`, so storing the value was an
+  interface conversion — and for anything the Go runtime does not convert for free (every string,
+  every struct, every integer outside `runtime.staticuint64s`) that copied the value to the heap. The
+  handle now carries the value at its own type. Measured on the pinned toolchain (Go 1.25.14): a
+  large `int` and a `string` went from 1 alloc/op to 0 (−56% and −70% ns/op), a small struct from
+  1 alloc/op to 0 (−69% ns/op); the small-integer case, the only one the old benchmarks covered, was
+  already 0 and is 7% faster. `EqualTo` was already allocation-free for every shape and is unchanged.
+  Removing the boxing also removed a type-assertion failure branch in `ToEqual` that no spec could
+  reach: `ExpectT` is the type's only constructor and stores exactly the `T` it was given.
+  ([#177](https://github.com/getsyntegrity/go-specs/issues/177))
+- The documented allocation guarantee is now stated per assertion form and per value shape, in
+  README.md and docs/DSL.md, and pinned by `TestAssertionAllocationsByValueShape`. The previous
+  blanket "zero allocations on the assertion fast path" was evidenced only by benchmarks comparing
+  `42` against `42` — a case that cannot allocate whatever the framework does, because Go serves
+  small-integer conversions from a static table. `ExpectT(...).To(matcher)` costs one allocation and
+  `ctx.Expect(...).ToEqual(...)` costs two for values outside that table; both are now published
+  rather than implied to be free. The matcher cost comes from `Matcher` being `Match(any)` — a
+  typed value cannot reach a matcher without one conversion — and is unchanged by this work; only a
+  generic `Matcher[T]` would remove it. ([#177](https://github.com/getsyntegrity/go-specs/issues/177))
+
 - **Breaking.** Replaced the exported `CaptureCallerLocation bool` with the concurrency-safe pair
   `SetCaptureCallerLocation(enabled bool)` and `CaptureCallerLocationEnabled() bool`, backed by an
   `atomic.Bool`. Suite construction is documented as safe across concurrent goroutines, so any
