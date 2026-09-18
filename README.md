@@ -181,3 +181,8 @@ Please open an issue or discussion for larger changes so we can align on directi
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+Maintained by [GetSyntegrity](https://github.com/getsyntegrity).
+Created and maintained by Pablo Gore ([@pablogore](https://github.com/pablogore)).
