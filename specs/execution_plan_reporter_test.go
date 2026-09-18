@@ -240,7 +240,7 @@ func TestRunProgramReportsPanicMessageAndOutput(t *testing.T) {
 
 	started := reportSpecStarted(rep, "panics", nil)
 	message, output := runProgram(program, ctx, nil)
-	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
+	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output})
 
 	if len(rep.specFinished) != 1 {
 		t.Fatalf("expected one SpecFinished, got %+v", rep.specFinished)
@@ -274,8 +274,8 @@ func TestRunProgramAfterHookOnlyPanicStillReportsMessage(t *testing.T) {
 
 	message, output := runProgram(program, ctx, nil)
 
-	if !ctx.failed {
-		t.Fatal("expected ctx.failed to be set after an after-hook panic")
+	if !ctx.hasFailed() {
+		t.Fatal("expected ctx.hasFailed() to be set after an after-hook panic")
 	}
 	if message != "panic in after hook: after boom" {
 		t.Errorf("expected message %q, got %q", "panic in after hook: after boom", message)

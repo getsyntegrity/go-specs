@@ -2,11 +2,12 @@ package specs
 
 import (
 	"math"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/assert"
 )
 
 // contextPool reuses Context instances in the runner to reduce allocations.
@@ -62,8 +63,11 @@ type Context struct {
 	pathValues PathValues
 	// coverage is set by the runner during coverage-guided exploration; assertions record edges here.
 	coverage *Coverage
-	// failed is set by assertions on failure; used by Runner for FailFast to stop execution.
-	failed bool
+	// failure is the authoritative record of whether this spec has failed — the single source
+	// report.SpecResultEvent.Failed, SuiteEndEvent.FailedSpecs and Runner FailFast all derive from.
+	// It is written only through recordFailure/failf and read only through hasFailed; see failure.go
+	// for the record's lifecycle and for why no assertion may mutate it directly (#175).
+	failure failureRecord
 	// failFast is set by Runner when FailFast is true; runner breaks after a step that set failed.
 	failFast bool
 	// execObserver, when non-nil, receives per-spec Started/Finished notifications from execution
@@ -106,7 +110,7 @@ func (c *Context) Reset(backend testBackend) {
 	c.T = nil
 	c.tb = nil
 	c.coverage = nil
-	c.failed = false
+	c.resetFailure()
 	c.failFast = false
 	c.execObserver = nil
 	c.poisoned = false
@@ -131,13 +135,6 @@ func (c *Context) Reset(backend testBackend) {
 func (c *Context) SetFailFast(v bool) {
 	if c != nil {
 		c.failFast = v
-	}
-}
-
-// recordFailure marks the context as failed (e.g. before Fatalf). Used for FailFast.
-func (c *Context) recordFailure() {
-	if c != nil {
-		c.failed = true
 	}
 }
 
@@ -210,11 +207,10 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		}
 		return
 	}
-	c.recordFailure()
 	if c.tb != nil {
 		c.tb.Helper()
 	}
-	c.backend.Fatalf("expected %v to equal %v", actual, expected)
+	c.failf("expected %v to equal %v", actual, expected)
 }
 
 // ExpectT returns a typed expectation for comparable types. Zero allocations (the Expectation does
@@ -252,7 +248,6 @@ func (x expectT[T]) ToEqual(expected T) {
 	}
 	actual, ok := e.actual.(T)
 	if !ok {
-		e.ctx.recordFailure()
 		if e.ctx.tb != nil {
 			e.ctx.tb.Helper()
 		}
@@ -260,7 +255,6 @@ func (x expectT[T]) ToEqual(expected T) {
 		return
 	}
 	if actual != expected {
-		e.ctx.recordFailure()
 		if e.ctx.tb != nil {
 			e.ctx.tb.Helper()
 		}
@@ -272,23 +266,23 @@ func (x expectT[T]) ToEqual(expected T) {
 	}
 }
 
-// reportNotEqual builds and reports an equality failure. Like reportMatcherFailure it is split out
-// and marked noinline to keep the reporting code and its variadic Fatalf setup out of the caller's
-// body; here it also keeps that tail out of every generic instantiation of expectT[T].ToEqual.
-// Boxing expected into an any allocates, but only on the failure path, where the spec is ending
-// anyway — the passing fast path still allocates nothing.
+// reportNotEqual hands an equality failure to Context.failf, the one path that records and reports
+// it (see failure.go). Like reportMatcherFailure it is split out and marked noinline to keep the
+// boxing and the call out of the caller's body; here it also keeps that tail out of every generic
+// instantiation of expectT[T].ToEqual. Boxing expected into an any allocates, but only on the
+// failure path, where the spec is ending anyway — the passing fast path still allocates nothing.
 //
 // It marks its own frame as a test helper, and the caller marks itself: one Helper() call marks
-// only the function that made it, so both frames must opt out before Go attributes the failure to
-// the user's assertion line. backend.Fatalf marks the backend's own frame from inside it (see
-// runnableBackend.Fatalf), which is the third and last frame between here and testing.
+// only the function that made it, so every frame between the user's assertion and testing must opt
+// out before Go attributes the failure to the user's line. failf marks its own frame, and
+// backend.Fatalf marks the backend's from inside it (see runnableBackend.Fatalf) — the last one.
 //
 //go:noinline
 func (e *Expectation) reportNotEqual(format string, actual, expected any) {
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	e.ctx.backend.Fatalf(format, actual, expected)
+	e.ctx.failf(format, actual, expected)
 }
 
 // To asserts that the value matches the matcher (interface path; use ToEqual for comparable T).
@@ -314,11 +308,10 @@ func (x expectT[T]) To(m Matcher) {
 		}
 		return
 	}
-	// recordFailure is what makes a typed matcher failure reach ctx.failed, exactly as the untyped
-	// Expectation.To does. Without it a spec whose only assertion is ExpectT(ctx, x).To(m) still
-	// fails the run (Fatalf reaches the backend) but reports Failed=false to every reporter, and
-	// FailFast keeps running the groups after it — the same defect class as issue #115.
-	e.ctx.recordFailure()
+	// reportMatcherFailure funnels into Context.failf, which is what makes a typed matcher failure
+	// reach the authoritative failure record — exactly as the untyped Expectation.To does, because
+	// both go through the same one path. Reaching the backend without recording is the defect class
+	// of #115: the run fails, but every reporter is told Failed=false and FailFast runs on.
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
@@ -334,11 +327,10 @@ func (x expectT[T]) To(m Matcher) {
 // comparison is JSON marshalling plus file I/O, so the extra Helper() call is not on a measurable hot
 // path.
 //
-// runSnapshot's returned Result is what makes a mismatch reach c.failed. Unlike every other
-// assertion in this file, this has to record the failure *before* triggering Fatalf, not after:
-// runSnapshot only evaluates the comparison, it never reports it, precisely so recordFailure() runs
-// while the call can still return. On a real testing.T, Fatalf ends in runtime.Goexit, which unwinds
-// this goroutine and never comes back — recordFailure() after that point is dead code (issue #115).
+// runSnapshot's returned Result is what makes a mismatch reach the failure record: runSnapshot only
+// evaluates the comparison, it never reports it. Handing the verdict to c.failf is what records and
+// reports it as one step — on a real testing.T, Fatalf ends in runtime.Goexit, which unwinds this
+// goroutine and never comes back, so recording after reporting is dead code (issue #115).
 func (c *Context) Snapshot(name string, value any) {
 	if c == nil || c.backend == nil {
 		return
@@ -348,13 +340,11 @@ func (c *Context) Snapshot(name string, value any) {
 	}
 	_, callerFile, _, ok := runtime.Caller(1)
 	if !ok {
-		c.recordFailure()
-		c.backend.Fatalf("snapshot: could not get caller file")
+		c.failf("snapshot: could not get caller file")
 		return
 	}
 	if result := runSnapshot(c.backend, callerFile, name, value); !result.Passed {
-		c.recordFailure()
-		c.backend.Fatalf("%s", result.Message)
+		c.failf("%s", result.Message)
 	}
 }
 
@@ -425,38 +415,40 @@ func (e *Expectation) To(m Matcher) {
 		}
 		return
 	}
-	e.ctx.recordFailure()
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
 	e.reportMatcherFailure(m)
 }
 
-// reportMatcherFailure builds and reports a matcher failure message. It is split out of To and
-// marked noinline so the matcher fast path carries only the branch, not the reporting code and its
-// variadic Fatalf setup — inlining that tail back into To costs ~5% on BenchmarkMatcher_GoSpecs for
-// code that never runs when a matcher passes.
+// reportMatcherFailure builds the matcher's failure message and hands it to Context.failf, the one
+// path that records and reports it (see failure.go). It is split out of To and marked noinline so
+// the matcher fast path carries only the branch, not the message building and the call — inlining
+// that tail back into To costs ~5% on BenchmarkMatcher_GoSpecs for code that never runs when a
+// matcher passes.
 //
 // It marks its own frame as a test helper. The caller must mark itself too: one Helper() call marks
-// only the function that made it, so both frames have to opt out before Go will attribute the
-// failure to the user's assertion line.
+// only the function that made it, so every frame between the user's assertion and testing has to
+// opt out before Go will attribute the failure to the user's line. failf marks its own.
 //
 //go:noinline
 func (e *Expectation) reportMatcherFailure(m Matcher) {
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	e.ctx.backend.Fatalf("%s", m.FailureMessage(e.actual))
+	e.ctx.failf("%s", m.FailureMessage(e.actual))
 }
 
 // ToEqual asserts that the actual value equals expected (fast path for benchmarks). Helper() only
 // on failure; must stay un-inlined (see EqualTo's ATTRIBUTION note).
 //
 // Unlike EqualTo/ExpectT.ToEqual (which always use ==), this uses == only for a fast-path set of
-// primitive types (int, string, bool, int64, float64, uint) and falls back to reflect.DeepEqual for
-// everything else — including other primitives like int32/float32/uint64, and any struct, slice, or
-// map. That makes this the right choice when you need value-based equality for non-primitive types;
-// see "Equality semantics" in docs/DSL.md for why this differs from EqualTo/ExpectT.
+// primitive types (int, string, bool, int64, float64, uint) and otherwise defers to
+// assert.ValuesEqual: errors.Is(actual, expected) when both values are errors, and
+// reflect.DeepEqual for everything else — including other primitives like int32/float32/uint64, and
+// any struct, slice, or map. That makes this the right choice when you need value-based equality for
+// non-primitive types, or error-identity equality for errors; see "Equality semantics" in
+// docs/DSL.md for why this differs from EqualTo/ExpectT.
 func (e *Expectation) ToEqual(expected any) {
 	if e == nil {
 		return
@@ -513,7 +505,10 @@ func (e *Expectation) ToEqual(expected any) {
 		handled = false
 	}
 	if !handled {
-		equal = reflect.DeepEqual(e.actual, expected)
+		// assert.ValuesEqual rather than reflect.DeepEqual directly, so this path and the Equal
+		// matcher answer the same question about the same two values — including the oriented
+		// errors.Is semantics for errors. See issue #183.
+		equal = assert.ValuesEqual(expected, e.actual)
 	}
 	if equal {
 		if e.ctx.coverage != nil {
@@ -521,11 +516,12 @@ func (e *Expectation) ToEqual(expected any) {
 		}
 		return
 	}
-	e.ctx.recordFailure()
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	e.ctx.backend.Fatalf("expected %v to equal %v", e.actual, expected)
+	// failf, never backend.Fatalf directly: it writes the authoritative failureRecord before
+	// reporting, which is the ordering #175 was about. See failure.go.
+	e.ctx.failf("%s", assert.EqualFailureMessage(expected, e.actual))
 }
 
 // coverageEdgeHash returns a deterministic edge ID from caller location and comparison outcome (branch sampling).

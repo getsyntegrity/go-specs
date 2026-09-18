@@ -112,7 +112,8 @@ func TestEngineContractRecoversPanicAndRunsSiblings(t *testing.T) {
 }
 
 // TestEngineContractFailedFlagScopeIsNotShared pins a divergence rather than an invariant: after a
-// run whose first spec panicked and whose second passed, ctx.failed means different things per
+// run whose first spec panicked and whose second passed, the Context's failure record means
+// different things per
 // engine. Runner/Program resets it at the top of every spec (runner.go's runSpecsRecovered) because
 // FailFast asks "did THIS spec fail"; the other engines never reset it, so it accumulates into "did
 // ANY spec fail".
@@ -133,12 +134,12 @@ func TestEngineContractFailedFlagScopeIsNotShared(t *testing.T) {
 			})
 
 			if perSpecScope[engine.name] {
-				if ctx.failed {
+				if ctx.hasFailed() {
 					t.Fatal("expected a per-spec failed flag to be cleared by the passing spec that followed")
 				}
 				return
 			}
-			if !ctx.failed {
+			if !ctx.hasFailed() {
 				t.Fatal("expected a cumulative failed flag to still record the earlier panic")
 			}
 		})

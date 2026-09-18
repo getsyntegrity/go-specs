@@ -20,7 +20,7 @@ import (
 // Runner runs a compiled Program against a test backend. One context from the pool, reused for every step.
 type Runner struct {
 	program  *Program
-	FailFast bool // if true, stop after the first step that sets ctx.failed (e.g. assertion failure)
+	FailFast bool // if true, stop after the first step that records a failure (e.g. assertion failure)
 
 	// Name and Reporter are optional: when Reporter is nil, Run behaves exactly as it did before
 	// either field existed — no events, no extra work. When set, Run emits SuiteStarted before the
@@ -157,11 +157,11 @@ func (r *Runner) Run(tb testing.TB) {
 func runGroups(ctx *Context, groups []group) {
 	n := len(groups)
 	for gi := 0; gi < n; gi++ {
-		if ctx.failFast && ctx.failed {
+		if ctx.failFast && ctx.hasFailed() {
 			break
 		}
 		runGroup(ctx, &groups[gi])
-		if ctx.failFast && ctx.failed {
+		if ctx.failFast && ctx.hasFailed() {
 			break
 		}
 	}
@@ -196,9 +196,9 @@ func reportSkipped(ctx *Context, g *group) {
 
 // runSpecsRecovered runs a group's specs in order, recovering each one individually.
 //
-// ctx.failed is reset before every spec unconditionally — not gated on whether ctx.execObserver is
+// The failure record is reset before every spec unconditionally — not gated on whether ctx.execObserver is
 // set — because gating it would make attaching a reporter change execution semantics; reporting must
-// stay purely observational. This also fixes a latent bug: without the reset, ctx.failed stuck true
+// stay purely observational. This also fixes a latent bug: without the reset, the record stuck failed
 // after the first failing spec in a group and stayed true for the rest of this loop (harmless today,
 // since nothing outside the immediate failFast-gated checks ever read it, but a real correctness
 // issue for any future consumer, and now for reporting).
@@ -210,20 +210,20 @@ func reportSkipped(ctx *Context, g *group) {
 //
 // Each spec runs its own before hooks, body, and after hooks as one unit via runSpecRecovered,
 // isolated in its own subtest when possible — see its doc comment (#74, #109). failFast still works
-// correctly across that isolation: t.Run blocks until the subtest's goroutine finishes, so ctx.failed
+// correctly across that isolation: t.Run blocks until the subtest's goroutine finishes, so the record
 // (set synchronously by recordFailure before any Fatalf, not by recover) is visible here exactly like
 // before isolation existed.
 func runSpecsRecovered(ctx *Context, g *group) {
 	obs := ctx.execObserver
 	for i, s := range g.specs {
-		ctx.failed = false
+		ctx.resetFailure()
 		named := obs != nil && i < len(g.names)
 		var started report.SpecStartEvent
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
 		message, output, ran := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
-		failed := ctx.failed
+		failed := ctx.hasFailed()
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 		}
@@ -357,7 +357,7 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 	message, output = runStepRecovered(ctx, func(ctx *Context) {
 		for _, b := range before {
 			b(ctx)
-			if ctx.failFast && ctx.failed {
+			if ctx.failFast && ctx.hasFailed() {
 				return
 			}
 		}

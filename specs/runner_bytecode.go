@@ -85,7 +85,7 @@ func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 		workers = 1
 	}
 
-	results := make([]parallelFailure, nSpecs)
+	results := make([]failureRecord, nSpecs)
 	backends := make([]parallelBackend, workers)
 	for i := range backends {
 		backends[i].results = &results
@@ -108,7 +108,7 @@ func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 
 // runBytecodeWorker runs spec ranges whose spec index it acquires via next. One context per worker.
 // No allocations in the loop: context from pool, backend preallocated, code/starts read-only.
-func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *parallelBackend, next *uint32, results *[]parallelFailure) {
+func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *parallelBackend, next *uint32, results *[]failureRecord) {
 	ctx, release := acquireContext(backend)
 	defer release()
 
@@ -131,7 +131,7 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 // runBytecodeWorkerSpec runs one spec's instruction range on a worker goroutine, recording a
 // recovered panic into results[idx] via recoverParallelSpecFailure — the same rule scheduler.go's
 // runWorkerSpec applies, now shared rather than mirrored (see panic_report.go).
-func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]parallelFailure, idx int) {
+func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]failureRecord, idx int) {
 	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {

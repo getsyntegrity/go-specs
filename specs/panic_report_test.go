@@ -51,7 +51,7 @@ func TestPanicRecoverySurvivesAnUnavailableBackendRealProcess(t *testing.T) {
 			for _, backend := range []testBackend{nil, releasedBackend()} {
 				ctx := &Context{backend: backend}
 				engine.run(ctx, func(*Context) { panic("boom") })
-				if !ctx.failed {
+				if !ctx.hasFailed() {
 					t.Fatalf("%s: expected the recovered panic to be recorded as a failure", engine.name)
 				}
 			}
@@ -110,7 +110,7 @@ func TestPanicRecoveryStillReportsThroughALiveBackend(t *testing.T) {
 		if !strings.Contains(backend.errors[0], "boom") {
 			t.Fatalf("%s: expected the reported failure to name the panic value, got %q", engine.name, backend.errors[0])
 		}
-		if !ctx.failed {
+		if !ctx.hasFailed() {
 			t.Fatalf("%s: expected the context to be recorded as failed", engine.name)
 		}
 	}
@@ -123,7 +123,7 @@ func TestPanicRecoverySurvivesABackendThatPanicsWhileReporting(t *testing.T) {
 	ctx := &Context{backend: panickingBackend{}}
 	runStepRecovered(ctx, func(*Context) { panic("boom") }, "spec")
 
-	if !ctx.failed {
+	if !ctx.hasFailed() {
 		t.Fatal("expected the recovered panic to be recorded as a failure even though reporting it panicked")
 	}
 }

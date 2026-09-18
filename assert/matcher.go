@@ -53,7 +53,28 @@ func (m *equalMatcher) Match(actual any) bool {
 }
 
 func (m *equalMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected %v to equal %v", actual, m.expected)
+	return EqualFailureMessage(m.expected, actual)
+}
+
+// EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. It is
+// exported so the DSL's inlined comparison paths report identically to the matcher — a divergence
+// between the two wordings is exactly as confusing as a divergence between the two comparisons.
+func EqualFailureMessage(expected, actual any) string {
+	if expectedErr, actualErr, ok := errorOperands(expected, actual); ok {
+		return errorMismatchMessage(expectedErr, actualErr)
+	}
+	renderedActual, renderedExpected := describeMismatch(actual, expected)
+	return fmt.Sprintf("expected %s to equal %s", renderedActual, renderedExpected)
+}
+
+// describeMismatch renders both sides, falling back to type-qualified forms when %v alone makes
+// them indistinguishable. A failure reading "expected boom to equal boom" tells the reader nothing.
+func describeMismatch(actual, expected any) (string, string) {
+	renderedActual, renderedExpected := fmt.Sprintf("%v", actual), fmt.Sprintf("%v", expected)
+	if renderedActual != renderedExpected {
+		return renderedActual, renderedExpected
+	}
+	return fmt.Sprintf("%v (%T)", actual, actual), fmt.Sprintf("%v (%T)", expected, expected)
 }
 
 // NotEqual returns a matcher that expects actual not to equal expected.
@@ -70,6 +91,12 @@ func (m *notEqualMatcher) Match(actual any) bool {
 }
 
 func (m *notEqualMatcher) FailureMessage(actual any) string {
+	if expectedErr, actualErr, ok := errorOperands(m.expected, actual); ok {
+		return fmt.Sprintf("expected error %s not to match %s — errors.Is(actual, expected) is true",
+			describeError(actualErr), describeError(expectedErr))
+	}
+	// No disambiguation here: a NotEqual failure means the two values matched, so rendering
+	// identically is the expected outcome rather than the confusing one.
 	return fmt.Sprintf("expected %v not to equal %v", actual, m.expected)
 }
 
@@ -169,7 +196,10 @@ func (m *containExpectedMatcher) Match(actual any) bool {
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < rv.Len(); i++ {
-			if ValuesEqual(rv.Index(i).Interface(), m.expected) {
+			// The element is the actual and m.expected is the expected, so they go in that order.
+			// This read reversed while everything compared structurally, because reflect.DeepEqual
+			// is symmetric and hid it; ValuesEqual's error semantics are oriented and would not.
+			if ValuesEqual(m.expected, rv.Index(i).Interface()) {
 				return true
 			}
 		}
@@ -182,13 +212,23 @@ func (m *containExpectedMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
 }
 
-// ValuesEqual reports whether expected and actual are equal (for use by other packages).
+// ValuesEqual reports whether actual satisfies expected (for use by other packages).
+//
+// The argument order is the contract: this comparison is oriented. When both operands are errors it
+// asks errors.Is(actual, expected), so an actual wrapping the expected sentinel satisfies it and an
+// unrelated error carrying the same message does not. Everything else keeps the existing structural
+// semantics — the comparable fast path, then reflect.DeepEqual.
+//
+// For a symmetric, unoriented error comparison see EqualValues.
 func ValuesEqual(expected, actual any) bool {
 	if expected == nil || actual == nil {
 		return expected == actual
 	}
 	if eq, handled := fastEqualComparable(expected, actual); handled {
 		return eq
+	}
+	if expectedErr, actualErr, ok := errorOperands(expected, actual); ok {
+		return errorsMatch(expectedErr, actualErr)
 	}
 	return reflect.DeepEqual(expected, actual)
 }

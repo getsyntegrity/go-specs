@@ -26,10 +26,11 @@ const undeliverablePanicPrefix = "specs: recovered panic could not be reported t
 // engine's recovery defer should call.
 //
 // The failure is recorded on ctx first and unconditionally, because that is what survives a missing
-// backend: ctx.failed drives FailFast, and the message/output the caller returns still reach the
-// reporter's SpecResultEvent. Delivery to the backend is best effort on top of that. When it cannot
-// happen — no backend, a released one, or one that panics while reporting — the panic is written to
-// stderr instead of being swallowed. A panic that cannot be reported is never converted into a pass.
+// backend: the recorded failure drives FailFast, and the message/output the caller returns still
+// reach the reporter's SpecResultEvent. Delivery to the backend is best effort on top of that. When
+// it cannot happen — no backend, a released one, or one that panics while reporting — the panic is
+// written to stderr instead of being swallowed. A panic that cannot be reported is never converted
+// into a pass.
 //
 // message and output keep the wire format every engine already used: Errorf("%s\n%s", ...).
 func reportRecoveredPanic(ctx *Context, message, output string) {
@@ -123,14 +124,19 @@ func recoverSpecFailure(ctx *Context, recovered any, label string) (message, out
 //
 // A nil value means the spec returned normally. parallelAbort{} is the sentinel a fatal assertion
 // panics with when the backend has abortOnFatal set — an expected stop already recorded in
-// results[idx]. An existing message wins: the first recorded failure is the one that explains the
+// results[idx]. An existing record wins: the first recorded failure is the one that explains the
 // spec, and a later panic must not overwrite it.
-func recoverParallelSpecFailure(recovered any, results *[]parallelFailure, idx int) {
+//
+// "Already recorded" is read from failureRecord.Failed, never from a non-empty Message (#175). A
+// fatal assertion can record a real failure with no text at all — backend.Fatal() with no arguments,
+// or a Matcher whose FailureMessage returns "" — and a message-based check would treat that slot as
+// empty and overwrite the assertion failure with the abort panic that followed it.
+func recoverParallelSpecFailure(recovered any, results *[]failureRecord, idx int) {
 	switch recovered {
 	case nil, parallelAbort{}:
 		return
 	}
-	if (*results)[idx].Message == "" {
-		(*results)[idx] = parallelFailure{Message: fmt.Sprintf("panic: %v", recovered)}
+	if !(*results)[idx].Failed {
+		(*results)[idx] = failureRecord{Failed: true, Message: fmt.Sprintf("panic: %v", recovered)}
 	}
 }

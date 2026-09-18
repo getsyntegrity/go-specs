@@ -59,10 +59,10 @@ func (f *fakeSnapshotBackend) Cleanup(func()) {}
 func (f *fakeSnapshotBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
 
 // TestSnapshotFailureRecordsContextFailure guards issue #115: a failing ctx.Snapshot must flip
-// ctx.failed like every other assertion, since that flag is what SpecResultEvent.Failed and
+// ctx.hasFailed() like every other assertion, since that flag is what SpecResultEvent.Failed and
 // SuiteEndEvent.FailedSpecs are built from. Before the fix, the mismatch verdict was decided inside
 // snapshots.RunFromFile, which reported straight to the backend (so `go test` still exited red)
-// without ever touching ctx.failed — so a reporter-driven consumer (JUnit writer, CI summary, flake
+// without ever touching ctx.hasFailed() — so a reporter-driven consumer (JUnit writer, CI summary, flake
 // tracker) was told the spec passed when it hadn't.
 func TestSnapshotFailureRecordsContextFailure(t *testing.T) {
 	fake := &fakeSnapshotBackend{}
@@ -73,7 +73,7 @@ func TestSnapshotFailureRecordsContextFailure(t *testing.T) {
 	if fake.fatalfMsg == "" {
 		t.Fatal("expected the snapshot mismatch to be reported to the backend")
 	}
-	if !ctx.failed {
-		t.Fatal("expected ctx.failed to be set on a snapshot mismatch, matching every other assertion")
+	if !ctx.hasFailed() {
+		t.Fatal("expected ctx.hasFailed() to be set on a snapshot mismatch, matching every other assertion")
 	}
 }
