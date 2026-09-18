@@ -62,6 +62,9 @@ go test ./benchmarks -bench=BenchmarkSuite_ -benchmem
 - **Deterministic**: Same N produces the same program shape; no randomness.
 - **Realistic**: Suite sizes 100, 1000, 10000 where applicable.
 - **go-specs target**: Zero allocations in assertion/runner fast path where possible (`0 allocs/op`).
+  Where that target is an actual guarantee it is pinned by `specs/allocation_contract_test.go`; see
+  [BENCHMARKS.md](../BENCHMARKS.md#contractual-vs-observational-claims). A benchmark printing `0 allocs/op`
+  never fails a build on its own — benchmarks measure, tests gate.
 - **Isolate setup**: Build suite / create runner before `b.ResetTimer()`; only the measured loop runs after.
 - **Avoid reflection** in go-specs benchmarks (use `EqualTo` / `ExpectT().ToEqual` for comparable types).
 

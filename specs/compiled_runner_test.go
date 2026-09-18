@@ -36,12 +36,3 @@ func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 		}
 	}
 }
-
-func TestCompiledRunner_ZeroAllocs(t *testing.T) {
-	b := NewBuilder(8)
-	b.It("", func(ctx *Context) { EqualTo(ctx, 42, 42) })
-	runner := NewRunner(b.Build())
-	var d testing.B
-	runner.Run(&d)
-	// Run should not allocate; check with go test -bench=BenchmarkRunner -benchmem
-}
