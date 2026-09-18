@@ -11,11 +11,11 @@ type NodeArena struct {
 
 // ArenaNode is one node in the arena (Describe/When/It).
 type ArenaNode struct {
-	Name     string
-	Parent   int
-	Type     NodeType
-	Fn       func(*Context)
-	File     string
-	Line     int
-	PathGen  *PathGenerator
+	Name    string
+	Parent  int
+	Type    NodeType
+	Fn      func(*Context)
+	File    string
+	Line    int
+	PathGen *PathGenerator
 }

@@ -4,7 +4,7 @@
 // optimized Program (grouped execution plan). The Runner executes the program
 // with zero allocations in the loop. Focus and Skip are applied at compile time.
 //
-//   Builder → Program → Runner → (optional) RunShard for CI
+//	Builder → Program → Runner → (optional) RunShard for CI
 //
 // Usage:
 //
