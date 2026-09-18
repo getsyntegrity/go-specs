@@ -48,12 +48,53 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 - Direct tests for the retained exported registry helpers — `PrintTreeArena`, `CurrentArena`,
   `CurrentSuite`, `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen` — which previously had none.
-  They pin the documented behaviour of each, including that all of them are no-ops rather than panics
-  when no registry is active or when the arena, root id or writer is absent, and that
-  `PrintTreeArena` includes its `rootID` node in the output. Each helper's doc comment now states the
+  They pin the documented behaviour of each, including that the read-only accessors and
+  `PrintTreeArena` are no-ops rather than panics when no registry is active or when the arena, root
+  id or writer is absent, and that `PrintTreeArena` includes its `rootID` node in the output. (The
+  three mutating helpers were no-ops too when this landed; see the `Changed` entry for
+  [#151](https://github.com/getsyntegrity/go-specs/issues/151) below, which made them fail closed.) Each helper's doc comment now states the
   purpose it is retained for: together they are the supported surface for building into the registry
   that `Analyze` or `Describe` pushed, without access to the unexported registry type.
   ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+
+### Changed
+
+- **Breaking.** `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen` now panic when called with no
+  active registry, instead of silently returning. Each one exists to write into the registry that
+  `Analyze` or `Describe` pushed; with no registry there is no destination, so returning quietly
+  discarded the caller's hook or path generator and reported success. A suite built that way
+  registers nothing and still passes. The panic names the helper and states the requirement
+  (`call it inside Analyze(fn) on the same goroutine`), because the call site is the only place that
+  can fix it. The read-only accessors `CurrentSuite` and `CurrentArena` are unchanged and still
+  return `nil` outside `Analyze`: "no suite is being built" is a legitimate answer to a question, not
+  a lost write. The registry stack is keyed per goroutine, so a helper called from a goroutine
+  started inside `Analyze` also panics — it would otherwise write into a registry nobody reads.
+  ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
+- **Breaking.** `Spec.It`, `Spec.Describe`, `Spec.When`, `Spec.BeforeEach`, `Spec.AfterEach` and the
+  `Paths()` registration now panic when called on a `Spec` that carries neither a compiler nor a
+  registry. `Spec` is exported with unexported fields, so external code can write `&specs.Spec{}`;
+  such a `Spec` has no build target, and every registration made against it was previously accepted
+  and dropped — a suite could declare specs and hooks, register none of them, and report green.
+  Obtain a `*Spec` from `Describe`, `DescribeFlat`, `DescribeWithReporter`,
+  `DescribeFlatWithReporter` or `BuildSuite`, which set the build target and thread it into every
+  nested block. A `nil` `*Spec` remains a tolerated no-op: there is no `Spec` there to have
+  registered anything into. No supported construction path is affected — every internal entry point
+  already set one of the two targets — so this breaks only code that constructed a `Spec` directly.
+  ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
+- The intended status of the `Analyze` extension surface is now documented rather than inferred:
+  `Analyze`, `CurrentSuite`, `CurrentArena`, `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen`
+  are a deliberate, supported API for building a `SuiteTree` without going through `Describe`, not
+  legacy residue. `docs/DSL.md` gains "Where a `*Spec` comes from" and "Analyze and the registry
+  extension surface", stating the valid construction context, the per-goroutine scoping rule, and why
+  the read-only and mutating helpers behave differently outside it.
+  ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
+- The registry's node-stack invariant — `stack` is never empty, because `newRegistry` seeds it with
+  the suite root and the pop closure only shrinks it while `len(stack) > 1` — is now stated once and
+  enforced consistently. `enterNode` indexed the stack top unguarded while `appendBeforeHook`,
+  `appendAfterHook` and `setPathGen` each returned silently on an empty stack: three dead branches
+  that could only mask a broken invariant by discarding a registration. All four now go through
+  `currentNodeIDLocked`, which panics if the invariant is ever violated. Internal only, so no public
+  API change. ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
 
 ### Fixed
 

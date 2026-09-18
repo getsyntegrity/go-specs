@@ -10,6 +10,14 @@ import (
 
 // Spec is the DSL handle for building describe/when/it trees.
 // The node tree is compiled into an ExecutionPlan once (Compile), then Run reuses it.
+//
+// A Spec is only usable when it carries a build target: either a bytecode compiler or a registry,
+// set by the entry point that created it (Describe, DescribeFlat, DescribeWithReporter,
+// DescribeFlatWithReporter, BuildSuite) and threaded into every nested Spec from there. Spec is
+// exported with unexported fields, so external code can still write &specs.Spec{}; such a Spec has
+// no build target, and its registration methods panic rather than accept an It, a hook or a nested
+// block and drop it, which would let a suite that registered nothing report green (issue #151).
+// Obtain a Spec from an entry point; never construct one.
 type Spec struct {
 	tb       testing.TB
 	backend  testBackend
@@ -255,6 +263,16 @@ func (s *Spec) Compile() {
 	})
 }
 
+// requireBuildTarget panics when s has neither a compiler nor a registry to write into. Every Spec
+// handed out by an entry point carries exactly one of the two; a Spec with neither was constructed
+// directly by external code, so there is no destination for the registration being made and no
+// outcome other than discarding it silently.
+func (s *Spec) requireBuildTarget(method string) {
+	if s.compiler == nil && s.registry == nil {
+		panic("specs: Spec." + method + " called on a Spec with no build target; obtain a *Spec from Describe/BuildSuite instead of constructing one")
+	}
+}
+
 // Describe starts a nested describe block.
 func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
@@ -266,11 +284,8 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
 		return
 	}
+	s.requireBuildTarget("Describe")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
-	if s.registry == nil {
-		fn(child)
-		return
-	}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
@@ -293,6 +308,7 @@ func (s *Spec) When(name string, fn interface{}) {
 		}
 		return
 	}
+	s.requireBuildTarget("When")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
 	runFn := func() {
 		switch f := fn.(type) {
@@ -301,10 +317,6 @@ func (s *Spec) When(name string, fn interface{}) {
 		case func():
 			f()
 		}
-	}
-	if s.registry == nil {
-		runFn()
-		return
 	}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
@@ -321,9 +333,7 @@ func (s *Spec) It(name string, fn func(*Context)) {
 		c.EmitIt(name, fn)
 		return
 	}
-	if s.registry == nil {
-		return
-	}
+	s.requireBuildTarget("It")
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	pop()
@@ -338,9 +348,8 @@ func (s *Spec) BeforeEach(fn func(*Context)) {
 		c.AppendBefore(fn)
 		return
 	}
-	if s.registry != nil {
-		s.registry.appendBeforeHook(fn)
-	}
+	s.requireBuildTarget("BeforeEach")
+	s.registry.appendBeforeHook(fn)
 }
 
 // AfterEach appends an after-each hook to the current node.
@@ -352,9 +361,8 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 		c.AppendAfter(fn)
 		return
 	}
-	if s.registry != nil {
-		s.registry.appendAfterHook(fn)
-	}
+	s.requireBuildTarget("AfterEach")
+	s.registry.appendAfterHook(fn)
 }
 
 // RandomSeed sets the seed for Paths() generation in this spec subtree: Sample's draws and the
@@ -377,9 +385,7 @@ func (s *Spec) runPathWithContext(name string, gen *PathGenerator, _ interface{}
 		c.EmitIt(name, fn)
 		return
 	}
-	if s.registry == nil {
-		return
-	}
+	s.requireBuildTarget("Paths")
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setPathGen(gen)

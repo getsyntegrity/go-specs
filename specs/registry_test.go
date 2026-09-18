@@ -1,6 +1,7 @@
 package specs
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -106,13 +107,111 @@ func TestAppendHooksAttachToCurrentNode(t *testing.T) {
 	}
 }
 
-func TestAppendHooksAndSetPathGenAreNoOpsWithoutRegistry(t *testing.T) {
-	// No active registry: these must not panic and must not create one.
-	AppendBeforeHook(func(ctx *Context) {})
-	AppendAfterHook(func(ctx *Context) {})
-	SetPathGen(&PathGenerator{})
+// The mutating extension helpers have nowhere to write with no active registry. Discarding the
+// argument would let a suite that registered nothing report green, so they fail closed (issue #151).
+// The panic names the helper, because the call site is the only place that can fix the mistake.
+func TestAppendHooksAndSetPathGenPanicWithoutRegistry(t *testing.T) {
+	cases := []struct {
+		helper string
+		call   func()
+	}{
+		{"AppendBeforeHook", func() { AppendBeforeHook(func(ctx *Context) {}) }},
+		{"AppendAfterHook", func() { AppendAfterHook(func(ctx *Context) {}) }},
+		{"SetPathGen", func() { SetPathGen(&PathGenerator{}) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.helper, func(t *testing.T) {
+			msg := recoverMessage(t, tc.call)
+			if !strings.Contains(msg, tc.helper) {
+				t.Fatalf("panic must name the helper; got %q", msg)
+			}
+			if !strings.Contains(msg, "no active registry") {
+				t.Fatalf("panic must explain the missing registry; got %q", msg)
+			}
+		})
+	}
 	if CurrentArena() != nil {
-		t.Fatal("helpers must not create a registry when none is active")
+		t.Fatal("a failed helper call must not leave a registry behind")
+	}
+}
+
+// The helpers are scoped to the goroutine Analyze pushed on. A goroutine started inside Analyze has
+// its own (empty) registry stack, so writing from it would be discarded and must fail instead.
+func TestAppendBeforeHookPanicsOnAnotherGoroutineInsideAnalyze(t *testing.T) {
+	var msg string
+	Analyze(func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer func() {
+				if r := recover(); r != nil {
+					msg = fmt.Sprint(r)
+				}
+			}()
+			AppendBeforeHook(func(ctx *Context) {})
+		}()
+		<-done
+	})
+	if !strings.Contains(msg, "AppendBeforeHook") {
+		t.Fatalf("expected a panic naming AppendBeforeHook on the child goroutine; got %q", msg)
+	}
+}
+
+// recoverMessage runs fn and returns the message it panicked with, failing the test when it returns
+// normally. A helper that silently accepts the call is exactly the defect under test.
+func recoverMessage(t *testing.T, fn func()) (msg string) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic, call returned normally")
+		}
+		msg = fmt.Sprint(r)
+	}()
+	fn()
+	return ""
+}
+
+// The node stack is never empty in correct code: newRegistry seeds it with the suite root and the
+// pop closure only shrinks it while len(stack) > 1. The guard exists so a future change that does
+// break the invariant fails here instead of silently dropping the registration, so it is pinned
+// against the one construction that can violate it — a registry that newRegistry never built.
+func TestRegistryWritersPanicOnEmptyNodeStack(t *testing.T) {
+	writers := map[string]func(r *registry){
+		"enterNode":        func(r *registry) { r.enterNode(ItNode, "adds correctly", "", 0, nil) },
+		"appendBeforeHook": func(r *registry) { r.appendBeforeHook(func(ctx *Context) {}) },
+		"appendAfterHook":  func(r *registry) { r.appendAfterHook(func(ctx *Context) {}) },
+		"setPathGen":       func(r *registry) { r.setPathGen(&PathGenerator{}) },
+	}
+	for name, write := range writers {
+		t.Run(name, func(t *testing.T) {
+			msg := recoverMessage(t, func() { write(&registry{}) })
+			if !strings.Contains(msg, "registry invariant violated") {
+				t.Fatalf("expected the stack-invariant panic; got %q", msg)
+			}
+		})
+	}
+}
+
+// The invariant holds across nesting: every pop leaves the root in place, so the stack top is always
+// a real arena node and repeated exits never drain it.
+func TestRegistryStackKeepsRootAfterNestedExits(t *testing.T) {
+	r := newRegistry()
+	_, popOuter := r.enterNode(DescribeNode, "Calculator", "", 0, nil)
+	_, popInner := r.enterNode(WhenNode, "adding numbers", "", 0, nil)
+	popInner()
+	popOuter()
+	popOuter() // an extra pop must not drain the stack past the root
+	r.mu.Lock()
+	depth := len(r.stack)
+	r.mu.Unlock()
+	if depth != 1 {
+		t.Fatalf("expected the stack to rest at the root, got depth %d", depth)
+	}
+	// The root is still writable, which is what the invariant buys.
+	r.appendBeforeHook(func(ctx *Context) {})
+	if got := len(r.arena.BeforeHooks[0]); got != 1 {
+		t.Fatalf("expected the hook to land on the root node, got %d", got)
 	}
 }
 
