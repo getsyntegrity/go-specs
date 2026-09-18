@@ -54,6 +54,18 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- `snapshots.Save` no longer truncates the destination snapshot file before writing its replacement.
+  It renders the new content into a temporary file in the same directory, flushes it, sets the
+  published `0644` mode, and swaps it over the destination with a single `os.Rename`. An
+  interruption, timeout, or disk error part-way through a `GO_SPECS_UPDATE_SNAPSHOTS=1` run therefore
+  leaves the previous `.snap.json` intact and readable instead of a half-written file that fails to
+  parse on the next run; the staging file is removed on every failure path. Staging beside the
+  destination rather than in `os.TempDir()` is what keeps the rename atomic, because a rename across
+  filesystems is not. The `fileLocks` comment no longer implies more than it delivers: that mutex
+  serializes the load-mutate-save cycle *within one process* and does not coordinate independent
+  `go test` package processes — crash safety comes from the rename, not the lock.
+  ([#152](https://github.com/getsyntegrity/go-specs/issues/152))
+
 - A spec whose subtest is discarded by `-run` (e.g. `go test -run 'TestX/suite/when_b'` against a
   suite with a sibling `when_a` spec) is no longer reported to `report.EventReporter` as passed.
   `runSpecIsolated` (`Builder`/`Runner`) and `runSpecProgramIsolated` (`Describe`/`ExecutionPlan`)
