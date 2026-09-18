@@ -85,9 +85,28 @@ func (r *registry) currentSuite() *SuiteTree {
 	return &SuiteTree{Arena: r.arena, RootID: 0}
 }
 
+// currentNodeIDLocked returns the node the DSL is currently building into (the stack top). Callers
+// must hold r.mu.
+//
+// Stack invariant: r.stack is never empty. newRegistry seeds it with the suite root (index 0), the
+// pop closure returned by enterNode only shrinks it while len(r.stack) > 1, and registry is
+// unexported and constructed only by newRegistry, so no zero-value registry can reach this method.
+// The panic is therefore unreachable in correct code. It exists because the alternative the hook and
+// path-generator writers previously used — returning silently on an empty stack — would turn a
+// broken invariant into a discarded registration and a suite that reports green having registered
+// nothing, which is the failure this file is meant to make impossible (issue #151). enterNode
+// indexed the stack top unguarded while the other three guarded it; routing all four through here
+// makes the invariant one statement instead of four inconsistent ones.
+func (r *registry) currentNodeIDLocked() int {
+	if len(r.stack) == 0 {
+		panic("specs: registry node stack is empty; registry invariant violated")
+	}
+	return r.stack[len(r.stack)-1]
+}
+
 func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn func(*Context)) (int, func()) {
 	r.mu.Lock()
-	parentID := r.stack[len(r.stack)-1]
+	parentID := r.currentNodeIDLocked()
 	id := len(r.arena.Nodes)
 	r.arena.Nodes = append(r.arena.Nodes, ArenaNode{
 		Name: name, Parent: parentID, Type: nodeType, Fn: fn,
@@ -111,33 +130,24 @@ func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn 
 func (r *registry) appendBeforeHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
-	}
-	id := r.stack[len(r.stack)-1]
+	id := r.currentNodeIDLocked()
 	r.arena.BeforeHooks[id] = append(r.arena.BeforeHooks[id], fn)
 }
 
 func (r *registry) appendAfterHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
-	}
-	id := r.stack[len(r.stack)-1]
+	id := r.currentNodeIDLocked()
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
 }
 
+// setPathGen writes to r.arena.Nodes[id] without a bounds check: every index the stack holds was
+// appended to r.arena.Nodes by enterNode under the same lock, so the stack can never name a node the
+// arena does not have.
 func (r *registry) setPathGen(gen *PathGenerator) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
-	}
-	id := r.stack[len(r.stack)-1]
-	if id < len(r.arena.Nodes) {
-		r.arena.Nodes[id].PathGen = gen
-	}
+	r.arena.Nodes[r.currentNodeIDLocked()].PathGen = gen
 }
 
 func pushRegistry(r *registry) func() {
@@ -178,6 +188,23 @@ func ensureRegistry() func() {
 	return pushRegistry(newRegistry())
 }
 
+// The Analyze extension surface
+//
+// Analyze, CurrentSuite, CurrentArena, AppendBeforeHook, AppendAfterHook and SetPathGen are a
+// deliberate, supported extension API, not legacy residue: they let a custom DSL build a SuiteTree
+// against the registry without going through Describe. Analyze establishes the build context;
+// everything else reads or mutates the registry Analyze pushed for the calling goroutine.
+//
+// Their contract is fail-closed. A mutating helper called with no active registry has nowhere to
+// write, so it panics instead of discarding the registration and letting a suite that registered
+// nothing report green (issue #151). The read-only accessors (CurrentSuite, CurrentArena) return
+// nil outside Analyze, because "no suite is being built" is a legitimate answer to a question, not
+// a lost write.
+//
+// Valid context means "inside the fn passed to Analyze, or inside a Describe/BuildSuite nested in
+// one", on the same goroutine: the registry stack is keyed per goroutine, so a helper called from a
+// goroutine started inside Analyze sees no registry and panics.
+
 // CurrentArena returns the current registry's arena, or nil if none is active.
 func CurrentArena() *NodeArena {
 	reg := currentRegistry()
@@ -190,28 +217,34 @@ func CurrentArena() *NodeArena {
 	return a
 }
 
-// AppendBeforeHook appends a before-each hook to the current node (stack top). No-op if no registry.
-func AppendBeforeHook(fn func(*Context)) {
+// requireRegistry returns the registry the calling goroutine is building into, and panics naming
+// the helper when there is none. A mutating extension helper has nowhere to record its argument
+// outside Analyze, so failing here is the only way to keep a suite that registered nothing from
+// reporting green.
+func requireRegistry(helper string) *registry {
 	reg := currentRegistry()
-	if reg != nil {
-		reg.appendBeforeHook(fn)
+	if reg == nil {
+		panic("specs: " + helper + " called with no active registry; call it inside Analyze(fn) on the same goroutine")
 	}
+	return reg
 }
 
-// AppendAfterHook appends an after-each hook to the current node. No-op if no registry.
+// AppendBeforeHook appends a before-each hook to the current node (stack top).
+// Panics when called outside Analyze: see "The Analyze extension surface" above.
+func AppendBeforeHook(fn func(*Context)) {
+	requireRegistry("AppendBeforeHook").appendBeforeHook(fn)
+}
+
+// AppendAfterHook appends an after-each hook to the current node.
+// Panics when called outside Analyze: see "The Analyze extension surface" above.
 func AppendAfterHook(fn func(*Context)) {
-	reg := currentRegistry()
-	if reg != nil {
-		reg.appendAfterHook(fn)
-	}
+	requireRegistry("AppendAfterHook").appendAfterHook(fn)
 }
 
 // SetPathGen sets the PathGenerator on the current node. Used by path specs.
+// Panics when called outside Analyze: see "The Analyze extension surface" above.
 func SetPathGen(gen *PathGenerator) {
-	reg := currentRegistry()
-	if reg != nil {
-		reg.setPathGen(gen)
-	}
+	requireRegistry("SetPathGen").setPathGen(gen)
 }
 
 // Analyze builds a suite tree by running fn with a fresh registry pushed for the calling goroutine.

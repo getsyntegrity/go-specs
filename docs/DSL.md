@@ -137,6 +137,61 @@ func TestMath(t *testing.T) {
 }
 ```
 
+## Where a `*Spec` comes from
+
+Every construct above is a method on a `*Spec`, and a `*Spec` is only usable when it carries a
+**build target**: the destination a registration is written to. The entry points — `Describe`,
+`DescribeFlat`, `DescribeWithReporter`, `DescribeFlatWithReporter` and `BuildSuite` — set that target
+and thread it into every nested block they hand you.
+
+`Spec` is exported with unexported fields, so `&specs.Spec{}` compiles. It has no build target, and
+there is nowhere for an `It`, a hook or a nested block to go. Rather than accept the registration and
+drop it — which would let a suite declare specs, register none of them, and still report green — each
+method panics:
+
+```go
+s := &specs.Spec{}            // compiles, but has no build target
+s.It("adds", func(ctx *specs.Context) {})
+// panic: specs: Spec.It called on a Spec with no build target;
+//        obtain a *Spec from Describe/BuildSuite instead of constructing one
+```
+
+Take the `*Spec` the entry point gives you; never construct one. A `nil` *Spec is still a tolerated
+no-op — there is no Spec there to have registered anything into.
+
+## Analyze and the registry extension surface
+
+`Analyze` is a **supported extension API**, not legacy residue. It builds a `SuiteTree` without
+running anything, for code that generates or inspects a suite — an external DSL, a generator, an
+editor integration:
+
+```go
+tree := specs.Analyze(func() {
+    specs.Describe(nil, "math", func(s *specs.Spec) {
+        s.It("adds", func(ctx *specs.Context) {})
+    })
+})
+fmt.Print(tree.Tree())
+```
+
+`Analyze` establishes the build context; the package-level helpers read or write the registry it
+pushed, without needing the unexported registry type:
+
+| Helper | Kind | Outside `Analyze` |
+|---|---|---|
+| `CurrentSuite`, `CurrentArena` | read-only | returns `nil` |
+| `AppendBeforeHook`, `AppendAfterHook`, `SetPathGen` | mutating | **panics** |
+
+The split is deliberate. "No suite is being built" is a legitimate answer to a question, so the
+accessors return `nil`. A mutating helper has nowhere to write, so returning quietly would discard
+the caller's hook or generator and report success — the same silent-discard failure the zero-value
+`Spec` used to have.
+
+Valid context means *inside the `fn` passed to `Analyze`, or inside a `Describe`/`BuildSuite` nested
+in one, on the same goroutine*. The registry stack is keyed per goroutine so that concurrent
+`Analyze` calls never observe each other's tree; a helper called from a goroutine started inside
+`Analyze` therefore sees no registry and panics.
+
 ## Execution order of hooks
 
 For nested describes, before hooks run **outer to inner**; after hooks run **inner to outer** (LIFO).
