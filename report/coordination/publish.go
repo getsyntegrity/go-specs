@@ -84,9 +84,13 @@ func publishExclusive(tmpPath, finalPath string, ops publishOps) error {
 	if err == nil {
 		// The temp file's second name is no longer needed. This is the only unlink this package
 		// performs during a run, and it targets the temp name — never a published file.
-		if rmErr := ops.remove(tmpPath); rmErr != nil {
-			return fmt.Errorf("go-specs report: remove %s after publishing %s: %w", tmpPath, finalPath, rmErr)
-		}
+		//
+		// A failure here is deliberately NOT returned. The shard is already linked, complete and
+		// durable at its final name, and the finalizer globs only the final pattern and never
+		// opens a .tmp-* file. The sole consequence is litter, which the run's own cleanup or gc
+		// removes later. Reporting it as a publish failure would turn a successful publish into
+		// an error the caller has no way to act on.
+		_ = ops.remove(tmpPath)
 		return nil
 	}
 
@@ -110,9 +114,8 @@ func publishExclusive(tmpPath, finalPath string, ops publishOps) error {
 	// in flight (no producer has delete authority, and gc runs only out-of-run). Any new linking
 	// or pruning path invalidates it.
 	if n, statErr := ops.linkCount(tmpPath); statErr == nil && n == 2 {
-		if rmErr := ops.remove(tmpPath); rmErr != nil {
-			return fmt.Errorf("go-specs report: remove %s after publishing %s: %w", tmpPath, finalPath, rmErr)
-		}
+		// Same as the success path: the publish already happened, so cleanup cannot fail it.
+		_ = ops.remove(tmpPath)
 		return nil
 	}
 

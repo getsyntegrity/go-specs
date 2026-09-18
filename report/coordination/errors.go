@@ -17,6 +17,11 @@ const (
 	ReasonMarkerMissing    ConfigErrorReason = "marker-missing"
 	ReasonMarkerMismatch   ConfigErrorReason = "marker-mismatch"
 	ReasonMarkerUnreadable ConfigErrorReason = "marker-unreadable"
+	// ReasonInvalidReportDir extends contract v1.2.6 §5's set. §5 defines the reason vocabulary as
+	// closed, and this value is not in it, because the contract does not anticipate that a
+	// relative GO_SPECS_REPORT_DIR resolves per-package under `go test`. Flagged for the contract
+	// rather than folded into a neighbouring reason, which would misreport the cause.
+	ReasonInvalidReportDir ConfigErrorReason = "invalid-report-dir"
 )
 
 // ConfigError reports reporting coordination that was requested but cannot be used.

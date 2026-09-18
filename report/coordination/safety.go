@@ -43,6 +43,11 @@ func ensureSafeBaseDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("go-specs report: resolve %s: %w", dir, err)
 	}
+	// filepath.Abs is purely lexical, so it cannot see through a symlinked ancestor. Walking the
+	// lexical parents of /a/b/link/runs never inspects whatever link actually points at, and if
+	// that target is world-writable the entire check is defeated by one symlink. Resolve the
+	// existing portion of the path first and walk the real chain.
+	abs = resolveExistingPrefix(abs)
 	for path := abs; ; {
 		info, err := os.Lstat(path)
 		switch {
@@ -63,6 +68,52 @@ func ensureSafeBaseDir(dir string) error {
 			return nil
 		}
 		path = parent
+	}
+}
+
+// resolveExistingPrefix returns dir with every symlink in its existing prefix resolved. The
+// trailing components that do not exist yet are re-appended unchanged — this implementation
+// creates those itself, with mode 0700, so they carry no pre-existing exposure.
+func resolveExistingPrefix(dir string) string {
+	var missing []string
+	path := dir
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return dir
+		}
+		missing = append(missing, filepath.Base(path))
+		path = parent
+	}
+}
+
+// requireAbsoluteBaseDir rejects a relative reporting directory in a producer.
+//
+// `go test` runs each package's test binary with its working directory set to that package's own
+// source directory, so a relative GO_SPECS_REPORT_DIR resolves to a DIFFERENT absolute path in
+// every package of the same invocation. The preflight would create the marker in one place and
+// each producer would look for it somewhere else — surfacing as marker-missing, or, in a tree
+// with mixed permissions, as a confusing refusal naming a package directory nobody configured.
+//
+// This affects the contract's own default of ".go-specs/runs": it is meaningful for the preflight,
+// which runs once from the module root, and not for the producers. InitializeRun therefore
+// resolves it and reports the absolute path back, which is what the invoker must export.
+func requireAbsoluteBaseDir(dir string) error {
+	if filepath.IsAbs(dir) {
+		return nil
+	}
+	return &ConfigError{
+		Source: EnvReportDir,
+		Value:  fmt.Sprintf("%q", dir),
+		Reason: ReasonInvalidReportDir,
+		Detail: "the reporting directory must be an absolute path: `go test` gives every package binary its own working directory (its package source directory), so a relative path resolves somewhere different in each package of the same run and no producer would find the run marker the preflight created",
+		Remedy: "export " + EnvReportDir + " as an absolute path — InitializeRun returns the resolved absolute directory for exactly this purpose",
 	}
 }
 

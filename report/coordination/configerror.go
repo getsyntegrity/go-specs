@@ -49,6 +49,14 @@ func WriteConfigError(baseDir string, runID RunID, packagePath string, reason Co
 		return err
 	}
 	base := baseDirOrDefault(baseDir)
+	if err := requireAbsoluteBaseDir(base); err != nil {
+		return err
+	}
+	// This is the one write path that runs precisely when the configuration is already suspect,
+	// so it is the last place that should skip the directory guard every other write applies.
+	if err := ensureSafeBaseDir(base); err != nil {
+		return err
+	}
 
 	body, err := json.MarshalIndent(ConfigErrorRecord{
 		SchemaVersion: configErrorSchemaVersion,

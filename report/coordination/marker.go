@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -37,7 +38,11 @@ type runMarker struct {
 // apart from "an unrelated invocation that reused the same RunID". Both present identical RunIDs
 // to every process involved; only the genuine invocation holds the matching token.
 type RunOwnership struct {
-	RunID      RunID
+	RunID RunID
+	// BaseDir is the ABSOLUTE reporting directory this run resolved to. InitializeRun reports it
+	// because the invoker must export exactly this value: a relative GO_SPECS_REPORT_DIR resolves
+	// per-package under `go test`, so no producer would find the marker.
+	BaseDir    string
 	MarkerPath string
 	// TokenHash is the lowercase hex SHA-256 of the token's decoded bytes, matching the marker's
 	// stored value. Every shard envelope carries it, so a shard dropped into the run directory by
@@ -87,7 +92,12 @@ func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership
 		return RunOwnership{}, err
 	}
 
-	base := baseDirOrDefault(opts.BaseDir)
+	// The preflight runs once, from wherever the invoker chose, so a relative base is meaningful
+	// here and is resolved rather than rejected. Producers receive the absolute form.
+	base, err := filepath.Abs(baseDirOrDefault(opts.BaseDir))
+	if err != nil {
+		return RunOwnership{}, fmt.Errorf("go-specs report: resolve %s: %w", opts.BaseDir, err)
+	}
 	if err := ensureSafeBaseDir(base); err != nil {
 		return RunOwnership{}, err
 	}
@@ -115,26 +125,26 @@ func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership
 		return RunOwnership{}, fmt.Errorf("go-specs report: encode %s: %w", path, err)
 	}
 
-	// O_EXCL is the collision detector and O_NOFOLLOW stops a pre-planted symlink from
-	// redirecting the write. Both are load-bearing, not belt-and-braces.
-	f, err := openFileNoFollow(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
+	// The marker is published with the same create-no-replace protocol as a shard: write a temp
+	// file inside the run directory, fsync, close, then link.
+	//
+	// It is NOT written with O_CREATE|O_EXCL straight into place, although that is also exclusive,
+	// because a write or close that fails after the exclusive create leaves an EMPTY marker on
+	// disk. That file is indistinguishable from a real one to exclusive creation, so every retry
+	// of the run id then fails as "already initialized" and every producer reading it fails as
+	// marker-unreadable: a transient ENOSPC or EIO would permanently brick the run id and force
+	// the operator onto the --force path. Publishing atomically means the marker is either wholly
+	// absent or wholly complete.
+	if err := writeAndPublish(runDir(base, runID), markerFileName, body, realPublishOps()); err != nil {
+		if errors.Is(err, ErrDuplicateProducer) {
 			return RunOwnership{}, fmt.Errorf(
 				"go-specs report: run %q is already initialized at %s: either %s was reused across two invocations (it must be unique per invocation, reruns included) or a previous run was abandoned; clear abandoned runs with the gc path, or pass --force / InitializeRunOptions.Force if reusing this run id is deliberate",
 				runID, path, EnvRunID)
 		}
-		return RunOwnership{}, fmt.Errorf("go-specs report: create %s: %w", path, err)
-	}
-	if err := writeAndSync(f, body); err != nil {
-		_ = f.Close()
-		return RunOwnership{}, fmt.Errorf("go-specs report: write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return RunOwnership{}, fmt.Errorf("go-specs report: close %s: %w", path, err)
+		return RunOwnership{}, err
 	}
 
-	return RunOwnership{RunID: runID, MarkerPath: path, TokenHash: hash}, nil
+	return RunOwnership{RunID: runID, BaseDir: base, MarkerPath: path, TokenHash: hash}, nil
 }
 
 func writeAndSync(f *os.File, body []byte) error {
@@ -162,6 +172,9 @@ func VerifyRunOwnership(baseDir string, runID RunID, token RunToken) (RunOwnersh
 		return RunOwnership{}, err
 	}
 	base := baseDirOrDefault(baseDir)
+	if err := requireAbsoluteBaseDir(base); err != nil {
+		return RunOwnership{}, err
+	}
 	if err := ensureSafeBaseDir(base); err != nil {
 		return RunOwnership{}, err
 	}
@@ -193,7 +206,7 @@ func VerifyRunOwnership(baseDir string, runID RunID, token RunToken) (RunOwnersh
 			EnvRunToken, path, id, EnvRunID))
 	}
 
-	return RunOwnership{RunID: id, MarkerPath: path, TokenHash: hash}, nil
+	return RunOwnership{RunID: id, BaseDir: base, MarkerPath: path, TokenHash: hash}, nil
 }
 
 func readMarker(path string) (runMarker, error) {

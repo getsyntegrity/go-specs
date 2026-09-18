@@ -187,3 +187,69 @@ func TestCreatedDirectoriesGetModeSevenHundredRegardlessOfUmask(t *testing.T) {
 		t.Fatalf("created directory mode = %04o, want 0700", got)
 	}
 }
+
+func TestAForeignWritableAncestorIsFoundThroughASymlink(t *testing.T) {
+	// filepath.Abs is purely lexical, so walking the lexical parents of /a/b/link/runs never
+	// inspects what link actually points at. If that target is world-writable the entire ancestor
+	// check is defeated by one symlink — the cheapest possible bypass of the rule.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits do not carry the same meaning on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the permission semantics this test asserts")
+	}
+
+	exposed := secureTempDir(t)
+	if err := os.Chmod(exposed, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	container := secureTempDir(t)
+	link := filepath.Join(container, "link")
+	if err := os.Symlink(exposed, link); err != nil {
+		t.Fatal(err)
+	}
+
+	base := filepath.Join(link, "runs")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureSafeBaseDir(base)
+	if err == nil {
+		t.Fatal("a world-writable ancestor reached through a symlink was accepted")
+	}
+	if !strings.Contains(err.Error(), "0777") {
+		t.Fatalf("error %q does not state the offending mode", err)
+	}
+}
+
+func TestInitializeRunLeavesNoPartialOrTemporaryMarker(t *testing.T) {
+	// The marker is published atomically rather than written in place under O_CREATE|O_EXCL,
+	// because an exclusive create followed by a failed write leaves an EMPTY marker that is
+	// indistinguishable from a real one: every retry of the run id then fails as "already
+	// initialized" and every producer fails as marker-unreadable, so one transient ENOSPC would
+	// brick the run id permanently.
+	base := secureTempDir(t)
+	own := mustInitRun(t, base, "run-1", validToken)
+
+	entries, err := os.ReadDir(filepath.Dir(own.MarkerPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Fatalf("a temporary marker survived: %s", e.Name())
+		}
+	}
+
+	info, err := os.Stat(own.MarkerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("the published marker is empty")
+	}
+}

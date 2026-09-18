@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +88,10 @@ func asExitError(err error, target **exec.ExitError) bool {
 func shardNames(t *testing.T, base string, id RunID) []string {
 	t.Helper()
 	entries, err := os.ReadDir(shardsDir(base, id))
+	if errors.Is(err, fs.ErrNotExist) {
+		// A run that was never initialized has no shard directory, which is "no shards published".
+		return nil
+	}
 	if err != nil {
 		t.Fatalf("read shard directory: %v", err)
 	}
@@ -326,30 +332,72 @@ func TestACachedPackageHidesAConfigurationErrorEntirely(t *testing.T) {
 	}
 }
 
-func TestAConfigurationFailureRecordsConfigErrorJSON(t *testing.T) {
+func TestAMisconfiguredRunWithNoOwnerRecordsConfigErrorJSON(t *testing.T) {
+	// The useful case: the preflight was skipped, so no marker exists and no legitimate run can be
+	// harmed. The record is what lets finalize say "misconfigured" rather than merely "incomplete"
+	// — a distinction the test binary's own exit status cannot carry (contract v1.2.6 §8).
 	base := secureTempDir(t)
-	mustInitRun(t, base, "run-1", validToken)
-
-	// A valid run, but this process presents a token that does not own it.
-	env := runEnv(base, "run-1", RunToken(strings.Repeat("cd", 20)))
+	env := runEnv(base, "never-initialized", validToken)
 
 	res := runGoTest(t, env, "-count=1", "./report/coordination/internal/shardfixture/alpha")
 	if res.exitCode == 0 {
-		t.Fatalf("a foreign token was accepted:\n%s", res.out)
+		t.Fatalf("a run with no marker was accepted:\n%s", res.out)
 	}
 
-	rec := readConfigError(t, base, "run-1")
-	if rec.Reason != ReasonMarkerMismatch {
-		t.Fatalf("Reason = %q, want %q", rec.Reason, ReasonMarkerMismatch)
+	rec := readConfigError(t, base, "never-initialized")
+	if rec.Reason != ReasonMarkerMissing {
+		t.Fatalf("Reason = %q, want %q", rec.Reason, ReasonMarkerMissing)
 	}
 	if rec.PackagePath != fixtureAlpha {
 		t.Fatalf("PackagePath = %q", rec.PackagePath)
 	}
-	if strings.Contains(rec.Diagnostic, string(env[EnvRunToken])) {
+	if strings.Contains(rec.Diagnostic, validToken) {
 		t.Fatal("the record echoes the token")
 	}
-	if names := shardNames(t, base, "run-1"); len(names) != 0 {
-		t.Fatalf("a process that failed ownership still published %v", names)
+	if names := shardNames(t, base, "never-initialized"); len(names) != 0 {
+		t.Fatalf("a process that failed its checks still published %v", names)
+	}
+}
+
+func TestAForeignInvocationNeverPoisonsAHealthyRunsDirectory(t *testing.T) {
+	// A second invocation reuses a run id that a healthy run already owns. It must fail loudly for
+	// itself and leave the owner's directory completely untouched: config-error.json is
+	// first-writer-wins and the finalizer maps its presence to exit 78, so a record dropped here
+	// would fail a run that was fine.
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	for name, token := range map[string]RunToken{
+		"foreign token": RunToken(strings.Repeat("cd", 20)),
+		"no token":      "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := runEnv(base, "run-1", token)
+			if token == "" {
+				delete(env, EnvRunToken)
+			}
+
+			res := runGoTest(t, env, "-count=1", "./report/coordination/internal/shardfixture/alpha")
+			if res.exitCode == 0 {
+				t.Fatalf("an invocation that does not own run-1 was accepted:\n%s", res.out)
+			}
+
+			if _, err := os.Stat(configErrorPath(base, "run-1")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal("a process that could not prove ownership wrote config-error.json into the owner's run directory")
+			}
+			if names := shardNames(t, base, "run-1"); len(names) != 0 {
+				t.Fatalf("it also published %v", names)
+			}
+		})
+	}
+
+	// The legitimate owner is still able to run afterwards, which is the property all of this
+	// protects.
+	if res := runGoTest(t, runEnv(base, "run-1", validToken), "-count=1", "./report/coordination/internal/shardfixture/alpha"); res.exitCode != 0 {
+		t.Fatalf("the healthy run was broken by the intruders:\n%s", res.out)
+	}
+	if names := shardNames(t, base, "run-1"); len(names) != 1 {
+		t.Fatalf("the owner published %d shards, want 1", len(names))
 	}
 }
 
@@ -417,5 +465,68 @@ func TestTheEnvironScanIsActuallyAnEnvironScan(t *testing.T) {
 	}
 	if !scanned.cached() {
 		t.Fatalf("envread.Scan enrolled %s in the test-cache key, so it is no longer an os.Environ scan; the disabled path now defeats caching for every package in the module:\n%s", "GO_SPECS_PROBE_VALUE", scanned.out)
+	}
+}
+
+func TestAReportingFailureNeverFalsifiesAPassingTestResult(t *testing.T) {
+	// Contract v1.2.6 §8, row 8: a write, publish or duplicate-producer failure after a valid,
+	// ownership-verified m.Run() leaves the original test result "preserved, unchanged", and
+	// reporting failure "never overwrites or falsifies the test result that already happened".
+	//
+	// The trigger is not exotic: re-running one package inside the same run id publishes a second
+	// time and hits duplicate-producer. A TestMain that exits 1 on a Write error turns a green
+	// package red for a reporting problem — which is the single outcome this whole design exists
+	// to prevent.
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+	env := runEnv(base, "run-1", validToken)
+	pkg := "./report/coordination/internal/shardfixture/alpha"
+
+	if first := runGoTest(t, env, "-count=1", pkg); first.exitCode != 0 {
+		t.Fatalf("the first run failed:\n%s", first.out)
+	}
+
+	second := runGoTest(t, env, "-count=1", pkg)
+	if second.exitCode != 0 {
+		t.Fatalf("a duplicate publish turned a passing package red (exit %d):\n%s", second.exitCode, second.out)
+	}
+	if strings.Contains(second.out, "FAIL") {
+		t.Fatalf("go test reported FAIL for a package whose tests passed:\n%s", second.out)
+	}
+
+	// The failure is reported, not swallowed — but cmd/go only shows a passing package's output
+	// under -v, so plain `go test` hides it. That is the accepted cost of not falsifying the
+	// result: the authoritative signal is the finalizer, which sees the producer as missing or
+	// rejected and fails through its own independent exit status.
+	verbose := runGoTest(t, env, "-count=1", "-v", pkg)
+	if !strings.Contains(verbose.out, "already published") {
+		t.Fatalf("the reporting failure was swallowed entirely, even under -v:\n%s", verbose.out)
+	}
+}
+
+func TestProducersRejectARelativeReportingDirectory(t *testing.T) {
+	// `go test` gives every package binary its own working directory — its package source
+	// directory — so a relative GO_SPECS_REPORT_DIR resolves somewhere different in each package
+	// of one invocation. The preflight would create the marker in one place and no producer would
+	// find it. Rejecting it names the cause; not rejecting it surfaces as marker-missing, or as a
+	// permission refusal naming a package directory nobody configured.
+	base := secureTempDir(t)
+	own := mustInitRun(t, base, "run-1", validToken)
+	if !filepath.IsAbs(own.BaseDir) {
+		t.Fatalf("InitializeRun reported a relative BaseDir %q; the invoker has nothing absolute to export", own.BaseDir)
+	}
+
+	res := runGoTest(t, map[string]string{
+		EnvGate:      "1",
+		EnvRunID:     "run-1",
+		EnvRunToken:  validToken,
+		EnvReportDir: ".go-specs/runs",
+	}, "-count=1", "./report/coordination/internal/shardfixture/alpha")
+
+	if res.exitCode == 0 {
+		t.Fatalf("a relative reporting directory was accepted:\n%s", res.out)
+	}
+	if !strings.Contains(res.out, "absolute") || !strings.Contains(res.out, EnvReportDir) {
+		t.Fatalf("the diagnostic does not explain the cause:\n%s", res.out)
 	}
 }

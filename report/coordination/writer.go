@@ -62,6 +62,9 @@ func (w *ShardWriter) Write(rep report.NormalizedReport) error {
 	// The producer repeats the ancestor check before writing: ownership was verified earlier, and
 	// a directory whose parent someone else can swap is not the directory that was verified
 	// (contract v1.2.6 §10).
+	if err := requireAbsoluteBaseDir(w.cfg.BaseDir); err != nil {
+		return err
+	}
 	if err := ensureSafeBaseDir(w.cfg.BaseDir); err != nil {
 		return err
 	}

@@ -123,8 +123,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	if err := writer.Write(reporter.Report()); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, err) // report it, but never change the exit code
 	}
 	os.Exit(code)
 }
@@ -133,6 +132,17 @@ func TestMain(m *testing.M) {
 `Write` sits after `m.Run()` and before `os.Exit`, the same place `Flush` goes, so the two compose
 in one `TestMain`. On an ordinary failure — including a panic the testing package recovers — that
 code still runs, so a red package still publishes a complete shard.
+
+**A reporting failure must never change the exit code.** Printing the error and preserving `code`
+is not a style choice: a publish failure leaves the test result exactly as it was, and the
+finalizer reports the missing or rejected producer through its own independent exit status. Exiting
+non-zero there turns a green package red for a reporting problem, and re-running one package inside
+the same run id is enough to trigger it.
+
+The accepted cost: `go test` only shows a passing package's output under `-v`, so the printed
+error is invisible in a plain run. That is deliberate — the authoritative signal for a reporting
+problem is the finalize step, not the test step, and the two are kept separate precisely so one
+cannot be mistaken for the other.
 
 A package that wires this in is **unaffected by ordinary `go test` runs**. Shard emission is off
 unless `GO_SPECS_REPORT_SHARDS` is explicitly on, and a disabled writer writes nothing and returns
@@ -145,7 +155,21 @@ no error.
 | `GO_SPECS_REPORT_SHARDS` | The single activation gate. `1`/`true` enables shard emission; absent, empty, `0`/`false` disables it. Any other value is a configuration error. |
 | `GO_SPECS_RUN_ID` | Readable run identifier, `^[A-Za-z0-9_.-]{1,128}$`, **unique per invocation, reruns included**. Required when the gate is on. It never activates reporting by itself. |
 | `GO_SPECS_RUN_TOKEN` | Per-invocation ownership nonce, 16–64 random bytes hex-encoded. Required when the gate is on. It is what distinguishes a second producer of *this* run from an unrelated invocation that reused the same run id. |
-| `GO_SPECS_REPORT_DIR` | Base directory for run directories. Default `.go-specs/runs`. Must be on a local filesystem. |
+| `GO_SPECS_REPORT_DIR` | Base directory for run directories. **Must be an absolute path** for producers, and on a local filesystem. `InitializeRun` resolves whatever you give it and returns the absolute form — export that. |
+
+Two things about the directory, both of which bite on a default setup:
+
+- **It must be absolute.** `go test` runs every package's test binary with its working directory
+  set to that package's own source directory, so a relative path resolves somewhere different in
+  each package of the same invocation and no producer finds the marker. The contract's
+  `.go-specs/runs` default is meaningful only for the preflight, which runs once from the module
+  root; producers reject a relative value outright rather than fail later as `marker-missing`.
+- **Nothing above it may be group- or other-writable without the sticky bit.** If another local
+  user can swap a path component, every ownership and no-replace check below it is defending a
+  path that is no longer the one it verified. On a machine with `umask 002` a checkout directory is
+  typically `0775`, so a run directory inside the repository is refused. Point
+  `GO_SPECS_REPORT_DIR` at a private directory — `"$(mktemp -d)"` in CI, or a `0700` directory you
+  create yourself.
 
 `GO_SPECS_RUN_ID` alone is inert. That is deliberate: a run identifier left exported in a
 developer's shell must never be able to fail a test run that nobody asked reporting to observe.

@@ -26,9 +26,11 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	// A reporting failure must never overwrite or falsify the test result that already happened
+	// (contract v1.2.6 §8, row 8). Report it and preserve the code: the finalizer surfaces a
+	// missing or rejected producer through its own, independent exit status.
 	if err := writer.Write(reporter.Report()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
 	// GO_SPECS_FIXTURE_EXIT lets the integration test prove that cmd/go does not propagate a test
 	// binary's exit code. It is read after m.Run() so it cannot affect the cache key.
