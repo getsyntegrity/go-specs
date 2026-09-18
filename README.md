@@ -16,7 +16,7 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 
 - **BDD-style API** — `Describe`, `When`, `It`, `BeforeEach`, and `AfterEach` for structured specs
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
-- **Low overhead** — Zero allocations on the assertion fast path; compiled execution plan
+- **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
 - **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, etc.), and snapshot testing
 - **Combinatorial testing** — Path builder for deterministic exploration of parameter spaces
 - **Lightweight mocking** — Spies and argument matchers without heavy code generation
@@ -80,6 +80,29 @@ go-specs is built for low latency and zero allocations on the hot path. The tabl
 | Testify Equal              | ~86 ns  | 0      |
 | Gomega Expect().To(Equal)  | ~241 ns | 3      |
 
+Those rows compare `42` against `42`, which is what the other frameworks' own benchmarks use. It
+is also the case least able to allocate: Go serves interface conversions of integers below 256 from
+a static table, so a framework that boxes the value still reports 0 allocs/op there. The table below
+therefore states the allocation guarantee over values a real spec asserts on instead.
+
+### Allocations by value shape (go-specs)
+
+Measured on the pinned toolchain (Go 1.25.14) with values built at run time, so neither constant
+folding nor the static small-integer table can flatter the result.
+
+| Assertion                                 | small int | large int | string | struct |
+| ----------------------------------------- | --------- | --------- | ------ | ------ |
+| `EqualTo(ctx, a, b)`                      | 0         | 0         | 0      | 0      |
+| `ExpectT(ctx, a).ToEqual(b)`              | 0         | 0         | 0      | 0      |
+| `ExpectT(ctx, a).To(matcher)`             | 0         | 1         | 1      | 1      |
+| `ctx.Expect(a).ToEqual(b)`                | 0         | 2         | 2      | 2      |
+
+The typed equality path holds the value at its own type, so it allocates nothing whatever `T` is.
+The other two rows convert the value to an `any` — `Matcher` is `Match(any)` and `ctx.Expect` takes
+an `any` — and for a value outside the static small-integer table that conversion costs an
+allocation. Use `EqualTo` or `ExpectT(...).ToEqual(...)` where the comparison is equality; the
+numbers above are pinned by tests in `specs/assertion_allocations_test.go`, not only by benchmarks.
+
 ### Runner (1000 specs, one assertion per spec)
 
 | Framework | ns/op   |
@@ -103,6 +126,10 @@ go-specs is built for low latency and zero allocations on the hot path. The tabl
 | go-specs  | ~7.8 ns | 0      |
 | Gomega    | ~227 ns | 3      |
 
+Both rows assert on a `bool`, which Go converts to an interface without allocating. For a value
+that does allocate on conversion, go-specs' matcher path costs one allocation — see the table above;
+`Matcher` is `Match(any)`, so the conversion is part of the matcher API rather than of the handle.
+
 ### Suite scaling (go-specs)
 
 | Specs | Time    |
@@ -114,7 +141,7 @@ go-specs is built for low latency and zero allocations on the hot path. The tabl
 
 ### Why go-specs is fast
 
-- **Zero allocations** — The assertion and runner hot paths allocate nothing on success (0 allocs/op above), reducing GC pressure.
+- **Zero allocations on the typed equality path** — `EqualTo` and `ExpectT(...).ToEqual(...)` allocate nothing on success for a value of any type or size, and the runner loop allocates nothing per spec. The untyped `ctx.Expect(...)` and matcher forms convert the value to an `any`, which costs an allocation for values Go cannot convert for free; the table above gives the exact counts.
 - **Compiled execution plan** — Suites are compiled once into a fixed program; the runner executes steps via direct function dispatch instead of per-spec lookups or reflection.
 - **No reflection** — Assertions use generics and direct comparison; the fast path avoids `reflect.DeepEqual` and runtime type switches.
 - **Sequential runner loop** — The default runner invokes spec and hook functions in a simple loop with direct calls; no matcher heap allocations or indirection on the hot path. Opt-in parallel paths (`ItParallel`, `RunParallel`, `RunParallelBatched`) trade this loop for a worker pool when a suite benefits from concurrency.
