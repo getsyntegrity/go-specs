@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.7** (amended by #148, #194)
+Contract version: **v1.2.8** (amended by #148, #194, #197)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,13 +8,14 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.7 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.8 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
 
 | Version | PR | Change |
 |---|---|---|
+| v1.2.8 | #197 | Three corrections surfaced by building the producer, two of them defects in v1.2.7 itself. (1) §5 claimed the mandated fake-`environment` seam test "asserts the rule exactly". **It does not.** The fake pins which method the resolver *calls* — a name — not what the method does underneath: rewriting the real scan's body as `os.LookupEnv` leaves the seam assertion green while reintroducing the cache-enrollment regression, and the production readers were referenced by no test at all. This is #194's own defect shape one layer deeper, reproduced inside the amendment that diagnosed it. §5 now additionally requires pinning the reader's **body** from a position where the test log is live — inside a test function, never `TestMain` — with a **mandatory control arm**. (2) `GO_SPECS_REPORT_DIR` MUST be absolute at every producer boundary: `go test` gives each test binary its own package source directory as cwd, so a relative value resolves differently per package and to a directory the preflight never created. It fails as `marker-missing`, not as a rejected path. The preflight resolves once and exports the absolute result. (3) `invalid-report-dir` joins §5's closed reason vocabulary. |
 | v1.2.7 | #194 | Withdraws two normative claims about toolchain behaviour that did not survive being run, both verified on `go1.26.8` rather than inferred. (1) §5's cache-enrollment claim: environment reads performed in `TestMain` **before** `m.Run()` never reach `go test`'s cache key, because the testlog logger is installed by `m.deps.StartTestLog` inside `M.before()`, which runs inside `m.Run()` — so at the call site §3 step 3 mandates, neither `os.Getenv`/`os.LookupEnv` nor `os.Environ` affects cache validity. `-count=1` (§6) was already mandatory and is now the **sole** cache-correctness mechanism, not a supplement to a second one. The `os.Environ()` access rule is **kept** as defence-in-depth for reads made from inside a test or a helper it calls, but the cache-stability regression test v1.2.3 mandated is withdrawn as **vacuous** — it passes even with `os.Getenv` everywhere — and replaced by a direct `Lookup`-vs-`Scan` assertion through the `environment` seam plus a process-level test that a cached package under an enabled gate publishes neither a shard nor `config-error.json`. (2) §8's correction note: `cmd/go` leaves **no trace** of a test binary's exit code in its output, not merely an unpropagated status, so `config-error.json` is the **only** carrier of the configuration-failure distinction and no log-scraping fallback exists. |
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
@@ -213,7 +214,8 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
    a readable logical name — build number, branch+timestamp, etc.) and, separately, a random
    ownership token (`GO_SPECS_RUN_TOKEN`, ≥16 bytes of `crypto/rand` output, hex-encoded, once per
    invocation — §10), alongside an optional shard base directory (`GO_SPECS_REPORT_DIR`, default
-   `.go-specs/runs`). All of them are exported before `go test` runs. This is the *only* place
+   `.go-specs/runs`, resolved to an **absolute** path by the preflight before export — §5). All of
+   them are exported before `go test` runs. This is the *only* place
    these values can originate (F8) — go-specs itself cannot manufacture a value multiple
    independently-launched binaries would agree on. `GO_SPECS_RUN_ID` alone cannot do the ownership
    job: two independent invocations that happen to reuse the same logical run ID (a flaky
@@ -358,7 +360,7 @@ configuration error and must fail loudly rather than silently degrading to disab
 | `GO_SPECS_REPORT_SHARDS` | invoking script/CI, before `go test` | **Activation gate.** `1`/`true` (case-insensitive) ⇒ shard emission requested. Absent, empty, `0`/`false` ⇒ shard emission disabled: no shard is written and no failure can originate from reporting, though an invalid run identity may still be *reported* on stderr (see *Warn-only validation* below). Any other value ⇒ configuration error (an unparseable gate must not be guessed either way). |
 | `GO_SPECS_RUN_ID` | invoking script/CI, before `go test` | Readable, logical run identifier, `^[A-Za-z0-9_.-]{1,128}$`, **unique per invocation** (see *Run marker lifecycle*). Identifies the run for humans and for directory naming. Required whenever the gate is on; absent or invalid while the gate is on ⇒ configuration error. **Not, by itself, proof of ownership** — see `GO_SPECS_RUN_TOKEN` — and not, by itself, an activation signal. |
 | `GO_SPECS_RUN_TOKEN` | invoking script/CI, before `go test`, once per invocation | Per-invocation ownership nonce: **at least 16 bytes read from `crypto/rand`, hex-encoded**, matching `^([0-9a-fA-F]{2}){16,64}$` (§10). Required whenever the gate is on. This is what distinguishes a legitimate second producer of *this* run from an unrelated invocation that happens to reuse the same `RunID`: both would present an identical `GO_SPECS_RUN_ID`, but only the genuine invocation holds the matching token. Absent or invalid while the gate is on ⇒ configuration error, fails loudly, same as an invalid run ID. |
-| `GO_SPECS_REPORT_DIR` | invoking script/CI (optional) | Base directory for run subdirectories. Default `.go-specs/runs`. Must be on a local filesystem (§10). |
+| `GO_SPECS_REPORT_DIR` | invoking script/CI (optional) | Base directory for run subdirectories. Default `.go-specs/runs`, interpreted relative to the **preflight's** working directory and exported as an absolute path; **producers MUST reject a relative value** (v1.2.8, below). Must be on a local filesystem (§10). |
 | `GO_SPECS_REPORT` | existing, #142 | Unchanged: per-process local format:path target(s), orthogonal to shard emission. |
 
 **Partial configuration (the most likely real-world failure).** The three-variable set is not
@@ -474,11 +476,32 @@ Two consequences #145 must honour:
   stylistic choice. It is not a documented API guarantee. It MUST therefore carry a comment at
   the call site stating why `Getenv` is forbidden there, or the first person tidying the code
   reintroduces the problem with a change that looks like a pure simplification.
-- It MUST be pinned **directly, at the seam** — not through process-level caching. A fake
-  `environment` implementation that records which method (`Lookup` vs `Scan`) each variable was
-  read through asserts the rule exactly: on the gate-off path every variable in the set was
-  obtained by `Scan`, and none by `Lookup`. The test MUST cover **every** variable in the set, so
-  adding a variable without extending the test is the thing that fails.
+- It MUST be pinned **at the seam**: a fake `environment` implementation that records which
+  method (`Lookup` vs `Scan`) each variable was read through, asserting that on the gate-off path
+  every variable in the set was obtained by `Scan` and none by `Lookup`. This test MUST cover
+  **every** variable in the set, so adding a variable without extending the test is the thing
+  that fails. It is the pin of record for the *caller's* choice.
+
+- **It MUST additionally be pinned at the reader's body, and v1.2.7 was wrong to imply the seam
+  test alone suffices** (v1.2.8, #197). v1.2.7 said the fake "asserts the rule exactly". It does
+  not: the fake pins which method the resolver **calls** — a name — not what that method does
+  underneath. Rewriting the real scan's body as `return os.LookupEnv(name)` leaves the seam
+  assertion green, because the resolver still calls `Scan`, while reintroducing exactly the
+  enrollment this rule exists to prevent; when this was found, the production readers were
+  referenced by no test at all. That is #194's own defect shape one layer deeper, reproduced
+  inside the amendment that diagnosed it.
+
+  The body test MUST run from **inside a test function**, never from `TestMain`, because that is
+  the only position where the test log is live and the two access paths are distinguishable at
+  all. Readers therefore need to be reachable from such a test — extracting them into an internal
+  package is the straightforward way.
+
+  **The control arm is mandatory, not good practice.** The test MUST exercise the `Lookup` path
+  as a first-class arm and MUST fail when *that* arm also reports `(cached)`, with a message
+  saying the test can no longer tell the two paths apart and therefore proves nothing. Without
+  it, the test degrades silently into the vacuous shape the moment both arms start caching —
+  which is precisely how the withdrawn test got there. A test whose own vacuity is unobservable
+  is the defect this contract has now shipped twice.
 
   This **replaces** the cache-stability regression test v1.2.3 mandated and v1.2.4 widened —
   "run a package twice with the gate off, vary at least `GO_SPECS_RUN_ID` and
@@ -499,6 +522,48 @@ The gate variable itself may be read either way: it is stable within an environm
 `GO_SPECS_REPORT_SHARDS` in the cache key would cost nothing even from a position where
 enrollment happens at all. Only the identity variables vary per invocation, and only they must
 avoid the testlog wherever a read can reach it.
+
+**`GO_SPECS_REPORT_DIR` MUST be absolute at every producer boundary** (v1.2.8, #197). `go test`
+runs each package's test binary with **its own package source directory** as the working
+directory, not the directory the operator invoked it from. Verified on `go1.26.8` by probing
+`os.Getwd()` from a fixture package: invoked from the module root with a package pattern, the
+binary reported its cwd five levels below, at its own source directory. A relative
+`GO_SPECS_REPORT_DIR` therefore resolves to a **different absolute path per package**, and to a
+directory the preflight never created.
+
+What makes this worth a normative rule rather than a caveat is the failure mode. It does not
+surface as "relative path rejected". It surfaces as `marker-missing` — the producer looks for
+`run.json` somewhere plausible and simply does not find it — or, in a tree with mixed
+permissions, as §10's ancestor check refusing a *package source directory* that nobody
+configured, which reads like an unrelated bug.
+
+The division of responsibility is **resolve once, propagate, verify** — the same shape as the run
+token, and deliberately not a second derivation:
+
+- The **preflight** accepts a relative value and resolves it with `filepath.Abs` against its own
+  working directory, then exports the canonical absolute result. It is the one operator-visible
+  point that runs once, and it already owns marker creation and token generation.
+- **Every producer path** — ownership verification, shard write, and `config-error.json` write —
+  MUST reject a relative value outright, through one shared check so the three cannot drift. The
+  reason code is `invalid-report-dir`.
+
+The base directory MUST NOT be derived from the module root by the producer (`go list -m`, or
+walking upward for a `go.mod`). That would be a second, independent computation of a value that
+must agree with the first — the defect shape this protocol keeps producing — and it is not always
+available: `go list -m` costs a toolchain invocation and fails outside a module, while walking for
+`go.mod` disagrees with it in workspaces and vendored trees.
+
+Two limits of this choice, stated rather than implied:
+
+- **The default `.go-specs/runs` means "relative to wherever the preflight ran", not "the module
+  root".** In CI the two coincide because the job starts at the checkout root, but nothing
+  enforces it. The default is a preflight-cwd convenience; a contract that wanted it to *mean*
+  module root would have to say so and pay for the toolchain call.
+- **`filepath.Abs` is lexical and does not resolve symlinks**, so the propagated value is
+  absolute but not fully canonical. This is harmless for correctness — a symlinked path reaches
+  the same inode, so producers find the marker — and §10's permission walk resolves the existing
+  prefix separately, which is where canonicalization actually matters. No implementation should
+  claim a canonicalization it does not perform.
 
 Filesystem layout:
 
@@ -611,7 +676,7 @@ Filesystem layout:
   - the failing package's import path;
   - a machine-readable `Reason` (`"missing-run-id"`, `"missing-run-token"`, `"invalid-run-id"`,
     `"invalid-run-token"`, `"invalid-activation-gate"`, `"marker-missing"`, `"marker-mismatch"`,
-    `"marker-unreadable"`);
+    `"marker-unreadable"`, `"invalid-report-dir"`);
   - the human-readable diagnostic, including the exact variable name and remedy required above;
   - an RFC 3339 timestamp.
   It MUST NOT contain the raw `GO_SPECS_RUN_TOKEN`. Its presence is what the preflight/finalize
@@ -887,7 +952,7 @@ type RunOwnership struct {
 type InitializeRunOptions struct {
 	RunID   RunID
 	Token   RunToken
-	BaseDir string // from GO_SPECS_REPORT_DIR, default ".go-specs/runs"
+	BaseDir string // from GO_SPECS_REPORT_DIR, absolute; preflight resolves the default ".go-specs/runs" (§5)
 	Force   bool   // explicit operator recovery only (§5, Run marker lifecycle): removes an
 	               // existing marker and its shard directory before recreating. Never set
 	               // automatically as a fallback after a failed create.
@@ -905,7 +970,7 @@ type ShardConfig struct {
 	Activated   bool     // from GO_SPECS_REPORT_SHARDS; false means every field below is ignored
 	RunID       RunID    // from GO_SPECS_RUN_ID; required when Activated
 	Token       RunToken // from GO_SPECS_RUN_TOKEN; required when Activated
-	BaseDir     string   // from GO_SPECS_REPORT_DIR, default ".go-specs/runs"
+	BaseDir     string   // from GO_SPECS_REPORT_DIR, absolute; producers reject a relative value (§5)
 	PackagePath string   // this package's import path
 	Ownership   RunOwnership // verified against run.json (§5); populated by ShardConfigFromEnv
 }
@@ -948,7 +1013,8 @@ func WriteConfigError(baseDir string, runID RunID, packagePath string, reason Co
 
 // ConfigErrorReason is the machine-readable cause recorded in config-error.json: one of
 // "missing-run-id", "missing-run-token", "invalid-run-id", "invalid-run-token",
-// "invalid-activation-gate", "marker-missing", "marker-mismatch", "marker-unreadable" (§5).
+// "invalid-activation-gate", "marker-missing", "marker-mismatch", "marker-unreadable",
+// "invalid-report-dir" (§5).
 type ConfigErrorReason string
 
 // ShardWriter is the #145 producer's entry point: one call, from TestMain, after m.Run()
@@ -1477,8 +1543,14 @@ line should be restated as:
     `EEXIST` with a stubbed `stat` returning `st_nlink == 2` (publish accepted) and `st_nlink == 1`
     (duplicate reported), so both arms run even where the environment that triggers them does not.
   - **`os.Environ` not routing through testlog** — pinned by the `Lookup`-vs-`Scan` seam test
-    §5 requires, deliberately, because it is an implementation detail rather than a documented
-    guarantee. Note that its *consequence* for this contract is now defence-in-depth only
+    §5 requires **and** by the reader-body test with its mandatory control arm (v1.2.8): the seam
+    test alone pins a method name, not the behaviour, and v1.2.7 was wrong to say otherwise.
+    Deliberately pinned because it is an implementation detail rather than a documented
+    guarantee.
+  - **A test binary's working directory being its own package source directory** (v1.2.8, #197)
+    — pinned by the producer-side rejection of a relative `GO_SPECS_REPORT_DIR` §5 requires.
+    Should the toolchain ever change it, that rejection is what turns a silent `marker-missing`
+    into a named failure. Note that its *consequence* for this contract is now defence-in-depth only
     (v1.2.7): at the mandated call site no access path enrolls anything.
   - **Environment reads before `m.Run()` never entering the cache key** (v1.2.7, #194) — the
     claim this amendment withdraws, and now pinned from the other side: the process-level test
