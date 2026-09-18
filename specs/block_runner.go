@@ -4,7 +4,6 @@
 package specs
 
 import (
-	"runtime/debug"
 	"testing"
 )
 
@@ -88,15 +87,10 @@ func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 }
 
 // runBlockSpecRecovered runs a single spec, recovering a panic so it fails just this spec instead
-// of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
-// recorded by the backend and must not be reported a second time.
+// of crashing the process. The recording rule itself lives in recoverSpecFailure, shared with every
+// other engine (see recovery.go).
 func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover()) }()
 	fn(ctx)
 }
 

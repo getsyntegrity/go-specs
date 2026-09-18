@@ -6,9 +6,7 @@
 package specs
 
 import (
-	"fmt"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,15 +51,10 @@ func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
 }
 
 // runBytecodeSpecRecovered runs one spec's instruction range, recovering a panic so it fails just
-// this spec instead of crashing the process. isExpectedAbort sentinels (a controlled backend's
-// FailNow) are already recorded by the backend and must not be reported a second time.
+// this spec instead of crashing the process. The recording rule itself lives in recoverSpecFailure,
+// shared with every other engine (see recovery.go).
 func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover()) }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
@@ -135,21 +128,11 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 	}
 }
 
-// runBytecodeWorkerSpec runs one spec's instruction range, recovering the parallelAbort{} sentinel a
-// fatal assertion panics with when backend.abortOnFatal is set — an expected stop, already recorded
-// in results[idx], not a failure to report. Any other panic is recorded as an ordinary spec failure
-// instead of crashing the worker goroutine — which, since this runs inside a spawned goroutine, would
-// otherwise crash the entire process. Mirrors scheduler.go's runWorkerSpec.
+// runBytecodeWorkerSpec runs one spec's instruction range on a worker goroutine, recording a
+// recovered panic into results[idx] via recoverParallelSpecFailure — the same rule scheduler.go's
+// runWorkerSpec applies, now shared rather than mirrored (see recovery.go).
 func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]parallelFailure, idx int) {
-	defer func() {
-		switch r := recover(); r {
-		case nil, parallelAbort{}:
-		default:
-			if (*results)[idx].Message == "" {
-				(*results)[idx] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
-			}
-		}
-	}()
+	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
