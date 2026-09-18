@@ -153,6 +153,61 @@ func TestExpectTToIgnoresAnExpectationWithoutAContext(t *testing.T) {
 	expectT[int]{e: &Expectation{actual: 42}}.To(Equal(43))
 }
 
+// A Context with no backend is a real state, not a hypothetical: NewContext(nil) produces one
+// (asTestBackend returns nil for a nil TB), and so does a Context released back to the pool, which
+// Reset(nil) leaves with a nil backend. EqualTo, ExpectT.ToEqual and Snapshot all guard it and
+// return quietly; the matcher path and Expectation.ToEqual did not, so a failing assertion on such
+// a context dereferenced a nil backend inside the reporting tail and panicked — surfacing as a
+// crash at reportMatcherFailure rather than as the assertion the user wrote. Every assertion entry
+// point must degrade the same way.
+func TestAssertionsWithoutABackendReturnQuietlyInsteadOfPanicking(t *testing.T) {
+	cases := map[string]func(*Context){
+		"Expect(...).To":      func(ctx *Context) { ctx.Expect(42).To(Equal(7)) },
+		"ExpectT(...).To":     func(ctx *Context) { ExpectT(ctx, 42).To(Equal(7)) },
+		"Expect(...).ToEqual": func(ctx *Context) { ctx.Expect(42).ToEqual(7) },
+		// The three that already guarded it, held to the same contract so a future refactor
+		// cannot quietly drop the guard from one of them either.
+		"EqualTo":              func(ctx *Context) { EqualTo(ctx, 42, 7) },
+		"ExpectT(...).ToEqual": func(ctx *Context) { ExpectT(ctx, 42).ToEqual(7) },
+	}
+	for name, invoke := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("expected a quiet no-op without a backend, got panic: %v", r)
+				}
+			}()
+
+			ctx := &Context{}
+			invoke(ctx)
+
+			// Nothing was reported, so nothing may be recorded either: a failure the runner can
+			// see but no backend ever heard would stop a FailFast run with no message to show.
+			if ctx.failed {
+				t.Error("expected no recorded failure when the assertion had nowhere to report")
+			}
+		})
+	}
+}
+
+// The pooled Expectation must be returned even on the guarded early-return paths; otherwise every
+// assertion made against a backend-less context leaks one, and the pool stops amortising anything.
+// Acquiring after the guarded call must hand back a clean Expectation, never one still carrying the
+// previous actual value.
+func TestGuardedAssertionsStillReleaseThePooledExpectation(t *testing.T) {
+	noBackend := &Context{}
+	noBackend.Expect("stale").To(Equal(1))
+	noBackend.Expect("stale").ToEqual(1)
+	ExpectT(noBackend, 99).To(Equal(1))
+
+	ctx, b := newCapturedContext()
+	ctx.Expect(42).To(Equal(42))
+
+	if b.failed {
+		t.Fatalf("expected a clean pooled Expectation to assert normally, got %q", b.message)
+	}
+}
+
 // The specs.* re-exports are the surface the README documents; nothing called them. Each must
 // return a live matcher that both decides and explains.
 func TestReExportedMatchersDecideAndExplain(t *testing.T) {
