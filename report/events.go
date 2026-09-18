@@ -48,11 +48,14 @@ type SpecResultEvent struct {
 	// A spec is never both Skipped and Filtered.
 	Filtered bool
 	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped or Filtered
-	Message  string        // short failure summary; empty when not Failed, and also empty for a sequential
-	// Fatalf-based assertion failure — runtime.Goexit unwinds the whole Run call before a SpecFinished
-	// for that spec is ever emitted, so it never reaches this event at all (see specs.runStepRecovered).
-	// Populated today for a recovered panic (the panic value) and for an ItParallel/parallelBackend
-	// failure (the recorded failure string).
+	Message  string        // short failure summary; empty when not Failed, and also empty for an
+	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the
+	// goroutine right there, before the message this event would carry is ever built (see
+	// specs.runStepRecovered). This event is still emitted for that spec — Failed reflects it — as
+	// long as the spec ran in its own subtest, which every spec does by default; only a Fatalf outside
+	// any subtest isolation (e.g. a fake backend that doesn't call Goexit at all) would behave
+	// differently. Message is populated today for a recovered panic (the panic value) and for an
+	// ItParallel/parallelBackend failure (the recorded failure string).
 	Output string // full output/stack trace, if any; only a recovered panic produces one today (its
 	// stack trace) — left empty everywhere else, including ItParallel, which has no separable output
 	// source to draw from.

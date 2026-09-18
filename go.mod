@@ -1,4 +1,4 @@
-module github.com/pablogore/go-specs
+module github.com/getsyntegrity/go-specs
 
 go 1.25.0
 

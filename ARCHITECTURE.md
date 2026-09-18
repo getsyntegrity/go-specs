@@ -6,20 +6,20 @@ This document describes the repository layout and package boundaries for `go-spe
 
 ## Monorepo Layout
 
-The repository is a **single Go module** (`github.com/pablogore/go-specs`, root `go.mod`). There is no `go.work` and no per-package `go.mod`; every directory below is a regular package within that one module.
+The repository is a **single Go module** (`github.com/getsyntegrity/go-specs`, root `go.mod`). There is no `go.work` and no per-package `go.mod`; every directory below is a regular package within that one module.
 
 ```
 go-specs
-├── specs        # runner + DSL (package: github.com/pablogore/go-specs/specs)
-├── assert       # core assertions / matchers (package: github.com/pablogore/go-specs/assert)
-├── gen          # value generators for property testing (package: github.com/pablogore/go-specs/gen)
-├── snapshots    # snapshot storage and comparison (package: github.com/pablogore/go-specs/snapshots)
-├── mock         # mocking utilities (package: github.com/pablogore/go-specs/mock)
-├── report/      # event types and reporter (package: github.com/pablogore/go-specs/report)
+├── specs        # runner + DSL (package: github.com/getsyntegrity/go-specs/specs)
+├── assert       # core assertions / matchers (package: github.com/getsyntegrity/go-specs/assert)
+├── gen          # value generators for property testing (package: github.com/getsyntegrity/go-specs/gen)
+├── snapshots    # snapshot storage and comparison (package: github.com/getsyntegrity/go-specs/snapshots)
+├── mock         # mocking utilities (package: github.com/getsyntegrity/go-specs/mock)
+├── report/      # event types and reporter (package: github.com/getsyntegrity/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
-├── examples/    # usage examples (package: github.com/pablogore/go-specs/examples)
+├── examples/    # usage examples (package: github.com/getsyntegrity/go-specs/examples)
 └── tools/
-    └── specs-cli/   # CLI (package: github.com/pablogore/go-specs/tools/specs-cli)
+    └── specs-cli/   # CLI (package: github.com/getsyntegrity/go-specs/tools/specs-cli)
 ```
 
 ---
@@ -44,16 +44,16 @@ No cycles: assert, gen, snapshots, and mock do not depend on specs or runner.
 
 Public import paths are unchanged for compatibility:
 
-- `github.com/pablogore/go-specs/specs`
-- `github.com/pablogore/go-specs/assert`
-- `github.com/pablogore/go-specs/report`
-- `github.com/pablogore/go-specs/mock`
-- `github.com/pablogore/go-specs/gen/generators`
-- `github.com/pablogore/go-specs/snapshots`
+- `github.com/getsyntegrity/go-specs/specs`
+- `github.com/getsyntegrity/go-specs/assert`
+- `github.com/getsyntegrity/go-specs/report`
+- `github.com/getsyntegrity/go-specs/mock`
+- `github.com/getsyntegrity/go-specs/gen/generators`
+- `github.com/getsyntegrity/go-specs/snapshots`
 
 Internal code lives under the specs package and uses:
 
-- `github.com/pablogore/go-specs/specs/internal/registry`
+- `github.com/getsyntegrity/go-specs/specs/internal/registry`
 
 ---
 

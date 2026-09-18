@@ -6,7 +6,7 @@ go-specs is pre-1.0 (see [README.md#project-status](README.md#project-status)). 
 
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately using [GitHub Security Advisories](https://github.com/pablogore/go-specs/security/advisories/new) for this repository, rather than opening a public issue.
+Please report suspected vulnerabilities privately using [GitHub Security Advisories](https://github.com/getsyntegrity/go-specs/security/advisories/new) for this repository, rather than opening a public issue.
 
 If that route is unavailable, open a regular issue without exploit details and ask for a private channel to share them.
 

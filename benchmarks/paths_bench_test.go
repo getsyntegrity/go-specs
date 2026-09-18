@@ -6,7 +6,7 @@ package benchmarks
 import (
 	"testing"
 
-	specs "github.com/pablogore/go-specs/specs"
+	specs "github.com/getsyntegrity/go-specs/specs"
 )
 
 // Path exploration benchmarks: full execution of one generated spec through the bounded

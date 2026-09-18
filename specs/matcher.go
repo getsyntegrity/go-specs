@@ -1,6 +1,6 @@
 package specs
 
-import "github.com/pablogore/go-specs/assert"
+import "github.com/getsyntegrity/go-specs/assert"
 
 // Matcher is the interface for assertion matchers used with Expect(...).To(m).
 // It is the same as assert.Matcher; re-exported for DSL stability.

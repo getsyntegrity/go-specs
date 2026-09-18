@@ -14,7 +14,7 @@ package parallel_attribution_test
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/specs"
 )
 
 func TestItParallelEqualTo(t *testing.T) {

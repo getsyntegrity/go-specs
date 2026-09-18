@@ -17,10 +17,20 @@ type Backend interface {
 	Fatalf(format string, args ...any)
 }
 
-// helperBackend is the optional Helper() half of testing.TB. RunFromFile marks itself through it so
-// snapshot mismatches are attributed to the caller's ctx.Snapshot line, not to snapshot.go.
-type helperBackend interface {
+// HelperBackend is the optional Helper() half of testing.TB. Evaluate and RunFromFile mark
+// themselves through it so snapshot mismatches are attributed to the caller's ctx.Snapshot line,
+// not to snapshot.go.
+type HelperBackend interface {
 	Helper()
+}
+
+// Result is the outcome of comparing a value against a stored snapshot, decided without reporting
+// it anywhere. Passed is false for every outcome that used to call Backend.Fatalf directly —
+// including usage errors (empty name, marshal failure) as well as an actual mismatch — and Message
+// then holds the text that used to go straight to Fatalf.
+type Result struct {
+	Passed  bool
+	Message string
 }
 
 // fileLocks serializes RunFromFile's load-mutate-save cycle per snapshot file, keyed by absolute
@@ -41,19 +51,22 @@ func lockFor(path string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// RunFromFile compares value to the stored snapshot for name, or creates/updates it. It reports any
-// failure to backend itself and also returns whether the comparison passed, so a caller that tracks
-// its own pass/fail state (e.g. specs.Context) can fold the verdict in without re-deciding it.
-// callerFile is the path to the test file (e.g. from runtime.Caller(1) in Context.Snapshot).
-// A backend that exposes Helper() is marked unconditionally, not only on failure: RunFromFile decides
-// the verdict itself and reports it here, so the mark has to precede the comparison.
-func RunFromFile(backend Backend, callerFile string, name string, value any) bool {
-	if h, ok := backend.(helperBackend); ok {
-		h.Helper()
+// Evaluate compares value to the stored snapshot for name, or creates/updates it, and returns the
+// verdict without reporting it anywhere. callerFile is the path to the test file (e.g. from
+// runtime.Caller(1) in Context.Snapshot). A caller that must fail `go test` on a mismatch has to
+// call a Fatalf-triggering method itself, and — if it tracks its own pass/fail state, like
+// specs.Context does — record that state first: on a real testing.T, Fatalf ends in
+// runtime.Goexit, which unwinds the calling goroutine and never returns, so anything meant to run
+// on the failure path has to run before that call, not after it (issue #115).
+// A backend that exposes Helper() is marked unconditionally, not only on failure: Evaluate decides
+// the verdict itself, and the mark has to precede the comparison for either outcome to attribute
+// correctly once the caller reports it.
+func Evaluate(helper HelperBackend, callerFile string, name string, value any) Result {
+	if helper != nil {
+		helper.Helper()
 	}
 	if name == "" {
-		backend.Fatalf("snapshot name cannot be empty")
-		return false
+		return Result{Message: "snapshot name cannot be empty"}
 	}
 	dir := filepath.Dir(callerFile)
 	base := filepath.Base(callerFile)
@@ -67,8 +80,7 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) boo
 
 	newBytes, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		backend.Fatalf("snapshot: marshal: %v", err)
-		return false
+		return Result{Message: fmt.Sprintf("snapshot: marshal: %v", err)}
 	}
 
 	mu := lockFor(snapshotPath)
@@ -78,8 +90,7 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) boo
 	update := os.Getenv(UpdateSnapshotsEnv) == "1"
 	data, err := Load(snapshotPath)
 	if err != nil && !os.IsNotExist(err) {
-		backend.Fatalf("snapshot: load %s: %v", snapshotPath, err)
-		return false
+		return Result{Message: fmt.Sprintf("snapshot: load %s: %v", snapshotPath, err)}
 	}
 	if data == nil {
 		data = make(map[string]json.RawMessage)
@@ -88,33 +99,54 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) boo
 	if update {
 		data[name] = newBytes
 		if err := os.MkdirAll(snapshotDir, 0755); err != nil {
-			backend.Fatalf("snapshot: mkdir: %v", err)
-			return false
+			return Result{Message: fmt.Sprintf("snapshot: mkdir: %v", err)}
 		}
 		if err := Save(snapshotPath, data); err != nil {
-			backend.Fatalf("snapshot: save: %v", err)
-			return false
+			return Result{Message: fmt.Sprintf("snapshot: save: %v", err)}
 		}
-		return true
+		return Result{Passed: true}
 	}
 
 	existing, ok := data[name]
 	if !ok {
-		backend.Fatalf("snapshot %q missing; run with %s=1 to create", name, UpdateSnapshotsEnv)
-		return false
+		return Result{Message: fmt.Sprintf("snapshot %q missing; run with %s=1 to create", name, UpdateSnapshotsEnv)}
 	}
 
 	var existingVal, newVal any
 	if err := json.Unmarshal(existing, &existingVal); err != nil {
-		backend.Fatalf("snapshot: unmarshal existing: %v", err)
-		return false
+		return Result{Message: fmt.Sprintf("snapshot: unmarshal existing: %v", err)}
 	}
 	if err := json.Unmarshal(newBytes, &newVal); err != nil {
-		backend.Fatalf("snapshot: unmarshal new: %v", err)
-		return false
+		return Result{Message: fmt.Sprintf("snapshot: unmarshal new: %v", err)}
 	}
 	if !reflect.DeepEqual(existingVal, newVal) {
-		backend.Fatalf("snapshot %q mismatch:\nexpected (snapshot): %s\ngot: %s", name, string(existing), string(newBytes))
+		return Result{Message: fmt.Sprintf("snapshot %q mismatch:\nexpected (snapshot): %s\ngot: %s", name, string(existing), string(newBytes))}
+	}
+	return Result{Passed: true}
+}
+
+// RunFromFile compares value to the stored snapshot for name, or creates/updates it. It reports any
+// failure to backend itself and also returns whether the comparison passed, so a caller that tracks
+// its own pass/fail state (e.g. specs.Context) can fold the verdict in without re-deciding it.
+// callerFile is the path to the test file (e.g. from runtime.Caller(1) in Context.Snapshot).
+//
+// This calls Evaluate and then reports its Result straight to backend, so on a real testing.T the
+// Fatalf call below can end in runtime.Goexit before returning here. A caller that needs to record
+// its own failure state first — the exact problem this Backend/Fatalf coupling caused for issue
+// #115 — should call Evaluate directly instead, as specs.runSnapshot does.
+//
+// Fatalf is called from this function's own frame, so it marks itself as a helper here too, in
+// addition to the mark Evaluate makes on its own frame: Helper() attributes by function, and the
+// two calls are on separate frames on the stack at their respective moments.
+func RunFromFile(backend Backend, callerFile string, name string, value any) bool {
+	var helper HelperBackend
+	if h, ok := backend.(HelperBackend); ok {
+		h.Helper()
+		helper = h
+	}
+	result := Evaluate(helper, callerFile, name, value)
+	if !result.Passed {
+		backend.Fatalf("%s", result.Message)
 		return false
 	}
 	return true

@@ -1,10 +1,15 @@
-# Release: tag + GoReleaser when PR from develop or hotfix is merged to main
-# Runs on push to main (after merge); creates new patch tag and publishes release
+# Release: tag + GoReleaser, run explicitly via workflow_dispatch once main
+# holds the commit that should be released. A push/merge to main is not
+# sufficient by itself to publish -- see #127.
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. v1.2.3). Leave empty to auto-bump the patch version from the latest tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -12,31 +17,58 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      GOTOOLCHAIN: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Skip if already tagged
+        id: skip
+        # Idempotency guard only: protects against re-running this dispatch on a
+        # commit that was already released, not a gate on whether to publish.
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            echo "already_tagged=true" >> $GITHUB_OUTPUT
+            echo "HEAD already has a tag, skipping release"
+          else
+            echo "already_tagged=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Go
-        uses: actions/setup-go@v7
+        if: steps.skip.outputs.already_tagged != 'true'
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+          go-version: "1.26.0"
 
       - name: Bump version and create tag
         id: tag
+        if: steps.skip.outputs.already_tagged != 'true'
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          LATEST="${LATEST#v}"
-          MAJOR="${LATEST%%.*}"
-          REST="${LATEST#*.}"
-          MINOR="${REST%%.*}"
-          PATCH="${REST#*.}"
-          PATCH=$((PATCH + 1))
-          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          if [ -n "$VERSION_INPUT" ]; then
+            NEW_TAG="$VERSION_INPUT"
+            [[ "$NEW_TAG" == v* ]] || NEW_TAG="v${NEW_TAG}"
+          else
+            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST="${LATEST#v}"
+            MAJOR="${LATEST%%.*}"
+            REST="${LATEST#*.}"
+            MINOR="${REST%%.*}"
+            PATCH="${REST#*.}"
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          # Strict SemVer core only (vMAJOR.MINOR.PATCH) -- fail fast rather than
+          # let a malformed manual input or a malformed existing tag become a
+          # pushed release tag. Applies to both the manual and auto-bumped path.
+          if ! [[ "$NEW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$NEW_TAG' is not a valid release version. Expected strict SemVer vMAJOR.MINOR.PATCH (e.g. v1.2.3); pre-release/build metadata suffixes are not supported yet." >&2
+            exit 1
+          fi
+
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -44,7 +76,8 @@ jobs:
           git push origin "$NEW_TAG"
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        if: steps.skip.outputs.already_tagged != 'true'
+        uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -52,3 +85,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.new_tag }}
+
+      - name: Verify external installability of the published tag
+        # Black-box check from a clean consumer module, no local replace:
+        # proves `go get <this repo's module path>@<tag>` actually resolves
+        # and builds from the tag just pushed. GOPROXY=direct + GOSUMDB=off
+        # clone the tag straight from git instead of waiting on the public
+        # proxy's mirror to index it. Added after v0.1.0 shipped with a
+        # go.mod module path that didn't match the repository (getsyntegrity/go-specs#139).
+        if: steps.skip.outputs.already_tagged != 'true'
+        run: |
+          MODULE="$(go list -m)"
+          TAG="${{ steps.tag.outputs.new_tag }}"
+          WORKDIR="$(mktemp -d)"
+          cd "$WORKDIR"
+          go mod init consumer-smoke-test
+          GOPROXY=direct GOSUMDB=off go get "${MODULE}@${TAG}"

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pablogore/go-specs/report"
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // TestRunnerWithReporterEmitsSuiteAndSpecEvents proves NewRunnerWithReporter's Runner reports the

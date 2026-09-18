@@ -3,8 +3,8 @@ package spy_test
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/mock"
-	"github.com/pablogore/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/mock"
+	"github.com/getsyntegrity/go-specs/specs"
 )
 
 // Example: using mock.Spy to record and assert on function invocations

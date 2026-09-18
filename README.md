@@ -1,7 +1,7 @@
 # go-specs
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/pablogore/go-specs.svg)](https://pkg.go.dev/github.com/pablogore/go-specs)
-[![Go Report Card](https://goreportcard.com/badge/github.com/pablogore/go-specs)](https://goreportcard.com/report/github.com/pablogore/go-specs)
+[![Go Reference](https://pkg.go.dev/badge/github.com/getsyntegrity/go-specs.svg)](https://pkg.go.dev/github.com/getsyntegrity/go-specs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/getsyntegrity/go-specs)](https://goreportcard.com/report/github.com/getsyntegrity/go-specs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Project status
@@ -24,7 +24,7 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 ## Installation
 
 ```bash
-go get github.com/pablogore/go-specs
+go get github.com/getsyntegrity/go-specs
 ```
 
 ## Basic example
@@ -35,7 +35,7 @@ package math_test
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/specs"
+	"github.com/getsyntegrity/go-specs/specs"
 )
 
 func TestMath(t *testing.T) {

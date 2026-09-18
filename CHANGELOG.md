@@ -2,14 +2,44 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project is pre-1.0, so any release may include breaking changes (see [README.md#project-status](README.md#project-status)).
 
-Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](https://github.com/pablogore/go-specs/releases) for their auto-generated notes.
+Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](https://github.com/getsyntegrity/go-specs/releases) for their auto-generated notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `go.mod` declared `module github.com/pablogore/go-specs` while the repository is hosted at `github.com/getsyntegrity/go-specs`, so `go get github.com/getsyntegrity/go-specs@<version>` failed with a module-path mismatch for every external consumer. Corrected the module path and every internal import, doc reference, and CI/script reference to `github.com/getsyntegrity/go-specs`. ([#139](https://github.com/getsyntegrity/go-specs/issues/139))
+
+### ⚠️ v0.1.0 is broken — do not use
+
+`v0.1.0` was tagged and published with the `go.mod` mismatch above: it cannot be `go get`-installed from `github.com/getsyntegrity/go-specs`. The tag and GitHub Release are kept as-is (immutable — public tags are not rewritten), but the fix above ships as the next patch release instead. Use that release or later.
+
+## [0.1.0] - 2026-09-16
+
+### Breaking Changes / Migration from v0.0.9
+
+`v0.0.9` was published from a branch that had reorganized the module into `specs/compiler`, `specs/dsl`, `specs/ctx`, `specs/property`, and `specs/runner` subpackages (plus `cmd/specs-ci` and `tools/coverageheatmap`), with five `specs/*_reexport.go` files aliasing every subpackage symbol back into the root `specs` package so `specs.Program`, `specs.Describe`, `specs.Context`, and friends kept compiling. This release reverts that reorganization: the module returns to the single flat `specs` package that predates it, and the subpackages, the reexport files, `cmd/specs-ci`, and `tools/coverageheatmap` are all gone. See [#127](https://github.com/getsyntegrity/go-specs/issues/127) for the full diagnosis of how the two layouts diverged.
+
+**If you only imported the root `specs` package** (`import "github.com/getsyntegrity/go-specs/specs"`, using `specs.Program`, `specs.Describe`, `specs.Context`, `specs.PathValues`, `specs.Runner`, etc.) — **nothing breaks.** Every one of those identifiers still exists in `specs`, now as a native declaration instead of a type alias / forwarding var.
+
+**If you imported a subpackage directly**, update the import path and drop the package qualifier — the identifiers themselves are unchanged:
+
+| v0.0.9 path | What it exposed | Now | Migration |
+|---|---|---|---|
+| `specs/compiler` | `Program`, `Builder`, `ExecutionPlan`, `CompiledSuite`, `Instruction`, `OpCode`, `NodeArena`, `SpecFn`, `NewBuilder`, `BuildPlanFromArena`, `ShardProgram` | Same names, native in `specs` | Import `specs` instead; drop the `compiler.` prefix |
+| `specs/dsl` | `Describe`, `DescribeFlat`/`DescribeFast` (+`WithReporter`), `BuildSuite`, `BuildProgram`, `Focus`, `Skip`, `Analyze`, `Spec`, `SuiteTree`, `PathBuilder` | Same names, native in `specs` | Import `specs` instead; drop the `dsl.` prefix |
+| `specs/ctx` | `Context`, `Expectation`, `Fixture`, `TestBackend`, `NewContext`, `EqualTo`, `ExpectT`, matchers (`Equal`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `NotEqual`) | Same names, native in `specs` | Import `specs` instead; drop the `ctx.` prefix |
+| `specs/property` | `PathValues`, `PathGenerator`, `Coverage`, `Corpus`, `Mutator`, `Shrinker`, `CoverageExplorer`, `SmartExplorer`, `New*` constructors | Same names, native in `specs` | Import `specs` instead; drop the `property.` prefix |
+| `specs/runner` | `Runner`, `MinimalRunner`, `BlockRunner`, `BytecodeRunner`, `NewRunner`, `RunShard`, `RunCompiledSuite`, sharding helpers | Same names, native in `specs` | Import `specs` instead; drop the `runner.` prefix |
+| `specs/*_reexport.go` (5 files) | Only aliasing/forwarding — no behavior of its own | Removed as files; every symbol they forwarded still exists, natively, in `specs` | Nothing to migrate if you used `specs.X` |
+| `specs/parallel` | `scheduler.go`/`scheduler_batch.go`, documented as an internal implementation detail (never imported the root `specs` or `specs/runner`, and never re-exported into `specs`) | Same code, now unexported inside `specs` | Was never part of the supported public surface — a direct import of `specs/parallel` was already unsupported in `v0.0.9`. `specs.ItParallel` (on `Builder`) is unaffected |
+| `cmd/specs-ci` | Standalone CLI binary (`bench`/`coverage`/`doctor`/`generate`/`migrate`/`testcmd` subcommands, backed by `internal/cli/*`) — the target `main`'s `.goreleaser.yaml` pointed at, with no buildable source on either branch | Removed, no replacement | Never documented in README or `docs/` as a supported entrypoint. Flagged here only because it was physically present in the published `v0.0.9` module, not because it was ever advertised |
+| `tools/coverageheatmap` | Standalone report generator; produced the committed `docs/COVERAGE.md` ("Generated automatically by tools/coverageheatmap") | Removed, along with `docs/COVERAGE.md` | Development-only tool, not a library import — no `specs.*` symbol was implicated. No replacement is offered |
+
 ### Changed
 
-- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. See [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md#generated-candidate-identity). ([#103](https://github.com/pablogore/go-specs/issues/103))
-- Reporter events for generated candidates now carry the candidate's own name — `includes tier [tier=pro] #2` — instead of the bare spec name repeated per candidate, so each executed candidate is distinguishable in report output and the ordinal links it to its `go test -v` subtest. ([#103](https://github.com/pablogore/go-specs/issues/103))
+- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. See [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md#generated-candidate-identity). ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
+- Reporter events for generated candidates now carry the candidate's own name — `includes tier [tier=pro] #2` — instead of the bare spec name repeated per candidate, so each executed candidate is distinguishable in report output and the ordinal links it to its `go test -v` subtest. ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
 - Sequential specs now run as a subtest named by their full `Describe`/`When`/`It` breadcrumb
   instead of the leaf `It` name alone, in both sequential execution models (`Describe`/`Spec` and
   `Builder`/`Runner`). Two specs sharing an `It` name under different scopes are no longer told
@@ -44,12 +74,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   specs, and saved per-test re-run buttons in IDEs, which will silently select nothing until the
   stored pattern is regenerated.
 
-  Two pre-existing behaviours become easier to meet now that `-run` is a documented way to select
-  specs. Under a narrow `-run` pattern the `Builder`/`Runner` model still executes the group
-  `BeforeEach`/`AfterEach` hooks of specs the pattern discarded, because those hooks run outside the
-  subtest; the `Describe`/`Spec` model does not. And in either model a spec whose subtest the filter
-  discarded is still reported to an attached reporter as started and finished without failing, so it
-  appears as passed although its body never ran. Both are tracked separately.
+  Two pre-existing behaviours became easier to meet once `-run` was documented above as a way to
+  select specs — both are now fixed. The `Builder`/`Runner` model used to still execute a discarded
+  spec's group `BeforeEach`/`AfterEach` hooks, because those hooks ran outside the spec's own subtest;
+  `runSpecWithHooks` now runs each spec's before hooks, body, and after hooks as one unit inside its
+  own subtest, so a `-run` filter discards a spec's hooks along with it, matching `Describe`/`Spec`
+  ([#109](https://github.com/getsyntegrity/go-specs/issues/109)). And a spec whose subtest the filter
+  discarded no longer gets reported to an attached reporter as passed — see `Filtered: true` below
+  ([#111](https://github.com/getsyntegrity/go-specs/issues/111)).
   ([#102](https://github.com/getsyntegrity/go-specs/issues/102))
 
 ### Fixed
@@ -76,6 +108,24 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `.ToEqual` and every untyped form already recorded it. The passing fast path is unchanged
   (`BenchmarkMatcher_GoSpecs` stays at 0 allocs/op); `recordFailure` runs only on the failure
   branch.
+
+- A failing `ctx.Snapshot` was reported to a `report.EventReporter` as a **passing** spec
+  (`SpecResultEvent.Failed` stayed `false`, and `SuiteEndEvent.FailedSpecs` did not count it), even
+  though `go test` exited non-zero. #125 attempted to fix this by having `Context.Snapshot` call
+  `c.recordFailure()` after `runSnapshot` returned `false` — but `snapshots.RunFromFile` reports a
+  mismatch by calling `backend.Fatalf` directly, and on a real `*testing.T`, `Fatalf` ends in
+  `FailNow()` → `runtime.Goexit()`, which unwinds the calling goroutine right there and never
+  returns to `RunFromFile` or `Context.Snapshot`. `recordFailure()` was therefore unreachable in
+  production; #125's own test used a fake backend whose `Fatalf` records the message and returns
+  normally, so it never exercised the Goexit path it was meant to fix. `snapshots.Evaluate` now
+  separates comparison from reporting: it returns a `Result{Passed, Message}` without calling
+  `Fatalf`, so `Context.Snapshot` can call `c.recordFailure()` *before* triggering the backend's
+  `Fatalf` — the same before-Fatalf ordering every other assertion in this package already follows.
+  `snapshots.RunFromFile`'s existing bool-returning, Fatalf-calling contract is preserved as a thin
+  wrapper over `Evaluate`, so it and its own tests are unaffected. Pinned by
+  `TestSnapshotMismatchRealProcessRecordsFailure`, a subprocess test against a real `*testing.T` —
+  a fake-backend test cannot catch this class of bug, since a fake `Fatalf` doesn't `Goexit`.
+  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
 
 - A spec whose subtest is discarded by `-run` (e.g. `go test -run 'TestX/suite/when_b'` against a
   suite with a sibling `when_a` spec) is no longer reported to `report.EventReporter` as passed.
@@ -144,6 +194,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   sequential specs, `SkipIt` specs, and `ItParallel` specs alike.
   ([#112](https://github.com/getsyntegrity/go-specs/issues/112))
 
+- `PathValues.Hash()` is now sensitive to the content of `string`, `float64`, and `float32` values
+  instead of falling through to the position-only fallback used for types the hash doesn't recognize.
+  Strings are hashed byte-by-byte with an FNV-like multiply; floats use their IEEE bit pattern
+  (`math.Float32bits`/`math.Float64bits`). Two `PathValues` differing only in a string or float value
+  no longer collide on the same hash. Pointer/map/func/etc. values keep the conservative position-only
+  fallback unchanged.
+  ([#122](https://github.com/getsyntegrity/go-specs/issues/122))
+
 ### Added
 
 - `benchmarks/paths_bench_test.go`: path-exploration benchmarks for a large Cartesian run and a sampled run, covering the third cost center `BENCHMARKS.md` names.
@@ -160,14 +218,12 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   it previously reported the split breadcrumb; populate `PathScopes`/`PathScopeStart`/`PathScopeLen`
   to report a path. Plans built through `Describe`/`BuildSuite` are unaffected.
 
-### Known issues
+- `assert.EqualValues(t testing.TB, a, b any) bool` compares two values for use as a test helper:
+  wrapped errors compare via `errors.Is` (either direction), everything else via `reflect.DeepEqual`.
+  Moved from the `matchers` package; `assert` is now the single source of truth for equality helpers.
+  ([#128](https://github.com/getsyntegrity/go-specs/issues/128))
 
-- A failing `ctx.Snapshot` is reported to a `report.EventReporter` as a **passing** spec
-  (`SpecResultEvent.Failed` is `false`, and `SuiteEndEvent.FailedSpecs` does not count it), even
-  though `go test` exits non-zero. Pre-existing and unrelated to the attribution fix above; every
-  other assertion records the failure correctly. Pinned by
-  `TestSnapshotFailureLeavesContextUnfailed`.
-  ([#115](https://github.com/getsyntegrity/go-specs/issues/115))
+### Known issues
 
 - Narrowing `go test -run` to a single `ExploreCoverage`/`ExploreSmart` generated candidate's
   subtest — the natural way to isolate a failure and re-run it — does not isolate it from the
