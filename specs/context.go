@@ -279,6 +279,11 @@ func (x expectT[T]) To(m Matcher) {
 		}
 		return
 	}
+	// recordFailure is what makes a typed matcher failure reach ctx.failed, exactly as the untyped
+	// Expectation.To does. Without it a spec whose only assertion is ExpectT(ctx, x).To(m) still
+	// fails the run (Fatalf reaches the backend) but reports Failed=false to every reporter, and
+	// FailFast keeps running the groups after it — the same defect class as issue #115.
+	e.ctx.recordFailure()
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
