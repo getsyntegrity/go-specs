@@ -1,0 +1,440 @@
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   15252	     87033 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15489	     77411 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   35000	     37542 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   38522	     36785 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14108	     85524 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   35014	     34506 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14784	     80063 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15487	     73587 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   35566	     36834 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33934	     31257 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14992	     83039 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34850	     35704 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13998	     82497 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15744	     76818 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   35722	     34902 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   36722	     33357 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   15201	     82133 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   33496	     35366 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13396	     85493 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15255	     78457 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   32282	     34848 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35178	     31290 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13785	     87092 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34311	     34312 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14694	     86417 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15487	     78025 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   32653	     37105 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35604	     31985 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12934	     81293 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   36660	     35765 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12482	     88601 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14888	     78159 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   30957	     36445 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   36940	     32567 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13760	     83772 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34376	     35786 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14694	     87552 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15344	     77866 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   35437	     33544 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   39394	     32823 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14707	     80270 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   37422	     34648 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13634	     82065 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15178	     76301 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   36980	     33187 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   38778	     30290 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13963	     84670 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   36264	     32932 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14940	     85620 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14989	     81736 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33909	     43627 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   23965	     42837 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    110027 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   26594	     48405 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13102	     84142 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15010	     80280 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   35748	     36733 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34405	     35168 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11379	    112795 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29449	     37734 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    110312 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12711	     98259 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33538	     39376 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33783	     37295 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13450	     88908 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34094	     36794 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    113706 ns/op	   98682 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13144	     86026 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   34196	     36833 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   37525	     32955 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13390	     90992 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   30126	     36517 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13143	     87237 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14690	     80974 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   32866	     36784 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   38389	     32357 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13693	     92031 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   33297	     34838 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12957	     83387 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   16002	     79818 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27404	     37897 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   40345	     33988 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    9372	    107287 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29934	     45762 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13519	     86976 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15322	     79176 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   31302	     35062 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34183	     31053 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14325	     84361 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34784	     35382 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14260	     92293 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13737	     85509 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27066	     37649 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35557	     34202 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12442	    116086 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   32420	     40193 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    7898	    167136 ns/op	   98684 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10082	    110321 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27351	     38239 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33924	     38278 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12802	     94437 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   31944	     39071 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13116	     91842 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14258	     84168 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27012	     39032 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   37423	     32884 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13957	     83095 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28284	     46518 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    9873	    103712 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13840	     84186 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   31610	     39464 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   36225	     31595 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14660	     82061 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   36104	     34776 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13707	     84337 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15367	     94508 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   25450	     45167 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   32530	     31641 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   15009	     81951 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   35251	     41234 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12544	     91537 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13470	     85894 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27147	     39995 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34573	     33760 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13425	     97713 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   32976	     39639 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12412	    103954 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14251	     85474 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29107	     37860 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35440	     37951 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13090	     93708 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   34663	     37107 ns/op	   98683 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    105935 ns/op	   98682 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13693	    112922 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   24568	     41313 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   36757	     34043 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13038	     81093 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   32637	     33743 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13971	     81606 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15952	     77061 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29173	     35804 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33380	     33944 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12816	     93407 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   33247	     38310 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12370	     90106 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13929	     77378 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   34537	     36573 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35733	     36137 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14470	     88782 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   32128	     37029 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12955	     95470 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13161	     93991 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   30278	     42152 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34392	     33880 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12909	     96048 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   30805	     42081 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12134	     88619 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13015	     87132 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33710	     36056 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   38854	     32676 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14481	     83523 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   36602	     33755 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14437	     81983 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15910	     79407 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33661	     33620 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   39682	     32057 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14803	     87650 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29544	     45322 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   11720	     88509 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15022	     74907 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   32167	     36717 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   39879	     36322 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    8206	    183651 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   21852	     49654 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12000	     95717 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12948	     86695 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   31000	     43632 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   29662	     39574 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11552	    110396 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28959	     42348 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    123354 ns/op	   98682 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12705	    119174 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   20137	     70523 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   28875	     47788 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12159	    110418 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   30001	     41604 ns/op	   98683 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    9622	    114448 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10000	    105942 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   23125	     45627 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   25642	     39592 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    106790 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   22746	     44941 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10222	    125251 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12222	    121633 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   18188	     56419 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   29457	     44369 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11071	     98620 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28471	     42851 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12128	     98093 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12632	     95777 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   24094	     45706 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   25132	     41179 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    118703 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   17384	     59561 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10330	    110274 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12870	     93532 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   25828	     42221 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   32919	     59679 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    7449	    135938 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   24434	     41313 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    9348	    114314 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12559	     98594 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   26689	     47227 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   31393	     47287 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11500	     97595 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   23983	     46531 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   11556	    105679 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10000	    101478 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27896	     41641 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   25873	     41786 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    114765 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   23532	     48356 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   11766	     93619 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10000	    104603 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   24633	     41496 ns/op	   98700 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33537	     43818 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11304	    118322 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   31776	     50664 ns/op	   98683 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    8060	    156148 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10444	     96458 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29593	     42663 ns/op	   98699 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   31255	     37205 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    123998 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   24015	     54739 ns/op	   98684 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline-2      	    8426	    129119 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	    7567	    146100 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   17523	     95663 ns/op	   98701 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   16166	     68215 ns/op	   98764 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    7302	    169753 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   19176	     60926 ns/op	   98684 B/op	      11 allocs/op
+PASS
