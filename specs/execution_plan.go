@@ -363,7 +363,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	defer release()
 	started := reportSpecStarted(rep, name, path)
 	message, output, ran := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
-	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output, Filtered: !ran})
+	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})
 	return proposalControllerResult{}
 }
 
@@ -692,7 +692,7 @@ func runIsolatedCaseDirect(backend testBackend, program []Instruction, path Path
 				inst.Fn(ctx)
 			}()
 		}
-		result.Failed = result.Failed || ctx.failed
+		result.Failed = result.Failed || ctx.hasFailed()
 		release()
 		result.ContextReset = true
 	}()

@@ -162,7 +162,7 @@ func TestBytecodeRunnerRunParallelRecoversPanicSiblingsStillRun(t *testing.T) {
 // a fatal assertion panics with when abortOnFatal is set) is not double-reported as an unexpected
 // panic — mirrors scheduler.go's runWorkerSpec test coverage.
 func TestBytecodeRunnerRunParallelDoesNotDoubleReportExpectedAbort(t *testing.T) {
-	results := make([]parallelFailure, 1)
+	results := make([]failureRecord, 1)
 	backend := &parallelBackend{results: &results, specIndex: 0, abortOnFatal: true}
 	code := []instruction{{fn: func(c *Context) { c.backend.FailNow() }}}
 	runBytecodeWorkerSpec(code, 0, 1, &Context{backend: backend}, &results, 0)

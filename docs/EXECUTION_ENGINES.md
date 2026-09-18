@@ -137,11 +137,12 @@ of the others.
 
 Two asymmetries are **deliberate** and must not be "consolidated" away:
 
-- **`ctx.failed` scope.** `Runner` clears it at the top of every spec (`runner.go:221`) because `FailFast`
-  asks *did this spec fail*. Every other engine leaves it cumulative — *did any spec fail*. Pinned by
+- **Failure-record scope.** `Runner` clears `ctx.failure` at the top of every spec (`runner.go:221`)
+  because `FailFast` asks *did this spec fail*. Every other engine leaves it cumulative — *did any spec
+  fail*. Read through `ctx.hasFailed()`, the single accessor (#175). Pinned by
   `TestEngineContractFailedFlagScopeIsNotShared`.
 - **Recovery dialect.** Sequential engines report straight to `ctx.backend`; worker goroutines write into
-  an indexed `[]parallelFailure` so output stays deterministic regardless of completion order. These are
+  an indexed `[]failureRecord` so output stays deterministic regardless of completion order. These are
   two rules, not one rule implemented twice.
 
 ---
@@ -173,7 +174,7 @@ turn a recoverable spec panic into a dead process (#171).
    can grow beside it. `recoverSpecFailure` builds the message/output pair and **delegates delivery to
    `reportRecoveredPanic`**; it never touches a backend itself, so #171's guarantees extend unchanged to
    every engine and to any engine added later. `recoverParallelSpecFailure` stays separate because worker
-   goroutines record into an indexed `[]parallelFailure` and touch no backend at all — safe against #171's
+   goroutines record into an indexed `[]failureRecord` and touch no backend at all — safe against #171's
    failure mode by construction, which is precisely why the sequential rule cannot be reused there.
 2. All five sequential recovery sites (`runner.go`, `execution_plan.go` ×2, `block_runner.go`,
    `minimal_runner.go`, `runner_bytecode.go`) now call the one wrapper with the same wire format. As a
@@ -252,7 +253,7 @@ question rather than a feature regression. **That decision is explicitly out of 
 - **Reporting.** `reporterObserver` (Runner) and `specCounter`/`reportSpecFinished` (plan) already emit the
   same `report.EventReporter` events; the duplication is in plumbing, not in the contract. Worth revisiting
   only after Stage 4.
-- **The `ctx.failed` and recovery-dialect asymmetries** in section 2 — both are load-bearing, and both are
+- **The failure-record and recovery-dialect asymmetries** in section 2 — both are load-bearing, and both are
   now pinned by tests so they cannot drift into accidental divergence.
 - **Merging the two recovery dialects into one.** It is tempting, and it would be wrong: the sequential
   rule reports through a backend and therefore needs every `reportRecoveredPanic` guarantee from #171,

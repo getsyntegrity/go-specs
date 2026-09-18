@@ -152,7 +152,7 @@ func TestRunParallelBatched_FatalAssertionStopsSpecBody(t *testing.T) {
 // has no mechanism to run a subtest against a live testing.TB from a worker goroutine) instead of
 // vanishing without a trace.
 func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
-	results := make([]parallelFailure, 1)
+	results := make([]failureRecord, 1)
 	backend := &parallelBackend{specIndex: 0, results: &results}
 
 	var subtestRan bool
@@ -174,7 +174,7 @@ func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
 // package — see runWorker, runWorkerBatched, and parallelStep in program.go), same as any other
 // fatal assertion.
 func TestParallelBackend_RunAbortsSpecWhenAbortOnFatal(t *testing.T) {
-	results := make([]parallelFailure, 1)
+	results := make([]failureRecord, 1)
 	backend := &parallelBackend{specIndex: 0, results: &results, abortOnFatal: true}
 
 	var ranAfter bool

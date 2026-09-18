@@ -3,7 +3,7 @@ package specs
 import "github.com/getsyntegrity/go-specs/snapshots"
 
 // runSnapshot compares value to the stored snapshot for name, or creates/updates it, and returns
-// the verdict without reporting it: Context.Snapshot must fold a mismatch into c.failed before
+// the verdict without reporting it: Context.Snapshot must fold a mismatch into the failure record before
 // triggering Fatalf, since Fatalf ends in runtime.Goexit on a real testing.T and never returns
 // (issue #115), so this calls snapshots.Evaluate directly rather than the Fatalf-reporting
 // RunFromFile. callerFile is the path to the test file (from runtime.Caller(1) in Context.Snapshot).

@@ -59,6 +59,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
+- Every built-in assertion entry point — `specs.EqualTo`, `specs.ExpectT(ctx, x).ToEqual`,
+  `specs.ExpectT(ctx, x).To`, `ctx.Expect(x).ToEqual`, `ctx.Expect(x).To` and `ctx.Snapshot` — now
+  records its failure through one internal path instead of each call site independently mutating
+  failure state and then reporting to the backend. Failure truth used to be represented in several
+  places at once (`Context`'s own flag, the parallel path's recorded message, and the reporter's
+  `SpecResultEvent.Failed`), with each assertion responsible for remembering the right combination;
+  [#115](https://github.com/getsyntegrity/go-specs/issues/115) (snapshot) and
+  [#149](https://github.com/getsyntegrity/go-specs/issues/149) (typed matcher) were two call sites
+  that got it wrong, each reporting a green spec on a run the backend knew had failed. There is now
+  one authoritative failure record, written only by that one path, and `SpecResultEvent.Failed`,
+  `SuiteEndEvent.FailedSpecs` and `FailFast` all derive from it. Internal only: no public API,
+  message text, source attribution or reporter payload changes, and the passing assertion fast path
+  is unchanged — still zero allocations, with no measurable difference on
+  `BenchmarkAssertion_GoSpecs_EqualTo`, `BenchmarkAssertion_GoSpecs_ExpectToEqual` or
+  `BenchmarkMatcher_GoSpecs`. ([#175](https://github.com/getsyntegrity/go-specs/issues/175))
 - **Breaking.** Replaced the exported `CaptureCallerLocation bool` with the concurrency-safe pair
   `SetCaptureCallerLocation(enabled bool)` and `CaptureCallerLocationEnabled() bool`, backed by an
   `atomic.Bool`. Suite construction is documented as safe across concurrent goroutines, so any
@@ -109,6 +124,16 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   API change. ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
 
 ### Fixed
+
+- A parallel spec (`ItParallel`, `RunParallel`, `RunParallelBatched`) that failed with an empty
+  message was reported as a passing spec. The parallel path carried no failure bit at all: every
+  consumer asked whether the recorded message was non-empty, so `ctx.backend.Fatal()` with no
+  arguments, a matcher whose `FailureMessage` returns `""`, and any other empty-text failure were
+  reported to every `report.EventReporter` as `Failed: false`, skipped entirely by the internal
+  `reportFailures` (so a plain `go test` run never printed them either), and left the group's parent
+  `Context` unfailed, so `FailFast` ran straight past them. A silent green on a red run, in all three
+  consumers at once. The failure bit is now recorded explicitly and never inferred from the message
+  text. ([#175](https://github.com/getsyntegrity/go-specs/issues/175))
 
 - **Breaking.** An assertion handle from `ctx.Expect(x)` or `specs.ExpectT(ctx, x)` could be used
   more than once, and the second use was a false green. The first `To`/`ToEqual` call returned the
