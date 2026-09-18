@@ -5,27 +5,29 @@ import (
 	"testing"
 )
 
-// Allocation contracts (issue #178).
+// Runner allocation contracts (issue #178).
 //
-// README.md, docs/ARCHITECTURE.md and docs/BENCHMARKS.md all advertise "zero allocations on the
-// assertion fast path" and "no per-spec allocation in the runner loop". Until now nothing enforced
-// either claim: the benchmarks printed allocs/op, but a benchmark that prints 3 allocs/op instead
-// of 0 still exits 0, so a regression could only be caught by a human reading a table.
+// README.md and docs/ARCHITECTURE.md advertise "no per-spec allocation in the runner loop" and
+// "zero allocations in the loop". Nothing enforced it: the benchmarks printed allocs/op, but a
+// benchmark reporting 3 allocs/op instead of 0 still exits 0, so a regression could only be caught
+// by a human reading a table.
 //
-// These tests turn the subset of those claims that is a *supported guarantee* into a gate. They are
-// deliberately narrow. A path appears here only when allocating nothing is an intentional design
-// commitment we would treat a regression in as a bug, not merely something that happens to measure
-// zero today. BENCHMARKS.md records which claims are contractual (pinned here) and which are
-// observational (measured, never asserted).
+// Scope. The *assertion* half of the allocation contract already lives in
+// assertion_allocations_test.go, where TestAssertionAllocationsByValueShape pins the published
+// per-form, per-value-shape table with exact counts in both directions (#177). That test is the
+// authority on assertions and this file does not restate it -- an earlier draft of this file did,
+// and got it wrong: it asserted zero for `ctx.Expect(str).ToEqual(str)`, which really costs two,
+// and passed only because a string built from a literal inside the test function is folded away by
+// the compiler before the assertion ever sees it. Duplicating a contract in weaker form is worse
+// than not duplicating it, because the weaker copy is the one that goes green.
+//
+// What is left here is what that table does not reach: the runner loops, plus the two assertion
+// shapes whose cost is structural rather than value-dependent (valueless matchers, and the error
+// idiom the docs recommend).
 //
 // Wall-clock cost is never asserted anywhere: ns/op depends on the machine, and a shared CI runner
 // is the worst place on earth to measure it. Allocation counts, by contrast, are a property of the
 // generated code, so they are stable across machines and safe to gate on.
-//
-// TestPassingAssertionsAllocateNothingOnTheFastPath in expectation_reuse_test.go is the older,
-// narrower sibling of the assertion contracts below: it guards the specific regression that
-// removing the Expectation pool could have introduced (#170), on int values only. It stays where
-// its story is. This file widens the surface to other value shapes, the matchers and the runners.
 
 // allocContractRuns is the sample size handed to testing.AllocsPerRun. The counts pinned below are
 // integers on every run, so this only needs to be large enough to amortise a stray one-off; it is
@@ -42,69 +44,16 @@ func assertNoAllocations(t *testing.T, path string, f func()) {
 	}
 }
 
-// allocContractPoint is a comparable struct wider than a machine word. Width is the point: it is
-// the shape that used to cost an allocation on the typed path, and pinning it on both EqualTo and
-// ExpectT is what makes "for a T of any size" a gate rather than a sentence in a README.
-type allocContractPoint struct {
-	X int
-	Y string
-}
-
-// TestEqualToAllocatesNothingForAnyComparable pins the strongest form of the headline claim.
-// EqualTo is a free generic function: it compares its two T values with == and never stores them
-// anywhere, so nothing is boxed and nothing can escape, whatever T is. That holds for a comparable
-// struct just as it does for an int, which is what makes this the path to reach for in a hot loop.
-func TestEqualToAllocatesNothingForAnyComparable(t *testing.T) {
-	ctx := NewContext(t)
-	text := "syntegrity"
-	value := allocContractPoint{X: 7, Y: "seven"}
-
-	assertNoAllocations(t, "EqualTo(ctx, int, int)", func() { EqualTo(ctx, 42, 42) })
-	assertNoAllocations(t, "EqualTo(ctx, string, string)", func() { EqualTo(ctx, text, "syntegrity") })
-	assertNoAllocations(t, "EqualTo(ctx, struct, struct)", func() {
-		EqualTo(ctx, value, allocContractPoint{X: 7, Y: "seven"})
-	})
-}
-
-// TestExpectTAllocatesNothingForAnyComparable pins the fluent typed form at the same strength as
-// EqualTo above: zero allocations for a comparable T of any size, structs included.
-//
-// The guarantee has two independent sources, and both must hold. ExpectT holds the value in
-// typedExpectation[T].actual, which is a T and not an `any`, so there is no interface conversion to
-// heap-allocate a value the runtime does not hand out for free (#177). The handle behind it does
-// not escape the assertion that consumes it, so escape analysis stack-allocates it. Neither source
-// depends on the width of T, which is why the wide struct belongs here rather than in an
-// observational footnote.
-//
-// A wide comparable struct used to be excluded from this contract, back when the typed handle held
-// a *Expectation whose `actual` field was an `any` and a struct too wide to stay on the stack was
-// boxed on the heap. That is no longer how the code works, and the old exception is gone with it.
-//
-// To(Matcher) is the one typed path still outside this contract, and for a reason no rewrite here
-// can remove: Matcher is Match(any), so the value must become an interface before a matcher can see
-// it. That cost is measured by TestAssertionAllocationsByValueShape and recorded in BENCHMARKS.md
-// as an observation.
-func TestExpectTAllocatesNothingForAnyComparable(t *testing.T) {
-	ctx := NewContext(t)
-	text := "syntegrity"
-	value := allocContractPoint{X: 7, Y: "seven"}
-
-	assertNoAllocations(t, "ExpectT(ctx, int).ToEqual(int)", func() { ExpectT(ctx, 42).ToEqual(42) })
-	assertNoAllocations(t, "ExpectT(ctx, string).ToEqual(string)", func() { ExpectT(ctx, text).ToEqual("syntegrity") })
-	assertNoAllocations(t, "ExpectT(ctx, bool).ToEqual(bool)", func() { ExpectT(ctx, true).ToEqual(true) })
-	assertNoAllocations(t, "ExpectT(ctx, struct).ToEqual(struct)", func() {
-		ExpectT(ctx, value).ToEqual(allocContractPoint{X: 7, Y: "seven"})
-	})
-}
-
 // TestValuelessMatchersAllocateNothing covers the matchers that carry no expected value. They hold
-// no state, so putting one behind the Matcher interface costs nothing.
+// no state, so putting one behind the Matcher interface costs nothing, and the asserted value is a
+// bool or a nil interface -- both of which the runtime converts for free at every width there is.
 //
-// Matchers that *do* capture an expected value (Equal, NotEqual, Contain) are excluded on purpose:
-// each one costs a single allocation for the matcher value itself. That is inherent to the design,
-// not a regression, so it is documented as observational rather than pinned here.
+// That last point is why these rows are safe here while the value-shaped ones belong in
+// TestAssertionAllocationsByValueShape: there is no wide variant of `true` for a compiler
+// optimisation to hide. Matchers that *do* capture an expected value (Equal, NotEqual, Contain) are
+// excluded, because their cost depends on the value and is pinned in that table instead.
 func TestValuelessMatchersAllocateNothing(t *testing.T) {
-	ctx := NewContext(t)
+	ctx, _ := newCapturedContext()
 	var nilErr error
 
 	assertNoAllocations(t, "ExpectT(ctx, true).To(BeTrue())", func() { ExpectT(ctx, true).To(BeTrue()) })
@@ -113,31 +62,18 @@ func TestValuelessMatchersAllocateNothing(t *testing.T) {
 }
 
 // TestErrorClassificationAllocatesNothing pins the shape the docs recommend for errors: classify
-// with errors.Is/errors.As and feed the boolean into a typed expectation. The recommended idiom
-// stays on the fast path; if it ever stops doing so, the recommendation is what needs revisiting.
+// with errors.Is/errors.As and feed the boolean into a typed expectation. errors.Is is a real call
+// the compiler cannot fold away, and what reaches the assertion is a bool, so this measures the
+// idiom rather than a constant. If the recommended idiom ever stops being free, the recommendation
+// is what needs revisiting.
 func TestErrorClassificationAllocatesNothing(t *testing.T) {
-	ctx := NewContext(t)
+	ctx, _ := newCapturedContext()
 	sentinel := errors.New("boom")
 	wrapped := errors.Join(sentinel)
 
 	assertNoAllocations(t, "ExpectT(ctx, errors.Is(err, sentinel)).To(BeTrue())", func() {
 		ExpectT(ctx, errors.Is(wrapped, sentinel)).To(BeTrue())
 	})
-}
-
-// TestUntypedExpectStaysAllocationFreeOnThePassingPath covers ctx.Expect, which takes `any`. It is
-// listed separately from the typed path because the guarantee has a different source: the value is
-// already an `any` at the call site, and the Expectation holding it does not escape the assertion
-// that consumes it, so escape analysis keeps both off the heap for the shapes below.
-// Only the passing path is covered -- a *failing* assertion formats a message and is expected to
-// allocate, which is fine, because a failing suite is not a hot path.
-func TestUntypedExpectStaysAllocationFreeOnThePassingPath(t *testing.T) {
-	ctx := NewContext(t)
-	text := "syntegrity"
-
-	assertNoAllocations(t, "ctx.Expect(int).ToEqual(int)", func() { ctx.Expect(42).ToEqual(42) })
-	assertNoAllocations(t, "ctx.Expect(string).ToEqual(string)", func() { ctx.Expect(text).ToEqual("syntegrity") })
-	assertNoAllocations(t, "ctx.Expect(bool).To(BeTrue())", func() { ctx.Expect(true).To(BeTrue()) })
 }
 
 // Suite sizes for the runner-loop contract. The contract is about *growth*, so what matters is the
@@ -153,14 +89,13 @@ const (
 // (one pooled buffer more or less is not a contract violation) and would miss the actual claim,
 // which is that per-spec cost is zero: whatever fixed setup a run does, it must not scale with the
 // number of specs.
-func assertRunnerLoopDoesNotAllocatePerSpec(t *testing.T, runner string, build func(n int) func(testing.TB)) {
+func assertRunnerLoopDoesNotAllocatePerSpec(t *testing.T, runner string, run func(n int) func(testing.TB), tb testing.TB) {
 	t.Helper()
 
-	small := build(allocContractSmallSuite)
-	large := build(allocContractLargeSuite)
+	small, large := run(allocContractSmallSuite), run(allocContractLargeSuite)
 
-	smallAllocs := testing.AllocsPerRun(allocContractRuns, func() { small(t) })
-	largeAllocs := testing.AllocsPerRun(allocContractRuns, func() { large(t) })
+	smallAllocs := testing.AllocsPerRun(allocContractRuns, func() { small(tb) })
+	largeAllocs := testing.AllocsPerRun(allocContractRuns, func() { large(tb) })
 
 	if largeAllocs > smallAllocs {
 		perSpec := (largeAllocs - smallAllocs) / float64(allocContractLargeSuite-allocContractSmallSuite)
@@ -179,7 +114,7 @@ func TestMinimalRunnerLoopAllocatesNothingPerSpec(t *testing.T) {
 			r.Add("spec", func(ctx *Context) { EqualTo(ctx, 1, 1) })
 		}
 		return r.Run
-	})
+	}, t)
 }
 
 // TestBlockRunnerLoopAllocatesNothingPerSpec is the same contract for the block-compiled runner,
@@ -193,7 +128,7 @@ func TestBlockRunnerLoopAllocatesNothingPerSpec(t *testing.T) {
 		}
 		fns, blocks := CompileBlocks(specs, 16)
 		return NewBlockRunner(fns, blocks).Run
-	})
+	}, t)
 }
 
 // flatTB is a testing.TB that reports failures to a real *testing.T but is not one itself.
@@ -206,8 +141,8 @@ func TestBlockRunnerLoopAllocatesNothingPerSpec(t *testing.T) {
 //
 // testing.TB has an unexported private() method so external types cannot satisfy it; the interface
 // is embedded rather than implemented, and the embedded value is the real *testing.T so that any
-// method not overridden here still behaves. Only Run is overridden, and only to keep the runner off
-// the subtest path.
+// method not overridden here still behaves. Only Helper is overridden, to keep the measured
+// function free of bookkeeping the runners do not share with the other two.
 type flatTB struct {
 	testing.TB
 }
@@ -218,9 +153,7 @@ func (flatTB) Helper() {}
 // execution plan, the runner the public Describe/It DSL builds. See flatTB for why the subtest path
 // is excluded.
 func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
-	flat := flatTB{TB: t}
-
-	build := func(n int) func(testing.TB) {
+	assertRunnerLoopDoesNotAllocatePerSpec(t, "compiled Program runner", func(n int) func(testing.TB) {
 		b := NewBuilder()
 		b.Describe("suite", func() {
 			b.BeforeEach(func(*Context) {})
@@ -229,17 +162,5 @@ func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 			}
 		})
 		return NewRunner(b.Build()).Run
-	}
-
-	small := build(allocContractSmallSuite)
-	large := build(allocContractLargeSuite)
-
-	smallAllocs := testing.AllocsPerRun(allocContractRuns, func() { small(flat) })
-	largeAllocs := testing.AllocsPerRun(allocContractRuns, func() { large(flat) })
-
-	if largeAllocs > smallAllocs {
-		perSpec := (largeAllocs - smallAllocs) / float64(allocContractLargeSuite-allocContractSmallSuite)
-		t.Errorf("compiled Program runner allocates per spec: %d specs cost %.1f allocations, %d specs cost %.1f (~%.4f per spec, want 0)",
-			allocContractSmallSuite, smallAllocs, allocContractLargeSuite, largeAllocs, perSpec)
-	}
+	}, flatTB{TB: t})
 }

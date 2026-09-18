@@ -87,12 +87,19 @@ the machine, so they are stable across runners and safe to gate a PR on.
 
 | Guarantee | Pinned by |
 | --------- | --------- |
-| `EqualTo(ctx, a, b)` allocates nothing for **any** comparable `T`, structs included | `TestEqualToAllocatesNothingForAnyComparable` |
-| `ExpectT(ctx, v).ToEqual(w)` allocates nothing for **any** comparable `T`, structs included | `TestExpectTAllocatesNothingForAnyComparable` |
+| The **published per-form, per-value-shape allocation table**: `EqualTo` and `ExpectT(...).ToEqual` cost nothing for any comparable `T` at any width; `ExpectT(...).To(matcher)` and `ctx.Expect(...)` cost exactly the interface conversions their signatures force | `TestAssertionAllocationsByValueShape` (`specs/assertion_allocations_test.go`) |
 | Valueless matchers (`BeTrue`, `BeFalse`, `BeNil`) allocate nothing | `TestValuelessMatchersAllocateNothing` |
 | The recommended error idiom, `errors.Is(...)` fed into `ExpectT(...).To(BeTrue())`, allocates nothing | `TestErrorClassificationAllocatesNothing` |
-| `ctx.Expect(v)` allocates nothing on the **passing** path | `TestUntypedExpectStaysAllocationFreeOnThePassingPath`, `TestPassingAssertionsAllocateNothingOnTheFastPath` |
 | The runner loop has **no per-spec allocation**: 5000 specs cost no more allocations than 100 | `TestMinimalRunnerLoopAllocatesNothingPerSpec`, `TestBlockRunnerLoopAllocatesNothingPerSpec`, `TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath` |
+
+`TestAssertionAllocationsByValueShape` is the authority on assertions, and it pins **exact
+counts in both directions** -- so a cost that silently grows *or* disappears fails the
+build. It builds its probe values in `init()` rather than writing them as literals, which
+matters more than it looks: a string or struct written inline in a test function is folded
+by the compiler before the assertion sees it, so a naive test measures the optimiser and
+reports a zero the real code path does not deliver. Note in particular that
+`ctx.Expect(str).ToEqual(str)` costs **two** allocations for a real string, one per operand
+-- it is *not* allocation-free, and only the small-integer case looks like it is.
 
 ## Observational — measured, never asserted
 
@@ -102,11 +109,11 @@ These are true today and worth knowing. None of them fails a build.
   the runner and what else is on the box. No shared-CI job asserts a timing threshold.
 - **Comparisons against Testify and Gomega.** They pin the shape of the difference, not
   a ratio; see [benchmarks/COMPARISON.md](benchmarks/COMPARISON.md).
-- **Value-capturing matchers cost one allocation.** `Equal(x)`, `NotEqual(x)` and
-  `Contain(x)` allocate once for the matcher value itself. That is inherent to boxing a
-  matcher behind the `Matcher` interface, not a regression, so it is not pinned.
-  `EqualTo` / `ExpectT().ToEqual()` are the allocation-free route.
-- **`ExpectT(...).To(matcher)` costs one allocation for most values.** `Matcher` is
+- **Constructing a value-capturing matcher costs one allocation.** `Equal(x)`,
+  `NotEqual(x)` and `Contain(x)` allocate once for the matcher value itself. Build the
+  matcher outside a hot loop if it is constant, as the benchmarks and the allocation table
+  do, so the cost is attributed to the matcher rather than to the assertion.
+- **`ExpectT(...).To(matcher)` costs one further allocation for most values.** `Matcher` is
   `Match(any)`, so the value becomes an interface before a matcher can see it, and for a
   value Go does not convert for free that conversion allocates once. Nothing in `ExpectT`
   can remove it — only a generic `Matcher[T]` would — so it is measured by
