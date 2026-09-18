@@ -27,9 +27,10 @@ type Target struct {
 // ParseTarget parses one "format:path" spelling, the shape issue #141 illustrates for
 // `-go-specs.report=format:path` (e.g. "xml:artifacts/report.xml"). It only parses one
 // already-resolved string, however the caller obtained it (a flag, an env var, direct
-// construction) — wiring this into `go test`'s own flag parsing across concurrent per-package
-// binaries, and merging their outputs, is deferred to a follow-up (see package doc in events.go
-// and the multi-package note in this file's MultiFormatReporter doc).
+// construction). Activating reporting across concurrent per-package binaries and merging their
+// outputs is not done through this function: that is the shard protocol in report/coordination,
+// which is driven by environment variables rather than by `go test`'s flag parsing, precisely
+// because a custom flag breaks every package that does not register it.
 func ParseTarget(s string) (Target, error) {
 	format, path, ok := strings.Cut(s, ":")
 	if !ok || path == "" {
@@ -49,10 +50,11 @@ func ParseTarget(s string) (Target, error) {
 // collects events (Report() and Collector's other methods work normally) but Flush writes no
 // files at all — reporting only activates for the targets the caller explicitly passed in.
 //
-// MultiFormatReporter renders one process's events. It does not itself coordinate multiple
-// concurrent `go test` package binaries writing to the same paths — pass distinct paths per
-// package (e.g. include the package name) until a shard-and-merge mechanism for `go test ./...`
-// lands; see issue #141's "Multi-package constraint".
+// MultiFormatReporter renders one process's events and writes them to this process's own target
+// paths. It does not coordinate multiple concurrent `go test` package binaries, and is not meant
+// to: for a module-wide `go test ./...` run, each package publishes one isolated shard through
+// report/coordination and a separate finalize step merges them. Report() is what a producer hands
+// to coordination.ShardWriter.Write. See docs/REPORTING.md, "Multi-package reporting".
 type MultiFormatReporter struct {
 	*Collector
 	targets []Target
