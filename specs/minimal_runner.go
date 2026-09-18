@@ -8,6 +8,7 @@
 package specs
 
 import (
+	"fmt"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -65,7 +66,7 @@ const RunBatchSize = 8
 // Specs are run in batches of RunBatchSize to improve cache behavior and reduce loop overhead.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure (via
-// ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec still runs —
+// reportRecoveredPanic, message and stack trace), and the next spec still runs —
 // same contract as BlockRunner.Run and the default execution path.
 func (r *MinimalRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
@@ -98,8 +99,7 @@ func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+			reportRecoveredPanic(ctx, fmt.Sprintf("panic: %v", recovered), string(debug.Stack()))
 		}
 	}()
 	fn(ctx)
