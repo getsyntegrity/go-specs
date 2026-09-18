@@ -19,10 +19,11 @@ const undeliverablePanicPrefix = "specs: recovered panic could not be reported t
 // engine's recovery defer should call.
 //
 // The failure is recorded on ctx first and unconditionally, because that is what survives a missing
-// backend: ctx.failed drives FailFast, and the message/output the caller returns still reach the
-// reporter's SpecResultEvent. Delivery to the backend is best effort on top of that. When it cannot
-// happen — no backend, a released one, or one that panics while reporting — the panic is written to
-// stderr instead of being swallowed. A panic that cannot be reported is never converted into a pass.
+// backend: the recorded failure drives FailFast, and the message/output the caller returns still
+// reach the reporter's SpecResultEvent. Delivery to the backend is best effort on top of that. When
+// it cannot happen — no backend, a released one, or one that panics while reporting — the panic is
+// written to stderr instead of being swallowed. A panic that cannot be reported is never converted
+// into a pass.
 //
 // message and output keep the wire format every engine already used: Errorf("%s\n%s", ...).
 func reportRecoveredPanic(ctx *Context, message, output string) {
