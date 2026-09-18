@@ -201,22 +201,12 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 	}
 }
 
-// runWorkerSpec runs one spec body, recovering the parallelAbort{} sentinel a fatal assertion
-// panics with when backend.abortOnFatal is set (see parallelBackend.FailNow/Fatal/Fatalf) — an
-// expected stop, already recorded in results[idx], not a failure to report. Any other panic is
-// recorded as an ordinary spec failure instead of crashing the worker goroutine. Mirrors
-// parallelStep's per-spec recover in program.go, applied per spec here too so one spec's fatal
-// assertion or panic doesn't stop the worker from running the rest of its specs.
+// runWorkerSpec runs one spec body on a worker goroutine, recording a recovered panic into
+// results[idx] via recoverParallelSpecFailure (see panic_report.go for the rule, shared with
+// runBytecodeWorkerSpec and parallelStep). Applied per spec so one spec's fatal assertion or panic
+// doesn't stop the worker from running the rest of its specs.
 func runWorkerSpec(fn func(*Context), ctx *Context, results *[]failureRecord, idx int) {
-	defer func() {
-		switch r := recover(); r {
-		case nil, parallelAbort{}:
-		default:
-			if !(*results)[idx].Failed {
-				(*results)[idx] = failureRecord{Failed: true, Message: fmt.Sprintf("panic: %v", r)}
-			}
-		}
-	}()
+	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
 	fn(ctx)
 }
 

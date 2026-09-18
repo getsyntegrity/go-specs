@@ -6,7 +6,6 @@
 package specs
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -231,18 +230,9 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 					started = obs.specStarted(name, path)
 				}
 				defer func() {
-					switch r := recover(); r {
-					case nil:
-						// spec ran to completion (or a Fatal/Fatalf/FailNow already returned
-						// normally via a different path — not reachable with abortOnFatal, kept
-						// for clarity).
-					case parallelAbort{}:
-						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
-					default:
-						if !results[i].Failed {
-							results[i] = failureRecord{Failed: true, Message: fmt.Sprintf("panic: %v", r)}
-						}
-					}
+					// Recording rule shared with the worker-pool engines — see panic_report.go. Only
+					// the reporting and release below are specific to this path.
+					recoverParallelSpecFailure(recover(), &results, i)
 					if obs != nil {
 						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message})
 					}

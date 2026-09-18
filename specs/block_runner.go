@@ -4,8 +4,6 @@
 package specs
 
 import (
-	"fmt"
-	"runtime/debug"
 	"testing"
 )
 
@@ -92,11 +90,7 @@ func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 // of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
 // recorded by the backend and must not be reported a second time.
 func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			reportRecoveredPanic(ctx, fmt.Sprintf("panic: %v", recovered), string(debug.Stack()))
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 

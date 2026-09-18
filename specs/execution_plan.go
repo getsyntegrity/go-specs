@@ -3,8 +3,6 @@ package specs
 
 import (
 	"context"
-	"fmt"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -561,11 +559,7 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) (message,
 		}
 	}
 	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			message = fmt.Sprintf("panic: %v", recovered)
-			output = string(debug.Stack())
-			reportRecoveredPanic(ctx, message, output)
-		}
+		message, output = recoverSpecFailure(ctx, recover(), "panic")
 		for _, inst := range after {
 			m, o := runAfterInstructionRecovered(ctx, inst)
 			if message == "" {
@@ -588,13 +582,7 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) (message,
 // can't stop the remaining after-hooks for this spec. message/output follow the same build-once
 // contract as runProgram's own panic recovery — see its doc comment.
 func runAfterInstructionRecovered(ctx *Context, inst Instruction) (message, output string) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			message = fmt.Sprintf("panic in after hook: %v", recovered)
-			output = string(debug.Stack())
-			reportRecoveredPanic(ctx, message, output)
-		}
-	}()
+	defer func() { message, output = recoverSpecFailure(ctx, recover(), "panic in after hook") }()
 	inst.Fn(ctx)
 	return
 }

@@ -8,9 +8,7 @@
 package specs
 
 import (
-	"fmt"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"testing"
 )
@@ -97,11 +95,7 @@ func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 // of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
 // recorded by the backend and must not be reported a second time.
 func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			reportRecoveredPanic(ctx, fmt.Sprintf("panic: %v", recovered), string(debug.Stack()))
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 
