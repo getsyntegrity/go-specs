@@ -112,11 +112,14 @@ func Evaluate(helper HelperBackend, callerFile string, name string, value any) R
 		return Result{Message: fmt.Sprintf("snapshot %q missing; run with %s=1 to create", name, UpdateSnapshotsEnv)}
 	}
 
-	var existingVal, newVal any
-	if err := json.Unmarshal(existing, &existingVal); err != nil {
+	// Both sides are normalized before comparison, so key order and formatting are irrelevant while
+	// every digit of a number is preserved. See normalize.go for the full comparison semantics.
+	existingVal, err := normalizeJSON(existing)
+	if err != nil {
 		return Result{Message: fmt.Sprintf("snapshot: unmarshal existing: %v", err)}
 	}
-	if err := json.Unmarshal(newBytes, &newVal); err != nil {
+	newVal, err := normalizeJSON(newBytes)
+	if err != nil {
 		return Result{Message: fmt.Sprintf("snapshot: unmarshal new: %v", err)}
 	}
 	if !reflect.DeepEqual(existingVal, newVal) {

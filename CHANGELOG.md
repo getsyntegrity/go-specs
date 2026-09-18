@@ -98,6 +98,16 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- Snapshot comparison decoded both the stored and the newly marshaled JSON into `any`, where
+  `encoding/json` represents every number as a `float64`. Integers above 2^53 lose their last digits
+  there, so adjacent 64-bit IDs such as `9007199254740992` and `9007199254740993` collapsed onto one
+  value and a genuinely changed snapshot reported a false-positive match. Both sides are now decoded
+  with `json.Decoder.UseNumber()` and each number literal is reduced to an exact canonical form, so
+  precision is preserved at any magnitude. Comparison semantics are unchanged otherwise and are now
+  stated explicitly: two snapshots are equal when they denote the same JSON value, so object key
+  order and whitespace remain irrelevant, and numbers compare by exact numeric value rather than by
+  literal text — `1`, `1.0`, `1e0` and `100e-2` are the same snapshot, as are `0` and `-0`. No stored
+  snapshot needs regeneration. ([#154](https://github.com/getsyntegrity/go-specs/issues/154))
 - `go.mod` declared `module github.com/pablogore/go-specs` while the repository is hosted at `github.com/getsyntegrity/go-specs`, so `go get github.com/getsyntegrity/go-specs@<version>` failed with a module-path mismatch for every external consumer. Corrected the module path and every internal import, doc reference, and CI/script reference to `github.com/getsyntegrity/go-specs`. ([#139](https://github.com/getsyntegrity/go-specs/issues/139))
 
 ### ⚠️ v0.1.0 is broken — do not use
