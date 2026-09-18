@@ -46,6 +46,43 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- A PR-CI step and a `make bench-smoke` target that execute every benchmark body once
+  (`go test -run='^$' -bench=. -benchtime=1x -benchmem ./...`). `go test ./...` never runs a
+  `Benchmark` function, so until now benchmark bodies compiled in CI and were never executed --
+  which is precisely how matcher paths came to be exercised by benchmarks and by nothing else, with
+  a panic on such a path free to ship green. `-benchtime=1x` executes each benchmark for a single
+  iteration: enough to run the path, deliberately useless as a timing, so the step asserts no
+  wall-clock threshold and cannot flake on a throttled shared runner. It adds about 3 seconds to a
+  job that already builds the test binaries. Correctness tests remain the primary contract; this is
+  supplementary coverage. ([#178](https://github.com/getsyntegrity/go-specs/issues/178))
+- `specs/allocation_contract_test.go`, which turns the documented zero-allocation guarantees into
+  assertions that run under `go test ./...`. The docs have claimed "zero allocations on the
+  assertion fast path" and "no per-spec allocation in the runner loop" since the beginning, but
+  nothing enforced either: a benchmark reporting `3 allocs/op` instead of `0` still exits 0, so a
+  regression could only be caught by a human reading a table. `testing.AllocsPerRun` now pins
+  `EqualTo` and `ExpectT(...).ToEqual` for any comparable type, structs included, the valueless
+  matchers, the `errors.Is` idiom, `ctx.Expect` on the passing path, and -- for the minimal, block
+  and compiled `Program` runners -- that 5000 specs cost no more allocations than 100. Allocation
+  counts are a property of the generated code rather than of the machine, which is what makes them
+  safe to fail a PR on where ns/op is not. This also replaces `TestCompiledRunner_ZeroAllocs`, which
+  ran one spec, asserted nothing at all and left a comment telling the reader to check `-benchmem`
+  by hand -- a permanently green test named after a guarantee it never checked. Its name was also
+  wrong: a compiled run costs a small fixed number of allocations for pooled setup (about 2 for one
+  spec), and the real contract is that the number does not grow with spec count.
+  ([#178](https://github.com/getsyntegrity/go-specs/issues/178))
+- A "Contractual vs observational claims" section in [BENCHMARKS.md](BENCHMARKS.md), stating which
+  published performance claims are enforced and which are merely measured, with the README,
+  `docs/BENCHMARKS.md` and `benchmarks/README.md` pointing at it. Writing the contracts surfaced
+  three exceptions the docs had been rounding off: value-capturing matchers (`Equal`, `NotEqual`,
+  `Contain`) cost one allocation for the matcher value; `ExpectT(...).To(matcher)` costs one for the
+  interface conversion `Matcher`'s `Match(any)` signature forces, which is why `ToEqual` is the
+  allocation-free route for equality; and handing a runner a real `*testing.T` opens a `t.Run`
+  subtest per spec, costing tens of allocations each -- the deliberate price of per-spec identity in
+  `go test -v`, and the reason the runner contracts measure the flat path. Value width is *not*
+  among them: since [#177](https://github.com/getsyntegrity/go-specs/issues/177) the typed handle
+  holds its value at its own type, so `ExpectT(...).ToEqual` stays at zero for a comparable struct
+  just as `EqualTo` does, and the contract pins that rather than excusing it.
+  ([#178](https://github.com/getsyntegrity/go-specs/issues/178))
 - `specs.MatchError(target)` and `specs.MatchErrorAs(&target)` (re-exported from `assert`), the
   explicit spellings for error assertions. `MatchError` states at the call site the `errors.Is`
   semantics `specs.Equal` now applies to errors; `MatchErrorAs` is the only way to reach `errors.As`

@@ -46,11 +46,91 @@ See [benchmarks/README.md](benchmarks/README.md) for categories and scripts.
 go test ./benchmarks -run='^$' -bench=. -benchmem
 ```
 
+For real numbers, use `make bench-report` (10 iterations) or read the charts that
+`benchmarks.yml` publishes from `main`.
+
+---
+
+# Benchmarks in PR CI
+
+`go test ./...` never runs a `Benchmark` function. Benchmark bodies therefore compile
+in CI and are never executed, which once let matcher code paths be exercised by
+benchmarks and by nothing else — a panic on such a path would have shipped green.
+
+`make bench-smoke` closes that gap and runs on every PR:
+
+```
+go test -run='^$' -bench=. -benchtime=1x -benchmem ./...
+```
+
+`-benchtime=1x` runs each benchmark for exactly one iteration. That is enough to
+**execute** the path and far too little to **measure** it, which is the whole design:
+a shared CI runner is throttled and noisy, so this step asserts no wall-clock
+threshold and cannot fail on a slow machine. It costs roughly three seconds.
+
+Correctness tests remain the primary contract. Benchmark execution is supplementary
+coverage — it proves the code runs, not that it runs fast.
+
+---
+
+# Contractual vs observational claims
+
+Not every number this project publishes is a promise. The distinction matters, because
+a *contract* is something a PR may fail on and a maintainer must fix, while an
+*observation* is a measurement that is allowed to move.
+
+## Contractual — enforced by `go test ./...`
+
+Pinned in [`specs/allocation_contract_test.go`](specs/allocation_contract_test.go) with
+`testing.AllocsPerRun`. Allocation counts are a property of the generated code, not of
+the machine, so they are stable across runners and safe to gate a PR on.
+
+| Guarantee | Pinned by |
+| --------- | --------- |
+| `EqualTo(ctx, a, b)` allocates nothing for **any** comparable `T`, structs included | `TestEqualToAllocatesNothingForAnyComparable` |
+| `ExpectT(ctx, v).ToEqual(w)` allocates nothing for **any** comparable `T`, structs included | `TestExpectTAllocatesNothingForAnyComparable` |
+| Valueless matchers (`BeTrue`, `BeFalse`, `BeNil`) allocate nothing | `TestValuelessMatchersAllocateNothing` |
+| The recommended error idiom, `errors.Is(...)` fed into `ExpectT(...).To(BeTrue())`, allocates nothing | `TestErrorClassificationAllocatesNothing` |
+| `ctx.Expect(v)` allocates nothing on the **passing** path | `TestUntypedExpectStaysAllocationFreeOnThePassingPath`, `TestPassingAssertionsAllocateNothingOnTheFastPath` |
+| The runner loop has **no per-spec allocation**: 5000 specs cost no more allocations than 100 | `TestMinimalRunnerLoopAllocatesNothingPerSpec`, `TestBlockRunnerLoopAllocatesNothingPerSpec`, `TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath` |
+
+## Observational — measured, never asserted
+
+These are true today and worth knowing. None of them fails a build.
+
+- **Every ns/op figure**, here and in the README tables. Wall-clock depends on the CPU,
+  the runner and what else is on the box. No shared-CI job asserts a timing threshold.
+- **Comparisons against Testify and Gomega.** They pin the shape of the difference, not
+  a ratio; see [benchmarks/COMPARISON.md](benchmarks/COMPARISON.md).
+- **Value-capturing matchers cost one allocation.** `Equal(x)`, `NotEqual(x)` and
+  `Contain(x)` allocate once for the matcher value itself. That is inherent to boxing a
+  matcher behind the `Matcher` interface, not a regression, so it is not pinned.
+  `EqualTo` / `ExpectT().ToEqual()` are the allocation-free route.
+- **`ExpectT(...).To(matcher)` costs one allocation for most values.** `Matcher` is
+  `Match(any)`, so the value becomes an interface before a matcher can see it, and for a
+  value Go does not convert for free that conversion allocates once. Nothing in `ExpectT`
+  can remove it — only a generic `Matcher[T]` would — so it is measured by
+  `TestAssertionAllocationsByValueShape` rather than pinned. `ToEqual` is the
+  allocation-free route for equality, at any width.
+- **A run of the compiled `Program` runner costs a small, fixed number of allocations**
+  (about 2 for a one-spec suite, 7 for a large one) for pooled setup. The contract is
+  that this number does not grow with spec count, not that it is zero.
+- **The `*testing.T` path allocates per spec.** When the runner is handed a real
+  `*testing.T` it opens a `t.Run` subtest per spec, which costs tens of allocations each
+  inside the standard library. That is the deliberate price of per-spec test identity in
+  `go test -v` output; the allocation-free claim covers the flat path only.
+
+## Not measured in shared CI at all
+
+Wall-clock regression detection. [`tools/perfcheck`](tools/perfcheck) can compare two
+benchmark runs against a threshold, but it belongs on a dedicated, quiet machine —
+running it on a shared GitHub runner would produce flakes, not signal.
+
 ---
 
 # Expected Performance
 
-Typical expectations:
+Observational, not contractual — see above. Typical figures:
 
 | Operation        | ns/op     |
 | ---------------- | --------- |

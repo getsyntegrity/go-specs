@@ -7,7 +7,7 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-report bench-compare fmt fmt-check lint build tidy clean check-go-version
+.PHONY: help test test-race coverage bench bench-smoke bench-report bench-compare fmt fmt-check lint build tidy clean check-go-version
 
 # Default target: show all tasks with short descriptions
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "  make test-race     Run tests with race detector"
 	@echo "  make coverage      Run tests with coverage report (coverage.out)"
 	@echo "  make bench         Quick benchmark run (terminal output)"
+	@echo "  make bench-smoke   Run every benchmark once (path coverage, no timings) -- what CI runs"
 	@echo "  make bench-report  Benchmarks with 10 iterations → benchmarks/results/current.txt"
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
 	@echo "  make fmt           Rewrite tracked Go files with gofmt"
@@ -50,6 +51,21 @@ coverage:
 # Run benchmarks (quick run, output to terminal)
 bench:
 	go test ./benchmarks -run='^$$' -bench=. -benchmem
+
+# Execute every benchmark body exactly once, module-wide.
+#
+# This is coverage, not measurement. `go test ./...` never runs a Benchmark
+# function, so without this target benchmark-only code paths compile and are
+# never executed -- a panic in one ships green. -benchtime 1x runs each
+# benchmark for a single iteration: enough to execute the path, useless as a
+# timing, which is deliberate so that neither this target nor the CI step that
+# calls it ever fails on a slow or noisy machine.
+#
+# Real numbers come from `make bench-report` (or benchmarks.yml on main).
+# Allocation *guarantees* are gated by specs/allocation_contract_test.go under
+# `make test`, not here. See BENCHMARKS.md for contractual vs observational.
+bench-smoke:
+	go test -run='^$$' -bench=. -benchtime=1x -benchmem ./...
 
 # Run benchmarks with multiple iterations and write report to benchmarks/results/current.txt
 bench-report:

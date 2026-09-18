@@ -108,6 +108,31 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
 
+      # Benchmark bodies are code, and until this step they were the only code
+      # in the module that CI compiled but never ran: `go test ./...` skips
+      # every Benchmark function, so a panic, a nil dereference or a matcher
+      # path reachable only from a benchmark shipped green. That is not
+      # hypothetical -- matcher paths in this repo were, for a while, exercised
+      # by benchmarks and by nothing else.
+      #
+      # -benchtime 1x runs each Benchmark exactly once. That is enough to
+      # execute the path and far too little to measure anything, which is the
+      # point: a shared GitHub runner is a noisy, shared, throttled machine, so
+      # this step deliberately asserts no wall-clock threshold. It is coverage,
+      # not measurement. Real numbers come from benchmarks.yml on main, where
+      # -count=5 and a consistent runner make them comparable.
+      #
+      # Performance guarantees are gated separately, by the allocation contract
+      # tests in specs/allocation_contract_test.go, which run under `go test
+      # ./...` above. Allocation counts are a property of the generated code
+      # rather than of the machine, so they are safe to fail a PR on; ns/op is
+      # not. See BENCHMARKS.md for which claims are contractual.
+      #
+      # Cost: about 3 seconds on top of an already-built test binary set, the
+      # whole module included.
+      - name: Execute benchmark code paths
+        run: make bench-smoke
+
   shipwright:
     # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
     # single workflow step with "failed to acquire Dagger client: daemon connected but not

@@ -69,6 +69,7 @@ Full suite run (1000 specs, one assertion per spec). Time per run:
 - **No reflection** — Assertions use generics and direct comparison. The fast path does not use `reflect.DeepEqual` or runtime type switches.
 - **Compiled execution plan** — Suites are compiled once into a flat list of steps. The runner does not resolve hooks or look up specs at run time.
 - **Zero allocations on the typed equality path** — the Context is pooled and the handle never escapes the assertion that consumes it, so it is stack-allocated; `EqualTo` and `ExpectT(...).ToEqual(...)` also hold the value at its own type, so they allocate nothing for a value of any size. The runner loop allocates nothing per spec.
+  The enforced form of this claim, and its exceptions (value-capturing matchers and the `t.Run` subtest path), are listed in [BENCHMARKS.md](../BENCHMARKS.md#contractual-vs-observational-claims).
 - **Simple runner loop** — The runner just iterates over steps and calls `step(ctx)`. No maps, no reflection, no per-spec allocation.
 
 ### Allocation comparison

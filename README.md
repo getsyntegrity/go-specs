@@ -142,6 +142,8 @@ that does allocate on conversion, go-specs' matcher path costs one allocation �
 ### Why go-specs is fast
 
 - **Zero allocations on the typed equality path** — `EqualTo` and `ExpectT(...).ToEqual(...)` allocate nothing on success for a value of any type or size, and the runner loop allocates nothing per spec. The untyped `ctx.Expect(...)` and matcher forms convert the value to an `any`, which costs an allocation for values Go cannot convert for free; the table above gives the exact counts.
+  This is a contract, not just a measurement: it is pinned by allocation tests that run under `go test ./...`, so a regression fails a PR.
+  [BENCHMARKS.md](BENCHMARKS.md#contractual-vs-observational-claims) lists exactly which claims are enforced and which are observational — the ns/op figures above are the latter.
 - **Compiled execution plan** — Suites are compiled once into a fixed program; the runner executes steps via direct function dispatch instead of per-spec lookups or reflection.
 - **No reflection** — Assertions use generics and direct comparison; the fast path avoids `reflect.DeepEqual` and runtime type switches.
 - **Sequential runner loop** — The default runner invokes spec and hook functions in a simple loop with direct calls; no matcher heap allocations or indirection on the hot path. Opt-in parallel paths (`ItParallel`, `RunParallel`, `RunParallelBatched`) trade this loop for a worker pool when a suite benefits from concurrency.
