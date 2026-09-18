@@ -249,11 +249,16 @@ func reportFailures(tb failureReporter, results []parallelFailure) {
 // hook groups (specs sharing a BeforeEach/AfterEach are compiled into one group), not individual
 // specs: group indices are assigned to shards by gi % shardCount == shardIndex. A suite with many
 // specs under one shared hook lands its whole group on a single shard, so shard runtimes can be
-// uneven when hook groups are large or unevenly sized. shardCount must be > 0 and
-// 0 <= shardIndex < shardCount. Allocation happens once to build the shard's Program; the runner
-// loop is allocation-free.
+// uneven when hook groups are large or unevenly sized. shardCount must be >= 1 and
+// 0 <= shardIndex < shardCount; anything else fails the test with an actionable diagnostic instead
+// of running every group, because a shard that silently widened to the whole suite reports green
+// while proving nothing (issue #174). Allocation happens once to build the shard's Program; the
+// runner loop is allocation-free.
 func RunShard(program *Program, tb testing.TB, shardIndex, shardCount int) {
 	if program == nil || tb == nil {
+		return
+	}
+	if !shardConfigOK(tb, shardIndex, shardCount) {
 		return
 	}
 	prog, ok := shardProgram(program, shardIndex, shardCount)
@@ -261,6 +266,20 @@ func RunShard(program *Program, tb testing.TB, shardIndex, shardCount int) {
 		return
 	}
 	NewRunner(prog).Run(tb)
+}
+
+// shardConfigOK reports an unusable shard configuration through tb and returns false. It is
+// tb.Fatalf rather than panic for the reason failUnsupportedSpecBodyParallel gives: a real
+// testing.TB is in hand here, so the failure belongs to the test that asked for the shard, not to
+// go-specs' own frames.
+func shardConfigOK(tb testing.TB, shardIndex, shardCount int) bool {
+	reason, ok := validateShardPartition(shardIndex, shardCount)
+	if ok {
+		return true
+	}
+	tb.Helper()
+	tb.Fatalf("%s", shardConfigMessage(shardIndex, shardCount, reason))
+	return false
 }
 
 // RunShardWithReporter is RunShard with reporting: the runner it builds for the shard's Program
@@ -271,6 +290,9 @@ func RunShardWithReporter(program *Program, tb testing.TB, shardIndex, shardCoun
 	if program == nil || tb == nil {
 		return
 	}
+	if !shardConfigOK(tb, shardIndex, shardCount) {
+		return
+	}
 	prog, ok := shardProgram(program, shardIndex, shardCount)
 	if !ok {
 		return
@@ -278,12 +300,11 @@ func RunShardWithReporter(program *Program, tb testing.TB, shardIndex, shardCoun
 	NewRunnerWithReporter(prog, name, rep).Run(tb)
 }
 
-// shardProgram returns the Program for one shard: its groups (sharded groups when shardCount is
-// valid, all groups otherwise), or ok=false if this shard has nothing to run.
+// shardProgram returns the Program holding this shard's groups, or ok=false when the shard draws no
+// groups at all. Callers must have validated the configuration first (see shardConfigOK): an empty
+// result here means a valid shard legitimately drew nothing — more shards than groups — not a
+// misconfiguration, which is why it is a silent no-op rather than a failure.
 func shardProgram(program *Program, shardIndex, shardCount int) (prog *Program, ok bool) {
-	if shardCount <= 0 || shardIndex < 0 || shardIndex >= shardCount {
-		return program, true
-	}
 	groups := program.Groups
 	sharded := make([]group, 0, len(groups)/shardCount+1)
 	for gi := range groups {
