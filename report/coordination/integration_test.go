@@ -1,0 +1,352 @@
+package coordination
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+const (
+	fixtureAlpha = "github.com/getsyntegrity/go-specs/report/coordination/internal/shardfixture/alpha"
+	fixtureBeta  = "github.com/getsyntegrity/go-specs/report/coordination/internal/shardfixture/beta"
+	fixturePkgs  = "./report/coordination/internal/shardfixture/..."
+)
+
+// repoRoot locates the module root from this file's own path, so the integration tests do not
+// depend on the working directory `go test` happened to use.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate this test file")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+type goTestResult struct {
+	out      string
+	exitCode int
+}
+
+func (r goTestResult) cached() bool { return strings.Contains(r.out, "(cached)") }
+
+// runGoTest invokes the real toolchain against the fixture packages. These tests exist because the
+// claims they cover are toolchain behaviour: nothing observable from inside one process can tell
+// you whether a package was served from cache or whether cmd/go forwarded an exit code.
+func runGoTest(t *testing.T, env map[string]string, args ...string) goTestResult {
+	t.Helper()
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skipf("no go toolchain on PATH: %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), gobin, append([]string{"test"}, args...)...)
+	cmd.Dir = repoRoot(t)
+
+	// Start from a clean slate: an ambient GO_SPECS_* export in the developer's shell must not
+	// decide what these tests observe.
+	base := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GO_SPECS_") {
+			continue
+		}
+		base = append(base, kv)
+	}
+	for k, v := range env {
+		base = append(base, k+"="+v)
+	}
+	cmd.Env = base
+
+	out, err := cmd.CombinedOutput()
+	code := 0
+	var exitErr *exec.ExitError
+	if err != nil {
+		if !asExitError(err, &exitErr) {
+			t.Fatalf("running go test: %v\n%s", err, out)
+		}
+		code = exitErr.ExitCode()
+	}
+	return goTestResult{out: string(out), exitCode: code}
+}
+
+func asExitError(err error, target **exec.ExitError) bool {
+	e, ok := err.(*exec.ExitError)
+	if ok {
+		*target = e
+	}
+	return ok
+}
+
+func shardNames(t *testing.T, base string, id RunID) []string {
+	t.Helper()
+	entries, err := os.ReadDir(shardsDir(base, id))
+	if err != nil {
+		t.Fatalf("read shard directory: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func runEnv(base string, id RunID, tok RunToken) map[string]string {
+	return map[string]string{
+		EnvGate:      "1",
+		EnvRunID:     string(id),
+		EnvRunToken:  string(tok),
+		EnvReportDir: base,
+	}
+}
+
+func TestTwoPackageProcessesPublishIsolatedShardsConcurrently(t *testing.T) {
+	// The headline acceptance criterion: two package binaries from one `go test` invocation emit
+	// complete, identifiable shards without sharing or corrupting a destination.
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	res := runGoTest(t, runEnv(base, "run-1", validToken), "-count=1", fixturePkgs)
+	if res.exitCode != 0 {
+		t.Fatalf("go test failed (%d):\n%s", res.exitCode, res.out)
+	}
+
+	names := shardNames(t, base, "run-1")
+	if len(names) != 2 {
+		t.Fatalf("got %d shards, want one per participating package: %v", len(names), names)
+	}
+	for _, n := range names {
+		if strings.Contains(n, ".tmp-") {
+			t.Fatalf("a temp file was left discoverable: %s", n)
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, n := range names {
+		env := readEnvelope(t, filepath.Join(shardsDir(base, "run-1"), n))
+		if env.RunID != "run-1" {
+			t.Fatalf("shard %s reports run %q", n, env.RunID)
+		}
+		wantName := ShardFileName(env.PackagePath)
+		if n != wantName {
+			t.Fatalf("shard %s does not match the digest of its own package path (%s)", n, wantName)
+		}
+		if len(env.Report.Coverage.Packages) != 0 {
+			t.Fatalf("shard %s carries coverage", n)
+		}
+		seen[env.PackagePath] = true
+	}
+	for _, pkg := range []string{fixtureAlpha, fixtureBeta} {
+		if !seen[pkg] {
+			t.Fatalf("no shard for %s; shards present: %v", pkg, names)
+		}
+	}
+}
+
+func TestConcurrentIndependentRunsDoNotSeeEachOthersShards(t *testing.T) {
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-a", validToken)
+	otherToken := RunToken(strings.Repeat("ab", 24))
+	mustInitRun(t, base, "run-b", otherToken)
+
+	if res := runGoTest(t, runEnv(base, "run-a", validToken), "-count=1", fixturePkgs); res.exitCode != 0 {
+		t.Fatalf("run-a failed:\n%s", res.out)
+	}
+	if res := runGoTest(t, runEnv(base, "run-b", otherToken), "-count=1", fixturePkgs); res.exitCode != 0 {
+		t.Fatalf("run-b failed:\n%s", res.out)
+	}
+
+	for _, id := range []RunID{"run-a", "run-b"} {
+		if n := len(shardNames(t, base, id)); n != 2 {
+			t.Fatalf("run %q sees %d shards, want only its own 2", id, n)
+		}
+	}
+}
+
+func TestAFailingPackageStillPublishesACompleteShard(t *testing.T) {
+	// Claim B5. TestMain's post-m.Run() code runs on ordinary failure, including a panic recovered
+	// by the testing package, so a red package is fully represented in the merged report
+	// (contract v1.2.6 §8).
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	env := runEnv(base, "run-1", validToken)
+	env["GO_SPECS_FIXTURE_FAIL"] = "1"
+	env["GO_SPECS_FIXTURE_PANIC"] = "1"
+
+	res := runGoTest(t, env, "-count=1", fixturePkgs)
+	if res.exitCode == 0 {
+		t.Fatalf("the fixture was supposed to fail:\n%s", res.out)
+	}
+
+	names := shardNames(t, base, "run-1")
+	if len(names) != 2 {
+		t.Fatalf("a red run published %d shards, want 2: %v", len(names), names)
+	}
+	failuresSeen := 0
+	for _, n := range names {
+		env := readEnvelope(t, filepath.Join(shardsDir(base, "run-1"), n))
+		if env.Report.Execution.Failed > 0 {
+			failuresSeen++
+		}
+	}
+	if failuresSeen != 2 {
+		t.Fatalf("%d of 2 shards recorded the failure; the test result must survive into the report", failuresSeen)
+	}
+}
+
+func TestCmdGoDoesNotPropagateATestBinaryExitCode(t *testing.T) {
+	// Claim B3, and the entire reason config-error.json exists. On a failed test action cmd/go
+	// sets the literal 1, having already reported the package as FAIL; the child's status never
+	// reaches base.SetExitStatus. If this ever stopped holding, the simpler exit-code design would
+	// be correct and the record would be needless machinery (contract v1.2.6 §8).
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	env := runEnv(base, "run-1", validToken)
+	env["GO_SPECS_FIXTURE_EXIT"] = "78"
+
+	res := runGoTest(t, env, "-count=1", "./report/coordination/internal/shardfixture/alpha")
+	if res.exitCode == 78 {
+		t.Fatal("cmd/go propagated the test binary's exit code; the contract's premise for config-error.json no longer holds")
+	}
+	if res.exitCode != 1 {
+		t.Fatalf("go test exited %d, want 1:\n%s", res.exitCode, res.out)
+	}
+	// Stronger than contract v1.2.6 §8 claims. The note there says a TestMain calling os.Exit(2)
+	// at least "produces the text `exit status 2` in the output". Measured here, a binary whose
+	// tests PASSED and which then exits 78 leaves no trace of 78 anywhere: cmd/go prints PASS,
+	// then FAIL for the package, and exits 1. So CI cannot branch on the code even by scraping
+	// the log — which closes the last escape hatch and is why the distinction has to live in a
+	// file on disk.
+	if strings.Contains(res.out, "78") {
+		t.Fatalf("the child's exit code is visible in the output after all, so this test no longer pins what it claims:\n%s", res.out)
+	}
+}
+
+func TestGateOffIsCacheStableAcrossEveryCoordinationVariable(t *testing.T) {
+	// Claim B1, and an honest note about what it proves. This passes — but it would pass even if
+	// every read went through os.Getenv, because ShardConfigFromEnv is called from TestMain BEFORE
+	// m.Run(), and testlog's logger is installed by m.before() inside m.Run(). A read that happens
+	// earlier is recorded nowhere and never reaches the cache key.
+	//
+	// So this test is a regression guard against the reads MOVING somewhere the cache can see them
+	// — not a pin on the access path. The access path is pinned by the unit tests that assert
+	// which os function each variable was read through. See docs/145-runtime-claims-inventory.md.
+	first := runGoTest(t, map[string]string{
+		EnvRunID:     "cache-probe-1",
+		EnvReportDir: filepath.Join(secureTempDir(t), "one"),
+	}, "./report/coordination/internal/shardfixture/alpha")
+	if first.exitCode != 0 {
+		t.Fatalf("warm-up run failed:\n%s", first.out)
+	}
+
+	second := runGoTest(t, map[string]string{
+		EnvRunID:     "cache-probe-2",
+		EnvReportDir: filepath.Join(secureTempDir(t), "two"),
+		EnvRunToken:  validToken,
+	}, "./report/coordination/internal/shardfixture/alpha")
+	if second.exitCode != 0 {
+		t.Fatalf("second run failed:\n%s", second.out)
+	}
+	if !second.cached() {
+		t.Fatalf("a gate-off run stopped being cache-stable; a coordination variable is now reaching the cache key:\n%s", second.out)
+	}
+}
+
+func TestACachedPackagePublishesNothingWhichIsWhyCountOneIsMandatory(t *testing.T) {
+	// Claims B2 and B4, and the finding that corrects contract v1.2.6 §5.
+	//
+	// §5 states that reading run identity through the environment makes a new GO_SPECS_RUN_ID
+	// invalidate that package's cached result, and calls -count=1 a supporting requirement rather
+	// than the mechanism. Measured here: the read happens in TestMain before m.Run(), where
+	// testlog is not yet active, so it contributes NOTHING to the cache key. -count=1 is not a
+	// supplement — it is the only thing standing between a cached package and a silently missing
+	// shard.
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+	env := runEnv(base, "run-1", validToken)
+
+	if res := runGoTest(t, env, "-count=1", "./report/coordination/internal/shardfixture/alpha"); res.exitCode != 0 {
+		t.Fatalf("seed run failed:\n%s", res.out)
+	}
+	// Warm the cache with the identical environment, then clear the shard so a second publish
+	// would be visible.
+	if res := runGoTest(t, env, "./report/coordination/internal/shardfixture/alpha"); res.exitCode != 0 {
+		t.Fatalf("cache-warming run failed:\n%s", res.out)
+	}
+	for _, n := range shardNames(t, base, "run-1") {
+		if err := os.Remove(filepath.Join(shardsDir(base, "run-1"), n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cachedRun := runGoTest(t, env, "./report/coordination/internal/shardfixture/alpha")
+	if !cachedRun.cached() {
+		t.Skipf("the run was not served from cache, so this test cannot observe the condition:\n%s", cachedRun.out)
+	}
+	if names := shardNames(t, base, "run-1"); len(names) != 0 {
+		t.Fatalf("a cached package published %v; TestMain cannot have run", names)
+	}
+}
+
+func TestACachedPackageHidesAConfigurationErrorEntirely(t *testing.T) {
+	// The sharpest operational consequence, and the one worth a test of its own: with the gate on
+	// and an invalid configuration, contract v1.2.6 §3 step 3 requires the binary to fail loudly
+	// before m.Run(). On a cached package it does not run at all, so `go test` reports ok (cached)
+	// and exits 0 — a misconfigured reporting run that looks exactly like a healthy green one.
+	//
+	// The gate variable itself cannot rescue this: it is read in TestMain too, so switching it on
+	// does not invalidate the cached result either.
+	warm := runGoTest(t, map[string]string{}, "./report/coordination/internal/shardfixture/beta")
+	if warm.exitCode != 0 {
+		t.Fatalf("warm-up run failed:\n%s", warm.out)
+	}
+
+	broken := runGoTest(t, map[string]string{EnvGate: "1"}, "./report/coordination/internal/shardfixture/beta")
+	if !broken.cached() {
+		t.Skipf("the run was not served from cache, so this test cannot observe the condition:\n%s", broken.out)
+	}
+	if broken.exitCode != 0 {
+		t.Fatalf("expected the cached run to pass silently, got exit %d:\n%s", broken.exitCode, broken.out)
+	}
+
+	// With -count=1 the same misconfiguration fails loudly, naming the variable and the remedy.
+	strict := runGoTest(t, map[string]string{EnvGate: "1"}, "-count=1", "./report/coordination/internal/shardfixture/beta")
+	if strict.exitCode == 0 {
+		t.Fatalf("the misconfiguration passed even with -count=1:\n%s", strict.out)
+	}
+	if !strings.Contains(strict.out, EnvRunID) {
+		t.Fatalf("the diagnostic does not name the missing variable:\n%s", strict.out)
+	}
+}
+
+func TestAConfigurationFailureRecordsConfigErrorJSON(t *testing.T) {
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	// A valid run, but this process presents a token that does not own it.
+	env := runEnv(base, "run-1", RunToken(strings.Repeat("cd", 20)))
+
+	res := runGoTest(t, env, "-count=1", "./report/coordination/internal/shardfixture/alpha")
+	if res.exitCode == 0 {
+		t.Fatalf("a foreign token was accepted:\n%s", res.out)
+	}
+
+	rec := readConfigError(t, base, "run-1")
+	if rec.Reason != ReasonMarkerMismatch {
+		t.Fatalf("Reason = %q, want %q", rec.Reason, ReasonMarkerMismatch)
+	}
+	if rec.PackagePath != fixtureAlpha {
+		t.Fatalf("PackagePath = %q", rec.PackagePath)
+	}
+	if strings.Contains(rec.Diagnostic, string(env[EnvRunToken])) {
+		t.Fatal("the record echoes the token")
+	}
+	if names := shardNames(t, base, "run-1"); len(names) != 0 {
+		t.Fatalf("a process that failed ownership still published %v", names)
+	}
+}

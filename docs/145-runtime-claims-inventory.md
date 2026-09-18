@@ -41,10 +41,10 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 
 | # | Claim | Source | Status |
 |---|---|---|---|
-| B1 | `os.Environ` delegates to `syscall.Environ` and records **nothing** in the testlog, so a gate-off scan does not enroll variables in the test-cache key. | §5 *disabled path* | **Required** — cache-stability test: run a package twice with the gate off and assert the second run reports `(cached)`. Must vary **at least two** variables (`GO_SPECS_RUN_ID` *and* `GO_SPECS_REPORT_DIR`), because a run-ID-only test passes while another variable still leaks through `os.Getenv`. Ideally vary every variable in the set, so adding a variable without extending the test is what fails. |
-| B2 | `os.Getenv`/`os.LookupEnv` **do** call `testlog.Getenv`, so a gate-on read enrolls the variable and a new `GO_SPECS_RUN_ID` invalidates the cached result for that package. | §5 *Environment, not files, is the transport* | **Required — not listed in §13, added here.** B1 pins the negative half; nothing pins the positive half. If the gate-on path were "simplified" to an `os.Environ` scan for symmetry, B1 still passes, the code looks tidier, and cached packages silently stop republishing shards — indistinguishable from a crash (F4). Test: gate on, run twice with a changed `GO_SPECS_RUN_ID`, assert the second run is **not** `(cached)`. |
-| B3 | `cmd/go` never propagates a test binary's exit code; a failed test action sets the literal `1`. This is why the config-error distinction lives in `config-error.json` + `78`/`EX_CONFIG` rather than in an exit status. | §8 | **Required** — a `TestMain` exiting `2` must produce `go test` exit `1`. The entire `config-error.json` design rests on this; if it ever stopped holding, the simpler exit-code design would be correct and this one would be needless machinery. |
-| B4 | A cache hit skips `TestMain` **entirely**, so a cached package never publishes a shard — which is why `-count=1` is mandatory for reporting runs. | F4, §6 | **Required** — assert a cached package emits no shard. This is the missing-producer condition that must stay loud; a test that never checks it lets "silently cached" and "crashed" stay indistinguishable. |
+| B1 | `os.Environ` delegates to `syscall.Environ` and records **nothing** in the testlog, so a gate-off scan does not enroll variables in the test-cache key. | §5 *disabled path* | **Pinned, but see B2 — the process-level test is vacuous.** `TestGateOffIsCacheStableAcrossEveryCoordinationVariable` varies `GO_SPECS_RUN_ID` and `GO_SPECS_REPORT_DIR` and asserts `(cached)`, and it passes. It would also pass with `os.Getenv` everywhere. What actually pins the access path is the unit test that asserts which `os` function each variable was read through, using the package's `environment` seam. The process-level test survives as a guard against these reads **moving** somewhere the cache can see them. |
+| B2 | ~~`os.Getenv`/`os.LookupEnv` route through `testlog`, so a gate-on read enrolls the variable and a new `GO_SPECS_RUN_ID` invalidates that package's cached result.~~ **FALSE at this contract's call site.** | §5 *Environment, not files, is the transport* | **Pinned as refuted.** Measured: a variable read via `os.Getenv` **inside a test function** does invalidate the cache; the same read **in `TestMain` before `m.Run()`** does not — the value can change on every run and `go test` still reports `(cached)`. The mechanism is that `testlog`'s logger is installed by `m.before()`, which runs inside `m.Run()`; before that, `testlog.Getenv` sees a nil logger and records nothing. Contract §3 step 3 mandates the read happen exactly there. Consequences in **The B2 finding** below. |
+| B3 | `cmd/go` never propagates a test binary's exit code; a failed test action sets the literal `1`. This is why the config-error distinction lives in `config-error.json` + `78`/`EX_CONFIG` rather than in an exit status. | §8 | **Pinned, and stronger than §8 claims.** §8's note says a `TestMain` calling `os.Exit(2)` at least "produces the text `exit status 2` in the output". Measured: a binary whose tests passed and which then exits `78` leaves no trace of `78` anywhere — `cmd/go` prints `PASS`, then `FAIL` for the package, and exits `1`. CI cannot branch on the code even by scraping the log. |
+| B4 | A cache hit skips `TestMain` **entirely**, so a cached package never publishes a shard — which is why `-count=1` is mandatory for reporting runs. | F4, §6 | **Pinned.** Confirmed directly, and it is worse than "no shard": with the gate on and an invalid configuration, a cached package reports `ok (cached)` and exits `0` — no failure, no `config-error.json`, nothing to distinguish a misconfigured reporting run from a healthy green one. |
 | B5 | `TestMain`'s post-`m.Run()` code runs on ordinary test failure, including a panic recovered by the testing package; only abrupt termination (F5) bypasses it. | §8 row 2, F5 | **Required** — a package with a failing test and a panicking test still publishes a complete shard. Issue #145 lists this as an acceptance criterion in its own right. |
 
 ### C. Paths and names
@@ -72,12 +72,43 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 | E2 | `umask` does not apply to a subsequent `Chmod`, which is why a directory this implementation creates must have its mode **verified after creation** rather than assumed from the requested `0700`. | §10 rule 3 | **Required** — create a run directory under a permissive umask (e.g. `0000`) and assert the resulting mode is exactly `0700`. Under the default `0022` this test passes whether or not the verification exists, so the umask must be set explicitly by the test. |
 | E3 | A group- or other-writable ancestor of the base directory lets another local user swap a path component, making every downstream check meaningless — so operation must be refused, fail-closed, naming the offending directory and its mode. | §10 rule 2 | **Required** — a base directory under a `0777` non-sticky parent is refused by both `InitializeRun` and the producer, and the sticky exemption is honoured. |
 
+## The B2 finding
+
+Pinning B2 refuted it, and the correction matters more than the claim did.
+
+**What §5 says.** Producers must read run identity with `os.Getenv`/`os.LookupEnv` because `go test`
+records those reads in the test-cache key, so a new `GO_SPECS_RUN_ID` invalidates a stale cached
+result for that package. §5 presents this as "a supporting reason for the `-count=1` requirement in
+§6, not a replacement for it".
+
+**What actually happens.** Nothing. `testlog`'s logger is installed inside `m.Run()`, and §3 step 3
+requires the configuration read to happen in `TestMain` **before** `m.Run()`. Every coordination
+variable — including the activation gate — is therefore read where the cache cannot see it. The
+supporting mechanism §5 describes does not exist at the place §3 puts the code.
+
+**Why it matters in both directions.**
+
+- The disabled-path `os.Environ()` rule, introduced in v1.2.3 and widened in v1.2.4, is protecting
+  against a harm that cannot occur at its specified call site. It is not wrong and it should not be
+  removed — it becomes load-bearing the moment any of these reads is called from inside a test or a
+  helper a test invokes, which is one refactor away — but its stated rationale and its mandated
+  regression test both describe a mechanism that is inert here.
+- `-count=1` is not a supplement. It is the **only** thing preventing a cached package from silently
+  never publishing a shard, and the only thing preventing a misconfiguration from passing green.
+  That belongs in the documentation as an operational requirement, not a performance footnote.
+
+**Why review could not have caught it.** The contract is internally consistent: `os.Getenv` does
+route through `testlog`, `os.Environ` genuinely does not, and both statements are true in isolation.
+The failure lives entirely in *when* the logger exists — which is visible only by running the thing
+or by reading `testing.M.before`. This is the §13 class in its purest form, found by the exact
+exercise §13 asked for.
+
 ## Summary
 
-- **Required, from §13 explicitly:** A2.
-- **Required, derived from §5/§8/§10 while building this inventory:** A1, A3, A4, A6, B1, B3, B4, B5, C3, C4, D1, E2, E3.
-- **Required, not previously listed anywhere — surfaced by this inventory:** B2 (the gate-on cache-enrollment half) and E1 (`O_NOFOLLOW` actually refusing a symlink). Both are cases where the contract states a runtime behaviour, the implementation depends on it, and a plausible future simplification removes it while every other test stays green.
+- **Pinned by this slice:** A1, A2, A3, A4, A6, B1, B3, B4, B5, C3, C4, D1, E1, E2, E3.
+- **Refuted by this slice:** B2 — see *The B2 finding* above. Contract §5 needs an amendment; nothing in the implementation needs to change, because `-count=1` was already mandatory.
 - **Declared, deliberately untested:** A5, A7, C1, C2, D2, D3.
+- **Surfaced by this inventory and by nothing else:** B2 and E1. E1 was mutation-checked — removing `O_NOFOLLOW` makes its test fail, because a symlinked `run.json` pointing at a marker that would otherwise verify is then accepted. B2 is the finding above.
 
 The two additions are the inventory earning its cost. Neither is exotic: each is a place where the
 contract is internally consistent, the code would look correct, and the failure would live entirely
