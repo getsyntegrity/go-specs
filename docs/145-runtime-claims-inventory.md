@@ -41,7 +41,7 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 
 | # | Claim | Source | Status |
 |---|---|---|---|
-| B1 | `os.Environ` delegates to `syscall.Environ` and records **nothing** in the testlog, so a gate-off scan does not enroll variables in the test-cache key. | §5 *disabled path* | **Pinned, but see B2 — the process-level test is vacuous.** `TestGateOffIsCacheStableAcrossEveryCoordinationVariable` varies `GO_SPECS_RUN_ID` and `GO_SPECS_REPORT_DIR` and asserts `(cached)`, and it passes. It would also pass with `os.Getenv` everywhere. What actually pins the access path is the unit test that asserts which `os` function each variable was read through, using the package's `environment` seam. The process-level test survives as a guard against these reads **moving** somewhere the cache can see them. |
+| B1 | `os.Environ` delegates to `syscall.Environ` and records **nothing** in the testlog, so a gate-off scan does not enroll variables in the test-cache key. | §5 *disabled path* | **Pinned, by `TestTheEnvironScanIsActuallyAnEnvironScan` — and only by it.** Mutation-checked: rewriting `envread.Scan`'s body as `os.LookupEnv` makes it fail. Getting there took two corrections worth recording, because both are ways a test can look like a pin and not be one. See **The B1 pin** below. |
 | B2 | ~~`os.Getenv`/`os.LookupEnv` route through `testlog`, so a gate-on read enrolls the variable and a new `GO_SPECS_RUN_ID` invalidates that package's cached result.~~ **FALSE at this contract's call site.** | §5 *Environment, not files, is the transport* | **Pinned as refuted.** Measured: a variable read via `os.Getenv` **inside a test function** does invalidate the cache; the same read **in `TestMain` before `m.Run()`** does not — the value can change on every run and `go test` still reports `(cached)`. The mechanism is that `testlog`'s logger is installed by `m.before()`, which runs inside `m.Run()`; before that, `testlog.Getenv` sees a nil logger and records nothing. Contract §3 step 3 mandates the read happen exactly there. Consequences in **The B2 finding** below. |
 | B3 | `cmd/go` never propagates a test binary's exit code; a failed test action sets the literal `1`. This is why the config-error distinction lives in `config-error.json` + `78`/`EX_CONFIG` rather than in an exit status. | §8 | **Pinned, and stronger than §8 claims.** §8's note says a `TestMain` calling `os.Exit(2)` at least "produces the text `exit status 2` in the output". Measured: a binary whose tests passed and which then exits `78` leaves no trace of `78` anywhere — `cmd/go` prints `PASS`, then `FAIL` for the package, and exits `1`. CI cannot branch on the code even by scraping the log. |
 | B4 | A cache hit skips `TestMain` **entirely**, so a cached package never publishes a shard — which is why `-count=1` is mandatory for reporting runs. | F4, §6 | **Pinned.** Confirmed directly, and it is worse than "no shard": with the gate on and an invalid configuration, a cached package reports `ok (cached)` and exits `0` — no failure, no `config-error.json`, nothing to distinguish a misconfigured reporting run from a healthy green one. |
@@ -71,6 +71,41 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 | E1 | `O_NOFOLLOW` causes an open to **fail** rather than write through a pre-planted symlink, on every open of `run.json`, `config-error.json`, shard temp files and shard final names, on both the read and the write side. | §10 rule 1 | **Required — not listed in §13, added here.** Load-bearing security behaviour that is pure runtime semantics, and an `O_NOFOLLOW` accidentally dropped from one of the four open sites is invisible to every other test in this inventory. Test on Unix: plant a symlink at each path and assert the operation fails without touching the target. |
 | E2 | `umask` does not apply to a subsequent `Chmod`, which is why a directory this implementation creates must have its mode **verified after creation** rather than assumed from the requested `0700`. | §10 rule 3 | **Required** — create a run directory under a permissive umask (e.g. `0000`) and assert the resulting mode is exactly `0700`. Under the default `0022` this test passes whether or not the verification exists, so the umask must be set explicitly by the test. |
 | E3 | A group- or other-writable ancestor of the base directory lets another local user swap a path component, making every downstream check meaningless — so operation must be refused, fail-closed, naming the offending directory and its mode. | §10 rule 2 | **Required** — a base directory under a `0777` non-sticky parent is refused by both `InitializeRun` and the producer, and the sticky exemption is honoured. |
+
+## The B1 pin
+
+B1 was first written as two tests, and neither one pinned it. The sequence is worth keeping,
+because each failure mode looks exactly like coverage.
+
+**Attempt 1 — the process-level cache test the contract asks for.**
+`TestGateOffIsCacheStableAcrossEveryCoordinationVariable` varies `GO_SPECS_RUN_ID` and
+`GO_SPECS_REPORT_DIR` across two gate-off runs and asserts `(cached)`. It passes. It also passes
+with `os.Getenv` everywhere, because the reads happen in `TestMain` where the test log does not
+exist yet — see *The B2 finding*. Vacuous. It is kept, relabelled in its own doc comment, as a
+guard against these reads **moving** somewhere the cache can see them.
+
+**Attempt 2 — the unit tests over the `environment` seam.** A fake records whether each variable
+arrived through `Lookup` or `Scan`, in both directions. These are good tests and they stay, but
+they pin the *resolver's choice of method*. The production `osEnvironment.Scan` was referenced by
+no test at all (`rg osEnvironment --glob '*_test.go'` returned nothing), so its body could be
+replaced with `os.LookupEnv` and the entire suite stayed green. The seam was pinned; the thing the
+seam exists to guarantee was not.
+
+**What finally works.** The two access paths are distinguishable only where the test log is live,
+which is inside a test function. `internal/envread` holds the real implementations so a test can
+call them directly, and `internal/shardfixture/envprobe` calls one of them from a test function
+while the caller varies the probed variable across two runs. `Scan` must stay `(cached)`; `Lookup`
+must re-run.
+
+The control arm is load-bearing rather than decorative: without it, a change making *both* paths
+uncacheable would leave the assertion passing for the wrong reason, and a change making both
+cacheable would make it vacuous again. The test fails loudly with "proves nothing" in that case
+instead of passing.
+
+Two gotchas, both of which produced a wrong answer before being fixed: do not pass `-count=1` to
+the seeding run, because it bypasses the cache and seeds nothing; and give every execution a fresh
+random nonce, because otherwise the second execution finds the control arm's value already cached
+from the first and reports a false failure.
 
 ## The B2 finding
 
@@ -106,6 +141,7 @@ exercise §13 asked for.
 ## Summary
 
 - **Pinned by this slice:** A1, A2, A3, A4, A6, B1, B3, B4, B5, C3, C4, D1, E1, E2, E3.
+- **Mutation-checked, meaning the test was shown to fail when the behaviour is removed:** B1 (`Scan` rewritten as `os.LookupEnv`), E1 (`O_NOFOLLOW` dropped), A1/A2 (publish via `os.Rename`), D1 (`HashRunToken` over the hex text). A pin that has never been seen to fail is a claim, not a pin.
 - **Refuted by this slice:** B2 — see *The B2 finding* above. Contract §5 needs an amendment; nothing in the implementation needs to change, because `-count=1` was already mandatory.
 - **Declared, deliberately untested:** A5, A7, C1, C2, D2, D3.
 - **Surfaced by this inventory and by nothing else:** B2 and E1. E1 was mutation-checked — removing `O_NOFOLLOW` makes its test fail, because a symlinked `run.json` pointing at a marker that would otherwise verify is then accepted. B2 is the finding above.

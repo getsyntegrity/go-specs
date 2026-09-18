@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/getsyntegrity/go-specs/report/coordination/internal/envread"
 )
 
 // ShardConfig is resolved once per package process, typically inside TestMain
@@ -46,32 +48,13 @@ type environment interface {
 
 type osEnvironment struct{}
 
-func (osEnvironment) Lookup(name string) (string, bool) { return os.LookupEnv(name) }
+// Lookup and Scan delegate to envread, which holds the real implementations and the full
+// rationale. They live in their own package so a test can call them directly: as unexported
+// methods here they were exercised by nothing, and the tests that looked like they covered them
+// pinned only which method this type calls — a name, not a behaviour.
+func (osEnvironment) Lookup(name string) (string, bool) { return envread.Lookup(name) }
 
-// Scan walks os.Environ() instead of calling os.LookupEnv, and that is a deliberate use of an
-// implementation detail rather than a stylistic choice — DO NOT "simplify" it to os.Getenv.
-//
-// `cmd/go` derives test-cache validity from the testlog, which records every getenv event a
-// binary emits. os.Getenv and os.LookupEnv both call testlog.Getenv; os.Environ delegates
-// straight to syscall.Environ and records nothing. So reading the coordination variables with
-// Getenv on the DISABLED path enrolls them in the inputs ID of every package in the module, and a
-// stale or per-invocation GO_SPECS_RUN_ID sitting in a developer's environment then invalidates
-// the cache for every package on every run — while producing no reporting at all in exchange,
-// because the gate is off. That regression is silent, cumulative, and typically diagnosed months
-// later as "our CI got slow" (contract v1.2.6 §5).
-//
-// It is not a documented API guarantee, which is exactly why this comment exists: without it the
-// first person tidying this code reintroduces the problem with a change that looks like a pure
-// simplification.
-func (osEnvironment) Scan(name string) (string, bool) {
-	prefix := name + "="
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, prefix) {
-			return kv[len(prefix):], true
-		}
-	}
-	return "", false
-}
+func (osEnvironment) Scan(name string) (string, bool) { return envread.Scan(name) }
 
 type resolver struct {
 	env  environment

@@ -2,6 +2,8 @@ package coordination
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -348,5 +350,72 @@ func TestAConfigurationFailureRecordsConfigErrorJSON(t *testing.T) {
 	}
 	if names := shardNames(t, base, "run-1"); len(names) != 0 {
 		t.Fatalf("a process that failed ownership still published %v", names)
+	}
+}
+
+const fixtureProbe = "./report/coordination/internal/shardfixture/envprobe"
+
+func probeRun(t *testing.T, mode, value string) goTestResult {
+	t.Helper()
+	// Deliberately no -count=1: it bypasses the cache, so a seeding run with it seeds nothing.
+	return runGoTest(t, map[string]string{
+		"GO_SPECS_PROBE_MODE":  mode,
+		"GO_SPECS_PROBE_VALUE": value,
+	}, fixtureProbe)
+}
+
+// probeNonce makes every execution of this test start cold.
+//
+// Without it the test is order-dependent and reports a false failure on its second run: the
+// control arm's second value is still in the cache from the previous execution against the same
+// binary, so it comes back (cached) and the test concludes it cannot distinguish the two access
+// paths. A fresh nonce guarantees no entry exists for either arm.
+func probeNonce(t *testing.T) string {
+	t.Helper()
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("generating a probe nonce: %v", err)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func TestTheEnvironScanIsActuallyAnEnvironScan(t *testing.T) {
+	// This pins the PRODUCTION implementation of envread.Scan, which nothing else does.
+	//
+	// The unit tests elsewhere use a fake environment to assert that the resolver calls Scan
+	// rather than Lookup on the disabled path. That is worth having, but it pins the caller's
+	// choice of method — a name — and not what the method does underneath. Rewriting
+	// envread.Scan's body as os.LookupEnv keeps every one of those tests green while
+	// reintroducing the cache-enrollment regression the rule exists to prevent. This test is what
+	// fails in that case.
+	//
+	// It only works from inside a test function: in TestMain the test log is not yet installed and
+	// the two access paths are indistinguishable.
+	nonce := probeNonce(t)
+
+	if seed := probeRun(t, "scan", nonce+"-one"); seed.exitCode != 0 {
+		t.Fatalf("scan seeding run failed:\n%s", seed.out)
+	}
+	scanned := probeRun(t, "scan", nonce+"-two")
+	if scanned.exitCode != 0 {
+		t.Fatalf("scan second run failed:\n%s", scanned.out)
+	}
+
+	// The control arm runs first-class rather than as a comment: without it, a change that made
+	// BOTH paths uncacheable would leave the assertion above passing for the wrong reason, and a
+	// change that made both cacheable would make it vacuous. The control decides which.
+	if seed := probeRun(t, "lookup", nonce+"-one"); seed.exitCode != 0 {
+		t.Fatalf("lookup seeding run failed:\n%s", seed.out)
+	}
+	lookedUp := probeRun(t, "lookup", nonce+"-two")
+	if lookedUp.exitCode != 0 {
+		t.Fatalf("lookup second run failed:\n%s", lookedUp.out)
+	}
+
+	if lookedUp.cached() {
+		t.Fatalf("the control arm was cached too, so this test cannot tell the two access paths apart and proves nothing:\n%s", lookedUp.out)
+	}
+	if !scanned.cached() {
+		t.Fatalf("envread.Scan enrolled %s in the test-cache key, so it is no longer an os.Environ scan; the disabled path now defeats caching for every package in the module:\n%s", "GO_SPECS_PROBE_VALUE", scanned.out)
 	}
 }
