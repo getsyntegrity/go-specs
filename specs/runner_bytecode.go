@@ -25,7 +25,7 @@ func NewBytecodeRunner(p BCProgram) *BytecodeRunner {
 // Run executes all specs in order. One context from the pool, reused for every spec.
 //
 // A panic anywhere in one spec's instruction range is recovered instead of crashing the process:
-// it's recorded as a failure (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace),
+// it's recorded as a failure (via reportRecoveredPanic, message and stack trace),
 // and the next spec still runs. Recovery is per spec, not per instruction, matching RunParallel's
 // granularity.
 func (r *BytecodeRunner) Run(tb testing.TB) {
@@ -51,10 +51,10 @@ func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
 }
 
 // runBytecodeSpecRecovered runs one spec's instruction range, recovering a panic so it fails just
-// this spec instead of crashing the process. The recording rule itself lives in recoverSpecFailure,
-// shared with every other engine (see recovery.go).
+// this spec instead of crashing the process. isExpectedAbort sentinels (a controlled backend's
+// FailNow) are already recorded by the backend and must not be reported a second time.
 func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
-	defer func() { recoverSpecFailure(ctx, recover()) }()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
@@ -130,7 +130,7 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 
 // runBytecodeWorkerSpec runs one spec's instruction range on a worker goroutine, recording a
 // recovered panic into results[idx] via recoverParallelSpecFailure — the same rule scheduler.go's
-// runWorkerSpec applies, now shared rather than mirrored (see recovery.go).
+// runWorkerSpec applies, now shared rather than mirrored (see panic_report.go).
 func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]parallelFailure, idx int) {
 	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
 	for i := start; i < end; i++ {

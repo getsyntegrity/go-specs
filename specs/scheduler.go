@@ -216,7 +216,7 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 }
 
 // runWorkerSpec runs one spec body on a worker goroutine, recording a recovered panic into
-// results[idx] via recoverParallelSpecFailure (see recovery.go for the rule, shared with
+// results[idx] via recoverParallelSpecFailure (see panic_report.go for the rule, shared with
 // runBytecodeWorkerSpec and parallelStep). Applied per spec so one spec's fatal assertion or panic
 // doesn't stop the worker from running the rest of its specs.
 func runWorkerSpec(fn func(*Context), ctx *Context, results *[]parallelFailure, idx int) {

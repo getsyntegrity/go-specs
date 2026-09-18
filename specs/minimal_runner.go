@@ -64,7 +64,7 @@ const RunBatchSize = 8
 // Specs are run in batches of RunBatchSize to improve cache behavior and reduce loop overhead.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure (via
-// ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec still runs —
+// reportRecoveredPanic, message and stack trace), and the next spec still runs —
 // same contract as BlockRunner.Run and the default execution path.
 func (r *MinimalRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
@@ -92,10 +92,10 @@ func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 }
 
 // runMinimalSpecRecovered runs a single spec, recovering a panic so it fails just this spec instead
-// of crashing the process. The recording rule itself lives in recoverSpecFailure, shared with every
-// other engine (see recovery.go).
+// of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
+// recorded by the backend and must not be reported a second time.
 func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() { recoverSpecFailure(ctx, recover()) }()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 

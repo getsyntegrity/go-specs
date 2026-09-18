@@ -58,7 +58,7 @@ func NewBlockRunner(fns []func(*Context), blocks []specBlock) *BlockRunner {
 // from the pool, reused for every spec. No allocations in the loop.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure
-// (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec in the
+// (via reportRecoveredPanic, message and stack trace), and the next spec in the
 // block, and the next block, still run.
 func (r *BlockRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.blocks) == 0 {
@@ -87,10 +87,10 @@ func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 }
 
 // runBlockSpecRecovered runs a single spec, recovering a panic so it fails just this spec instead
-// of crashing the process. The recording rule itself lives in recoverSpecFailure, shared with every
-// other engine (see recovery.go).
+// of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
+// recorded by the backend and must not be reported a second time.
 func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() { recoverSpecFailure(ctx, recover()) }()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 

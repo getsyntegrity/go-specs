@@ -163,16 +163,30 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 
 ### Stage 0 — done in this change (no public behavior removed)
 
-1. **`specs/recovery.go`** now holds the two recovery rules as shared primitives:
-   `recoverSpecFailure` (sequential) and `recoverParallelSpecFailure` (worker). Six call sites collapsed
-   into two rules.
-2. **`specs/execution_engine_contract_test.go`** asserts the shared invariants over a table of engines
+This builds directly on #185, which already made `reportRecoveredPanic` (`specs/panic_report.go`) the one
+path a recovered panic takes to a backend, so that a missing, released or defective backend can no longer
+turn a recoverable spec panic into a dead process (#171).
+
+1. **`specs/panic_report.go`** gains the two engine-facing wrappers that decide *whether* a recovered
+   value is a failure at all: `recoverSpecFailure` (sequential) and `recoverParallelSpecFailure` (worker).
+   They live in that file, beside `reportRecoveredPanic`, specifically so no second reporting authority
+   can grow beside it. `recoverSpecFailure` builds the message/output pair and **delegates delivery to
+   `reportRecoveredPanic`**; it never touches a backend itself, so #171's guarantees extend unchanged to
+   every engine and to any engine added later. `recoverParallelSpecFailure` stays separate because worker
+   goroutines record into an indexed `[]parallelFailure` and touch no backend at all — safe against #171's
+   failure mode by construction, which is precisely why the sequential rule cannot be reused there.
+2. All five sequential recovery sites (`runner.go`, `execution_plan.go` ×2, `block_runner.go`,
+   `minimal_runner.go`, `runner_bytecode.go`) now call the one wrapper with the same wire format. As a
+   result `fmt` and `runtime/debug` dropped out of all five engine files entirely: message formatting and
+   stack capture are no longer an engine concern.
+3. **`specs/execution_engine_contract_test.go`** asserts the shared invariants over a table of engines
    instead of one private test per engine. A new engine must be added to the table; a new rule applies to
    every engine at once.
-3. **Defect fixed.** `runStepRecovered` (`runner.go`) was the only recovery site without the
+4. **Defect fixed.** `runStepRecovered` (`runner.go`) was the only recovery site without the
    `isExpectedAbort` guard, so the Builder/Runner path double-reported a controlled backend's
    `FailNow`/`Fatal`/`Fatalf` sentinel as `panic: {}`. Every other engine already had a private test for
-   this rule; Runner never grew one. The contract table found it on its first run.
+   this rule; Runner never grew one. The contract table found it on its first run. Routing every site
+   through one wrapper means the guard can no longer be present in four places and missing in a fifth.
 
 One intentional behavioral difference: the reported stack trace now carries `recoverSpecFailure` as its
 top frame, because the trace is captured inside the shared helper.
@@ -240,3 +254,8 @@ question rather than a feature regression. **That decision is explicitly out of 
   only after Stage 4.
 - **The `ctx.failed` and recovery-dialect asymmetries** in section 2 — both are load-bearing, and both are
   now pinned by tests so they cannot drift into accidental divergence.
+- **Merging the two recovery dialects into one.** It is tempting, and it would be wrong: the sequential
+  rule reports through a backend and therefore needs every `reportRecoveredPanic` guarantee from #171,
+  while the worker rule writes into an indexed slice and touches no backend. Collapsing them would either
+  drag backend fragility into the worker path or weaken the sequential one. Two wrappers over one delivery
+  authority is the correct shape.

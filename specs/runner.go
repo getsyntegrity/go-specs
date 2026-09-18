@@ -10,8 +10,6 @@
 package specs
 
 import (
-	"fmt"
-	"runtime/debug"
 	"sync"
 	"testing"
 	"time"
@@ -384,30 +382,17 @@ func runAfterRecovered(ctx *Context, after []step) (message, output string) {
 }
 
 // runStepRecovered runs a single step, recovering a panic so it fails just this step (recorded via
-// ctx.recordFailure + ctx.backend.Errorf with message and stack trace) instead of crashing the
+// reportRecoveredPanic with message and stack trace) instead of crashing the
 // process. label distinguishes a before/spec panic from an after-hook panic in the reported message.
 //
 // On a recovered panic, message and output are built exactly once here — message is the short
-// "label: value" summary, output is the raw stack trace — and reused both for ctx.backend.Errorf
+// "label: value" summary, output is the raw stack trace — and reused both for reportRecoveredPanic
 // (unchanged wire format: "message\noutput") and as the return value runSpecsRecovered feeds into
 // specFinished's specResult. They are never reconstructed anywhere else. Both are zero-value ("")
 // when s(ctx) returns normally, including via runtime.Goexit (a real testing.T.Fatalf/FailNow) —
 // recover() cannot observe that case, so it is indistinguishable here from a spec that never failed.
-//
-// isExpectedAbort sentinels (a controlled backend's FailNow/Fatal/Fatalf) are skipped: the backend
-// already recorded that stop, so reporting it again would turn one assertion failure into two, the
-// second carrying a stack trace into the sentinel itself. Every other engine already guarded this
-// (see execution_plan.go's runProgram, and the block/minimal/bytecode runners); this path was the
-// one that never grew the guard — see execution_engine_contract_test.go and #176.
 func runStepRecovered(ctx *Context, s step, label string) (message, output string) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			message = fmt.Sprintf("%s: %v", label, recovered)
-			output = string(debug.Stack())
-			ctx.backend.Errorf("%s\n%s", message, output)
-		}
-	}()
+	defer func() { message, output = recoverSpecFailure(ctx, recover(), label) }()
 	s(ctx)
 	return
 }
