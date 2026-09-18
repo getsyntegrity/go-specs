@@ -139,7 +139,7 @@ func TestBytecodeRunnerRunParallelRecoversPanicSiblingsStillRun(t *testing.T) {
 	runner := NewBytecodeRunner(prog)
 
 	var reported string
-	fake := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	fake := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	runner.RunParallel(fake, 4)
 
 	for i := 0; i < n; i++ {

@@ -20,10 +20,10 @@ import (
 // KNOWN LIMITATION, deliberately asserted here rather than hidden: unlike the sequential path (see
 // attribution_test.go), Go's own primary-decorated location — the line immediately after
 // "--- FAIL: TestXxx" — still names an internal go-specs frame, never the fixture file. By the time
-// reportFailures's tb.Fatalf runs, the worker goroutine that ran the user's assertion has already
+// reportFailures's tb.Errorf runs, the worker goroutine that ran the user's assertion has already
 // exited, so there is no live frame left for tb.Helper() to mark transparent (see
 // parallelCallerLocation's doc comment). The user's file:line is instead embedded as text inside the
-// Fatalf message itself, the only place a plain `go test` run can show it at all.
+// Errorf message itself, the only place a plain `go test` run can show it at all.
 
 const (
 	parallelAttributionFixtureDir  = "testdata/parallel_attribution"
@@ -88,7 +88,7 @@ func assertEmbeddedAtWantedLines(t *testing.T, output string) {
 // assertParallelPrimaryLocationIsInternal documents and pins the known limitation: Go's own
 // primary-decorated location (unlike the sequential path) never names the fixture file, since the
 // worker goroutine that ran the user's assertion is already gone by the time reportFailures calls
-// tb.Fatalf. If this ever starts naming the fixture file, the limitation this file documents no
+// tb.Errorf. If this ever starts naming the fixture file, the limitation this file documents no
 // longer holds and the comment above needs updating, not just this assertion.
 func assertParallelPrimaryLocationIsInternal(t *testing.T, output string) {
 	t.Helper()

@@ -46,7 +46,7 @@ type failureRecord struct {
 // text renders r for a plain-string consumer: "file:line: message" when a location was captured, or
 // the bare message otherwise (e.g. FailNow, which records "fail now" with no assertion to locate).
 // reportFailures is the only caller — it is the sole place a failureRecord becomes the text
-// `go test` actually prints, keeping the format in one place. Go's own decoration on that Fatalf
+// `go test` actually prints, keeping the format in one place. Go's own decoration on that Errorf
 // call still names the internal frame that made it (see reportFailures); this embeds the real
 // location in the message text itself, since that is the only place a plain `go test` run (no
 // custom report.EventReporter) can show it at all.

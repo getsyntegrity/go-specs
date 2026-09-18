@@ -2,8 +2,9 @@
 //
 // Specs are compiled into a flat []RunSpec. RunParallel distributes spec indexes via an atomic
 // counter; each worker pulls an index, gets a Context from the pool, runs the spec, returns the
-// context. Failures are recorded by spec index; after all workers finish, failures are reported
-// in spec order (deterministic). No allocations in the worker execution loop.
+// context. Failures are recorded by spec index, one record per spec (first write wins); after all
+// workers finish, every failing spec is reported in spec order (deterministic), through Errorf so
+// reporting N failures never implies fail-fast. No allocations in the worker execution loop.
 package specs
 
 import (
@@ -121,9 +122,23 @@ func (p *parallelBackend) Helper() {}
 // returns "" all record a genuine failure whose message is legitimately empty — and every one of
 // those used to vanish, because each consumer tested `Message != ""` (#175).
 //
+// Repeated failures within one spec are first-write-wins: the record already there is kept. Error
+// and Errorf do not abort (matching testing.T.Error), so one spec body can reach here more than
+// once, and the first failure is the one that explains the spec — everything after it is usually a
+// consequence of the state the first one left behind. This is the same rule the rest of the library
+// already applies: Context.failure.Failed is sticky on the sequential path, and
+// recoverParallelSpecFailure refuses to let a panic overwrite an assertion failure it followed.
+// Overwriting was never a decision, only what a wholesale assignment happened to do (#173).
+//
+// Note this is per spec slot, not per report: one slot holds one failure, so a spec that reports
+// twice is still one entry in results. That is what keeps reporting deterministic in spec order.
+//
 //go:noinline
 func (p *parallelBackend) record(msg string) {
 	if p.results == nil || p.specIndex < 0 || p.specIndex >= len(*p.results) {
+		return
+	}
+	if (*p.results)[p.specIndex].Failed {
 		return
 	}
 	f := failureRecord{Failed: true, Message: msg}
@@ -210,24 +225,38 @@ func runWorkerSpec(fn func(*Context), ctx *Context, results *[]failureRecord, id
 	fn(ctx)
 }
 
-// failureReporter is the minimal interface needed to report failures (avoids requiring full testing.TB in tests).
+// failureReporter is the minimal interface needed to report failures (avoids requiring full
+// testing.TB in tests). It requires Errorf rather than Fatalf deliberately — see reportFailures.
 type failureReporter interface {
 	Helper()
-	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
 }
 
-// reportFailures reports the first failure in spec index order (deterministic). tb.Fatalf's own
-// decoration still names whichever internal frame called it here — there is no live worker frame
-// left to mark as a helper (see parallelCallerLocation) — so a captured location is embedded in the message
-// text itself via failureRecord.text(), the only way it can reach a plain `go test` run's output at
-// all. See #108.
+// reportFailures reports every failed spec, in spec index order (deterministic).
+//
+// It reports through Errorf, never Fatalf, and that is the whole point of #173. Fatalf ends in
+// runtime.Goexit on a real *testing.T, so a Fatalf here could only ever surface one failure — the
+// loop could not continue past it — and it took the calling goroutine with it, skipping whatever
+// the caller meant to do next. A parallel group with five independently failing specs showed one,
+// and a caller that never asked for FailFast got it anyway, from nothing but the shape of the
+// reporting call. Errorf marks the test failed and returns, so all N failures reach the output and
+// execution continues; fail-fast stays where the user puts it, in Runner.FailFast, which stops at
+// the next group boundary by reading the failure the caller folded onto its Context.
+//
+// The Failed bit is the failure, never a non-empty Message (#175): a Fatal() with no arguments or a
+// Matcher whose FailureMessage returns "" is a real failure with nothing to print.
+//
+// tb.Errorf's own decoration still names whichever internal frame called it here — there is no live
+// worker frame left to mark as a helper (see parallelCallerLocation) — so a captured location is
+// embedded in the message text itself via failureRecord.text(), the only way it can reach a plain
+// `go test` run's output at all. See #108.
 func reportFailures(tb failureReporter, results []failureRecord) {
 	for i, r := range results {
-		if r.Failed {
-			tb.Helper()
-			tb.Fatalf("spec[%d]: %s", i, r.text())
-			return
+		if !r.Failed {
+			continue
 		}
+		tb.Helper()
+		tb.Errorf("spec[%d]: %s", i, r.text())
 	}
 }
 
