@@ -23,11 +23,12 @@ help:
 	@echo "  make build         Build all modules and specs-cli"
 	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove specs-cli, coverage.*, benchmark results"
-	@echo "  make check-go-version  Verify go.mod and .go-version agree on the Go minor"
+	@echo "  make check-go-version  Verify every go.mod matches .go-version exactly"
 	@echo ""
 
-# Fail when go.mod's `go` directive and .go-version drift apart on the minor
-# version. Same script CI runs, so a bad bump is caught before pushing.
+# Fail when any go.mod's `go` directive differs from .go-version, patch
+# component included. Same script CI runs, so a bad bump is caught before
+# pushing.
 check-go-version:
 	./.github/scripts/check-go-version.sh
 

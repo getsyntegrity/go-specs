@@ -15,19 +15,25 @@ Requirements:
 
 ## Go version pinning
 
-Two files, two different jobs — do not collapse them:
+`.go-version` is the single source of truth for the Go version. CI installs it
+through `actions/setup-go`'s `go-version-file`, version managers read it
+automatically, and every `go.mod` in the repository must declare the **exact**
+same version in its `go` directive — patch component included.
 
 | File | Meaning |
 | --- | --- |
-| `go.mod`'s `go` directive | **Minimum** language version the code needs. This is the floor every downstream consumer of go-specs inherits, so it stays conservative. |
-| `.go-version` | **Exact** toolchain CI installs and contributors run. Tracks a current patch release so security fixes land without moving the consumer floor. |
+| `.go-version` | The Go version. Bump this one. |
+| every `go.mod`'s `go` directive | Must equal `.go-version` exactly. Generated from it, never edited by hand. |
 
-They are allowed to differ on the *patch* component, and normally do. They
-must agree on `<major>.<minor>`.
+The tradeoff is deliberate: one version, one place to bump. Because the `go`
+directive is also the minimum language version downstream consumers inherit,
+raising `.go-version` to a new patch release raises that floor too — anyone
+importing go-specs must install at least that patch to build.
 
-Bumping either one means bumping both (minor bumps) and running:
+To bump, edit `.go-version`, propagate it to every module, and verify:
 
 ```
+go mod edit -go="$(tr -d '[:space:]' <.go-version)"
 make check-go-version
 ```
 
