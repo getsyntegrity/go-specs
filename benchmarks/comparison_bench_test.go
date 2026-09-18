@@ -240,10 +240,13 @@ func BenchmarkCompare_Contains_Gomega(b *testing.B) {
 
 // --- Scenario: wrapped error identity (errors.Is semantics) ---
 //
-// go-specs has no unwrapping error matcher: specs.Equal resolves through assert.ValuesEqual,
-// which ends in reflect.DeepEqual and therefore does NOT see through errors.Join/fmt.Errorf %w.
-// The idiomatic go-specs spelling is errors.Is at the call site, which is what is measured here.
-// Testify (ErrorIs) and Gomega (MatchError) unwrap inside the assertion.
+// go-specs unwraps inside the assertion since #183: specs.Equal and specs.MatchError both resolve
+// through assert.ValuesEqual, which asks errors.Is(actual, expected) when both sides are errors.
+// Testify (ErrorIs) and Gomega (MatchError) unwrap inside the assertion too.
+//
+// What is measured here is deliberately left as errors.Is at the call site, so this row keeps
+// comparing the same three spellings the published table in COMPARISON.md was generated from.
+// Measuring specs.MatchError instead would be a different benchmark, not a rerun of this one.
 
 func BenchmarkCompare_ErrorIs_GoSpecs(b *testing.B) {
 	ctx := specs.NewContext(b)

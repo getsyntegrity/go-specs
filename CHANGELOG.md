@@ -46,6 +46,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `specs.MatchError(target)` and `specs.MatchErrorAs(&target)` (re-exported from `assert`), the
+  explicit spellings for error assertions. `MatchError` states at the call site the `errors.Is`
+  semantics `specs.Equal` now applies to errors; `MatchErrorAs` is the only way to reach `errors.As`
+  and populates the target on a match. `errors.As` panics on an invalid target, so the matcher
+  validates it first and reports a failure instead — a matcher's job is to tell the truth about an
+  assertion, not to take the suite down. `assert.EqualFailureMessage` is exported alongside them so
+  the DSL's inlined comparison paths report identically to the matchers.
+  ([#183](https://github.com/getsyntegrity/go-specs/issues/183))
 - Direct tests for the retained exported registry helpers — `PrintTreeArena`, `CurrentArena`,
   `CurrentSuite`, `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen` — which previously had none.
   They pin the documented behaviour of each, including that the read-only accessors and
@@ -135,6 +143,41 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   consumers at once. The failure bit is now recorded explicitly and never inferred from the message
   text. ([#175](https://github.com/getsyntegrity/go-specs/issues/175))
 
+- **Breaking.** `specs.Equal` reported unrelated errors as equal — a silent false green. Errors fell
+  past the comparable fast path into `assert.ValuesEqual`, which ended in `reflect.DeepEqual`;
+  `DeepEqual` dereferences two `*errorString` pointers and compares the structs, so *any* two errors
+  carrying the same message compared as equal. `ctx.Expect(err).To(specs.Equal(io.EOF))` passed
+  against any error whose message happened to read `"EOF"`, no matter which layer produced it. The
+  same comparison failed in the opposite direction: a `fmt.Errorf("%w")` or `errors.Join` error did
+  not match the sentinel it wrapped. `errors.Is` was never consulted, even though `assert.EqualValues`
+  already used it and simply was not wired into the matcher.
+
+  Equality is now **oriented** for errors: when both operands are errors, `specs.Equal`,
+  `specs.NotEqual`, `specs.Contain` and `ctx.Expect(x).ToEqual(y)` ask `errors.Is(actual, expected)` —
+  never the reverse, and never both directions. An actual that wraps the expected sentinel satisfies
+  it; a bare sentinel does not satisfy an expectation of some wrapped error that merely contains it,
+  because that is a stricter claim and accepting it would invent a relation `errors.Is` never makes.
+  `specs.NotEqual` is the exact negation of the same semantics. `assert.ValuesEqual`'s parameter
+  order `(expected, actual)` is now part of its contract rather than incidental.
+
+  This is breaking for any test that relied on the old structural comparison, including the accidental
+  green. `assert.EqualValues` is unchanged and stays deliberately symmetric — its parameters are
+  `a, b`, neither side is privileged, and it answers "are these two errors related at all?"; its
+  internal helper is renamed `equalValuesSymmetric` so the two semantics cannot be confused.
+
+  Two further fixes ship with it. `specs.Contain` passed its slice element and expected value to
+  `ValuesEqual` in reversed order — invisible while everything compared through the symmetric
+  `reflect.DeepEqual`, a bug the moment the comparison became oriented. And `ctx.Expect(x).ToEqual(y)`
+  carried its own inlined `reflect.DeepEqual`, so it had the identical defect and is now routed
+  through `assert.ValuesEqual` — the matcher and the DSL shortcut can no longer disagree about the
+  same two values.
+
+  Failure messages were the reason this stayed invisible: expected and actual rendered identically,
+  so a failure read `expected boom to equal boom`. Error mismatches now report concrete types and name
+  the semantics applied (`expected error boom (*errors.errorString) to match boom
+  (*errors.errorString) — errors.Is(actual, expected) is false`), and non-error mismatches gain a
+  type-qualified rendering whenever `%v` alone makes the two sides indistinguishable.
+  ([#183](https://github.com/getsyntegrity/go-specs/issues/183))
 - **Breaking.** An assertion handle from `ctx.Expect(x)` or `specs.ExpectT(ctx, x)` could be used
   more than once, and the second use was a false green. The first `To`/`ToEqual` call returned the
   `Expectation` to `expectationPool`, so a retained handle either silently returned (its `ctx` had

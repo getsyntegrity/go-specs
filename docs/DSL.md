@@ -137,7 +137,7 @@ exists so that doing so by accident fails loudly instead of quietly asserting tw
 |---|---|---|
 | `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
 | `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
-| `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `reflect.DeepEqual` for everything else. |
+| `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `errors.Is(actual, expected)` when both sides are errors, `reflect.DeepEqual` for everything else. |
 
 The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't even be called with a slice or map — that's a compile error, not a runtime surprise. But for structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
 
@@ -151,6 +151,40 @@ reflect.DeepEqual(x, y)   // true  — same pointed-to value
 ```
 
 So `EqualTo(ctx, x, y)` fails while `ctx.Expect(x).ToEqual(y)` passes, for the exact same `x`/`y`. This is the tradeoff: pick `EqualTo`/`ExpectT` for the zero-allocation, no-reflection fast path when your type's `==` already means what you want (primitives, or plain value structs with no pointer fields); pick `ctx.Expect(...).ToEqual(...)` when you need value-based deep equality for structs, slices, or maps.
+
+### Errors compare by identity, and the comparison is oriented
+
+Structural equality is the wrong question to ask about an error. `reflect.DeepEqual` dereferences two `*errorString` pointers and compares the structs, so two errors built independently from the same message compare as equal — and a wrapped error fails against the very sentinel it wraps. Both halves are wrong, and the first one is silent.
+
+So `ctx.Expect(...).ToEqual(...)`, `Equal`, `NotEqual` and `Contain` ask `errors.Is` when **both** sides are errors:
+
+```go
+sentinel := errors.New("boom")
+impostor := errors.New("boom")           // a different error, same message
+wrapped  := fmt.Errorf("layer: %w", sentinel)
+
+ctx.Expect(impostor).ToEqual(sentinel)   // fails — unrelated errors
+ctx.Expect(wrapped).ToEqual(sentinel)    // passes — wrapped carries sentinel's identity
+ctx.Expect(sentinel).ToEqual(wrapped)    // fails — see orientation, below
+ctx.Expect(errors.New("EOF")).ToEqual(io.EOF) // fails
+```
+
+The comparison is **oriented**: it asks `errors.Is(actual, expected)`, never the reverse and never both directions. A matcher is built around a value you declared as expected, so the question is "does the error I got carry the identity I asked for?". An actual that wraps your sentinel answers yes. A bare sentinel does *not* satisfy an expectation of some wrapped error that merely contains it — that is a stricter claim, and accepting it would invent a relation `errors.Is` never makes.
+
+`assert.EqualValues` is the one deliberate exception: its parameters are `a, b` rather than expected/actual, neither side is privileged, and it answers the symmetric question "are these two errors related at all?".
+
+Two matchers state the intent explicitly at the call site:
+
+```go
+ctx.Expect(err).To(specs.MatchError(io.EOF))   // errors.Is
+
+var pathErr *fs.PathError
+ctx.Expect(err).To(specs.MatchErrorAs(&pathErr))  // errors.As, populates pathErr
+```
+
+`MatchError` is the same semantics `Equal` applies, spelled out. `MatchErrorAs` is the only way to reach `errors.As`, and it reports a failure rather than panicking when handed an unusable target.
+
+`EqualTo` and `ExpectT(...).ToEqual(...)` are unaffected — they use `==`, which for errors compares interface identity. A wrapped error is not `==` its sentinel.
 
 ## Example
 

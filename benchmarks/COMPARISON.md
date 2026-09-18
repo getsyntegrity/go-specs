@@ -40,7 +40,9 @@ Assertions measured are the passing (happy) path. Setup lives outside the timed 
 
 **4. Deep equality flattens the field.** On a slice all three end up inside `reflect.DeepEqual`, so the results converge (274 / 324 / 656 ns). go-specs' advantage is not a faster deep comparison — it is *avoiding* deep comparison whenever the type is `comparable`. Once you compare slices and maps, you pay reflection like everyone else.
 
-**5. Semantic gap found while writing this benchmark: `specs.Equal` does not unwrap errors.** It resolves through `assert.ValuesEqual`, which ends in `reflect.DeepEqual` and therefore does not see through `fmt.Errorf("%w")` or `errors.Join`. Testify (`assert.ErrorIs`) and Gomega (`MatchError`) both unwrap inside the assertion. The idiomatic go-specs spelling today is `errors.Is` at the call site — which is what the benchmark measures, and which is also why go-specs is the fastest row there. There is a separate `assert.EqualValues` helper that *does* use `errors.Is`, but it is not wired into the `Equal` matcher. **An `ErrorIs` / `MatchError` matcher is a genuine gap in the DSL.**
+**5. Semantic gap found while writing this benchmark — since fixed.** `specs.Equal` used to resolve through `assert.ValuesEqual`, which ended in `reflect.DeepEqual` and therefore did not see through `fmt.Errorf("%w")` or `errors.Join`. Worse than the missing unwrap was the silent half: two unrelated errors carrying the same message compared as *equal*, so `specs.Equal(io.EOF)` passed against any error whose message read `"EOF"`. [#183](https://github.com/getsyntegrity/go-specs/issues/183) fixed both directions — equality now asks `errors.Is(actual, expected)` when both sides are errors — and added `specs.MatchError` / `specs.MatchErrorAs` as the explicit spellings. Testify (`assert.ErrorIs`) and Gomega (`MatchError`) unwrap inside the assertion too.
+
+The benchmark row still measures `errors.Is` at the call site for go-specs, deliberately: it is the spelling the numbers in the table above were generated from, so swapping it for `specs.MatchError` would silently change what the row compares.
 
 ---
 
