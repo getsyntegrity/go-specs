@@ -541,7 +541,7 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, r
 // others so one panicking after-hook doesn't stop the rest.
 //
 // On a recovered panic, message and output are built exactly once — message is the short
-// "panic: value" summary, output is the raw stack trace — and reused both for ctx.backend.Errorf
+// "panic: value" summary, output is the raw stack trace — and reused both for reportRecoveredPanic
 // (unchanged wire format: "message\noutput") and as the return value runExecutionContext feeds
 // into reportSpecFinished's specResult; they are never reconstructed elsewhere. If the body didn't
 // panic but an after-hook instruction (scoped to this one spec here, unlike the group-shared after
@@ -562,10 +562,9 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) (message,
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
 			message = fmt.Sprintf("panic: %v", recovered)
 			output = string(debug.Stack())
-			ctx.backend.Errorf("%s\n%s", message, output)
+			reportRecoveredPanic(ctx, message, output)
 		}
 		for _, inst := range after {
 			m, o := runAfterInstructionRecovered(ctx, inst)
@@ -591,10 +590,9 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) (message,
 func runAfterInstructionRecovered(ctx *Context, inst Instruction) (message, output string) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
 			message = fmt.Sprintf("panic in after hook: %v", recovered)
 			output = string(debug.Stack())
-			ctx.backend.Errorf("%s\n%s", message, output)
+			reportRecoveredPanic(ctx, message, output)
 		}
 	}()
 	inst.Fn(ctx)

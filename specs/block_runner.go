@@ -4,6 +4,7 @@
 package specs
 
 import (
+	"fmt"
 	"runtime/debug"
 	"testing"
 )
@@ -59,7 +60,7 @@ func NewBlockRunner(fns []func(*Context), blocks []specBlock) *BlockRunner {
 // from the pool, reused for every spec. No allocations in the loop.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure
-// (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec in the
+// (via reportRecoveredPanic, message and stack trace), and the next spec in the
 // block, and the next block, still run.
 func (r *BlockRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.blocks) == 0 {
@@ -93,8 +94,7 @@ func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+			reportRecoveredPanic(ctx, fmt.Sprintf("panic: %v", recovered), string(debug.Stack()))
 		}
 	}()
 	fn(ctx)
