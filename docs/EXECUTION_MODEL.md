@@ -183,6 +183,13 @@ Parallel specs have no subtest identity, before this change or after it. `ItPara
 under `parallelBackend` on the scheduler's own goroutines and never reach `t.Run` at all; they are
 addressable through reporter events, not through a `-run` pattern.
 
+The reverse direction is closed off: a sequential spec body may not call `ctx.T.Parallel()`. Parking
+a subtest makes `t.Run` return before the body finished, which breaks the single assumption the
+shared per-run `*Context` depends on — the runner would swap the next spec over a Context still
+bound to a spec that has not executed, nesting subtests and silently blanking the parked body's
+assertions. The runner detects the parked subtest and fails the run with a diagnostic instead. See
+`docs/DSL.md` for the user-facing contract and `specs/spec_body_parallel.go` for the mechanism.
+
 ### Hooks: the two models disagree, with or without `-run`
 
 The two sequential models do not run hooks the same way, and the difference is in the hooks, not the

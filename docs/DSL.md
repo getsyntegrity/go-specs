@@ -68,6 +68,25 @@ Each `ItParallel` spec runs on its own `*specs.Context`. `ctx.T` is `nil` inside
 
 A failing assertion still stops the rest of that spec body, same as in a sequential `It` — code after a failed `ctx.Expect(...)` inside `ItParallel` does not run. Every spec in the parallel group always runs to completion before the runner moves on; `Runner.FailFast` only takes effect at the next group, it cannot cancel a sibling `ItParallel` spec mid-group.
 
+### `ctx.T.Parallel()` is not supported
+
+`ItParallel` and `RunParallel`/`RunParallelBatched` are the only supported ways to run specs concurrently. Calling Go's own `ctx.T.Parallel()` from inside a sequential `It` body is **unsupported and fails the run immediately** with a diagnostic naming the operation.
+
+The reason is structural. Sequential execution runs the specs of a group against one shared, mutable `*specs.Context`, re-pointing it at the current subtest for the duration of each body. That is safe only because `testing.T.Run` does not return until the body has finished. `t.Parallel()` parks the subtest goroutine and returns control to the runner early, which leaves the Context bound to a spec that has not executed yet. Two things then go wrong, and the quiet one is worse:
+
+- the next spec opens its subtest under the previous spec's `*testing.T`, producing nested identities like `suite/bravo/suite/charlie` that no reporter or `-run` pattern can address; and
+- the runner finishes the spec and recycles the shared Context while the parked body has not run, so every assertion it later makes sees no backend, returns silently, and the suite reports **PASS having proven nothing**.
+
+Rather than tolerate either, the runner detects the parked subtest, stops the run, and reports:
+
+```
+ctx.T.Parallel() is not supported in the sequential spec "suite/bravo": the subtest parked and
+t.Run returned before the body finished ... Use ItParallel (or RunParallel/RunParallelBatched) to
+run specs concurrently; those give each spec its own Context and never expose a live *testing.T.
+```
+
+The parked body's Context is deliberately abandoned rather than recycled, so if that body does resume, its assertions still report against its own subtest instead of disappearing or landing on an unrelated spec.
+
 ## Expect and EqualTo
 
 Assertions use the context. Two main styles:
