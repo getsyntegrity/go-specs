@@ -133,6 +133,59 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Breaking.** Invalid sharding configuration degraded silently into "run the whole suite". A
+  `total <= 0`, a negative index or an index at or above the total made `ShardSpecs` and
+  `ShardBCProgram` return every spec, and made `RunShard`/`RunShardWithReporter` run every group;
+  `ParseShardEnv` and `ParseShardFlag` reduced any malformed value to `ok=false`, which
+  `ShardFromArgsOrEnv` then reported as "no sharding requested". A CI typo as small as
+  `SHARD_TOTAL=0` therefore made every worker run 100% of the suite, N times over, and still report
+  green — the suite looked sharded and proved nothing about the partition. Sharding now has three
+  distinct states instead of two: not configured (run everything — legitimate), configured and valid,
+  and configured but unusable (a hard failure). The parsers return `error` instead of `ok bool`:
+  `ErrShardNotConfigured` when nothing requested sharding, testable with `errors.Is`, and a
+  `*ShardConfigError` when something did but the value cannot be used. `ShardSpecs` and
+  `ShardBCProgram` hold no `testing.TB`, so they panic with an actionable message the way a reused
+  `Expectation` does; `RunShard` and `RunShardWithReporter` do hold one, so they report through
+  `tb.Fatalf` and their signatures are unchanged. Invalid configuration therefore never means "run
+  everything", and never means "run nothing successfully".
+
+  Migration — the `ok bool` return of `ParseShardString`, `ParseShardFlag`, `ParseShardEnv` and
+  `ShardFromArgsOrEnv` becomes an `error`:
+
+  ```go
+  // before
+  if shard, total, ok := specs.ShardFromArgsOrEnv(); ok {
+      list = specs.ShardSpecs(list, shard, total)
+  }
+
+  // after
+  shard, total, err := specs.ShardFromArgsOrEnv()
+  switch {
+  case errors.Is(err, specs.ErrShardNotConfigured): // run the whole suite
+  case err != nil:
+      fmt.Fprintln(os.Stderr, err)
+      os.Exit(2)
+  default:
+      list = specs.ShardSpecs(list, shard, total)
+  }
+  ```
+
+  Precedence between args and environment is now defined and fail-closed. The `-shard` flag, once
+  present, is authoritative: a malformed value is an error and does **not** fall back to the
+  environment, because running a different partition than CI asked for is the same class of silent
+  degradation as running all of them. An absent flag defers to the environment, where `SHARD` takes
+  precedence over `SHARD_INDEX`/`SHARD_TOTAL` on the same terms. Setting exactly one of
+  `SHARD_INDEX`/`SHARD_TOTAL` is now a configuration error rather than "not configured" — a
+  half-configured pair is a typo, not a request to run everything. `-shard=2/10` and `--shard` are
+  accepted alongside `-shard 2/10`, since Go's `flag` package accepts all four spellings and a form
+  this parser skipped silently meant "no sharding". Each diagnostic names the exact flag or variable
+  at fault, the value it carried, why it is unusable, that no specs ran, and the remedy including how
+  to opt out of sharding entirely.
+
+  Valid sharding and the partition contract are unchanged: shards stay disjoint, their union is still
+  the whole suite, and a shard that legitimately draws nothing — more shards than specs or groups —
+  remains a valid empty partition rather than an error.
+  ([#174](https://github.com/getsyntegrity/go-specs/issues/174))
 - A parallel spec (`ItParallel`, `RunParallel`, `RunParallelBatched`) that failed with an empty
   message was reported as a passing spec. The parallel path carried no failure bit at all: every
   consumer asked whether the recorded message was non-empty, so `ctx.backend.Fatal()` with no

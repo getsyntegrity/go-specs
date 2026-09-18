@@ -319,6 +319,38 @@ The builder groups parallel specs into one step; the runner executes that step (
 
 **Known limitation:** this can produce uneven shard runtimes when hook groups are large or unevenly sized, since balancing happens at the group level rather than the individual-spec level. Balancing by spec count is tracked separately and deferred post-v1.0.0.
 
+### Configuration is fail-closed
+
+Sharding has three states, not two, and keeping the middle one distinct is what makes a sharded CI run trustworthy:
+
+| State | How it is reported | What runs |
+|-------|--------------------|-----------|
+| Not configured | `ErrShardNotConfigured` from the parsers | The whole suite. This is legitimate. |
+| Configured and valid | `nil` error | This shard's partition. |
+| Configured but unusable | `*ShardConfigError`; a panic from `ShardSpecs`/`ShardBCProgram`, `tb.Fatalf` from `RunShard` | Nothing — the run fails. |
+
+Invalid configuration never widens to "run everything". Before this was enforced, `SHARD_TOTAL=0` made every worker run 100% of the suite and still report green: the build looked sharded and proved nothing about the partition (issue #174).
+
+Precedence is strict and fail-closed:
+
+1. The `-shard` flag, once present, is authoritative. A malformed value is an error and does **not** fall back to the environment — running a different partition than CI asked for is the same class of silent degradation as running all of them. `-shard 2/10`, `-shard=2/10` and the `--shard` spellings are all accepted.
+2. Otherwise `SHARD=2/10`, on the same terms.
+3. Otherwise `SHARD_INDEX` + `SHARD_TOTAL`. Setting exactly one of the two is a configuration error, not "not configured": a half-configured pair is a typo, not a request to run everything.
+
+`total` must be >= 1 and `index` must satisfy `0 <= index < total`. A shard that draws no specs or groups under a *valid* configuration — more shards than work — is an empty partition, not an error, and runs nothing without failing.
+
+```go
+shard, total, err := specs.ShardFromArgsOrEnv()
+switch {
+case errors.Is(err, specs.ErrShardNotConfigured):
+    specs.NewRunner(prog).Run(t) // no sharding requested
+case err != nil:
+    t.Fatal(err) // configured but unusable
+default:
+    specs.RunShard(prog, t, shard, total)
+}
+```
+
 ---
 
 ## Generated candidate identity

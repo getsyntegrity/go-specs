@@ -73,7 +73,7 @@ library.
 | File | `specs/minimal_runner.go` |
 | Public surface | `RunSpec`, `MinimalRunner`, `NewMinimalRunner`, `NewMinimalRunnerFromSpecs`, `Add`, `RunBatchSize`, `Run`, `RunParallel`, `RunParallelBatched` |
 | Reachable from `Describe` | **No** |
-| Non-test consumers | **None.** `ShardSpecs` (`specs/sharding.go:24`) consumes `[]RunSpec`, and the file's doc comment points at `NewMinimalRunnerFromSpecs`, but nothing calls it. |
+| Non-test consumers | **None.** `ShardSpecs` (`specs/sharding.go:162`) consumes `[]RunSpec`, and the file's doc comment points at `NewMinimalRunnerFromSpecs`, but nothing calls it. |
 | Docs | README:13,120,126 — `RunParallel`/`RunParallelBatched` named as "an additional opt-in worker-pool execution path" |
 | Benchmarks | Six in `minimal_and_buildsuite_bench_test.go` |
 | Reason to exist | The only public worker-pool execution of a flat spec list, and the documented partner of `ShardSpecs`. |
@@ -85,7 +85,7 @@ library.
 | Files | `specs/runner_bytecode.go`, `specs/bytecode_impl.go`, `specs/bytecode.go` |
 | Public surface | `BytecodeRunner`, `NewBytecodeRunner`, `Run`, `RunParallel`, `BCProgram`, `BCLen`, `NumSpecs`, `BCBuilder`, `NewBCBuilder`, `AddBefore`, `AddAfter`, `AddSpec`, `BuildBC`, `ShardBCProgram` |
 | Reachable from `Describe` | **No** |
-| Non-test consumers | `ShardBCProgram` only (`specs/sharding.go:39`) |
+| Non-test consumers | `ShardBCProgram` only (`specs/sharding.go:180`) |
 | Benchmarks | **None** |
 | Docs | **None** in README, `docs/`, or `examples/` — only a `CHANGELOG.md:182` migration-table mention |
 | Reason to exist | It flattens hooks at build time like the canonical compiler does, but reports nothing and isolates nothing. It duplicates `ExecutionPlan`'s model with strictly fewer capabilities. **No performance claim backs it: it has no benchmark.** |

@@ -37,7 +37,9 @@ func NewMinimalRunner(capacity int) *MinimalRunner {
 
 // NewMinimalRunnerFromSpecs creates a runner that runs the given specs. The slice is copied so the
 // runner owns it and execution is safe. Use with ShardSpecs to run a shard: ShardSpecs(specs, shard, total)
-// then NewMinimalRunnerFromSpecs(sharded). Run and RunParallel are unchanged; no allocations in their loop.
+// then NewMinimalRunnerFromSpecs(sharded) — resolve shard and total through ShardFromArgsOrEnv first,
+// which distinguishes "no sharding requested" from a configuration that cannot be used.
+// Run and RunParallel are unchanged; no allocations in their loop.
 func NewMinimalRunnerFromSpecs(specs []RunSpec) *MinimalRunner {
 	if len(specs) == 0 {
 		return &MinimalRunner{specs: nil}
