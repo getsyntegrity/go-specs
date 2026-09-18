@@ -1,6 +1,10 @@
 package specs
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+)
 
 // The matcher assertion path — Expect(x).To(m), ExpectT(ctx, x).To(m), and the specs.* matcher
 // re-exports the README documents — ran only under `go test -bench`, so `go test ./...` proved
@@ -198,4 +202,87 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect(p).To(BeNil())
 		})
 	})
+}
+
+// planBackend is a testBackend that swallows failure reports instead of forwarding them to a real
+// *testing.T. A spec that fails through the real assertion path reports to its backend, and a real
+// backend would fail the enclosing test — which is why TestDescribeWithReporterMarksFailedFlatSpec
+// calls ctx.recordFailure() directly rather than asserting. Swallowing the report is what lets the
+// end-to-end test below drive a genuine ExpectT(...).To(matcher) failure and still observe the
+// reporter events it produced.
+type planBackend struct {
+	fatalfMsg string
+}
+
+func (p *planBackend) Helper()                              {}
+func (p *planBackend) FailNow()                             {}
+func (p *planBackend) Fatal(args ...any)                    { p.fatalfMsg = fmt.Sprint(args...) }
+func (p *planBackend) Fatalf(format string, args ...any)    { p.fatalfMsg = fmt.Sprintf(format, args...) }
+func (p *planBackend) Error(args ...any)                    {}
+func (p *planBackend) Errorf(format string, args ...any)    {}
+func (p *planBackend) Log(args ...any)                      {}
+func (p *planBackend) Logf(format string, args ...any)      {}
+func (p *planBackend) Name() string                         { return "planBackend" }
+func (p *planBackend) Cleanup(func())                       {}
+func (p *planBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
+
+// runFailingTypedSpec compiles a one-spec suite whose only assertion fails through the typed matcher
+// path, runs it over the real execution plan, and returns what the reporter and the suite counter
+// saw. specCounter is the exact type CompiledSuite.run builds SuiteEndEvent.FailedSpecs from, so
+// counter.failed here is that field's value, not a proxy for it.
+func runFailingTypedSpec(t *testing.T, body func(ctx *Context)) (*recordingReporter, *specCounter) {
+	t.Helper()
+	c := newBytecodeCompiler()
+	c.PushScope("TypedMatcherSuite")
+	s := &Spec{name: "TypedMatcherSuite", compiler: c}
+	s.It("fails a typed matcher assertion", body)
+	plan := c.TakePlan()
+
+	rep := &recordingReporter{}
+	counter := &specCounter{EventReporter: rep}
+	runPlanSpecsInOrder(context.Background(), &planBackend{}, counter, plan)
+	return rep, counter
+}
+
+// TestExpectTToFailureReachesTheReporterAndTheSuiteCount closes the gap the unit tests above leave.
+// They assert ctx.failed, which is the mechanism; this asserts the properties the CHANGELOG actually
+// promises a consumer — SpecResultEvent.Failed and SuiteEndEvent.FailedSpecs — driven by a real
+// ExpectT(ctx, x).To(matcher) failure running through the compiled plan. Without it, a refactor that
+// decouples ctx.failed from the reporter leaves ctx.failed true, the unit tests green, and the
+// original defect back: a red run reported to every reporter-driven consumer as a passing spec.
+func TestExpectTToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
+	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+		ExpectT(ctx, true).To(BeFalse())
+	})
+
+	if len(rep.specFinished) != 1 {
+		t.Fatalf("expected exactly one SpecFinished event, got %d", len(rep.specFinished))
+	}
+	if !rep.specFinished[0].Failed {
+		t.Error("expected SpecResultEvent.Failed=true; a reporter-driven consumer would be told the spec passed")
+	}
+	if counter.failed != 1 {
+		t.Errorf("expected SuiteEndEvent.FailedSpecs=1, got %d", counter.failed)
+	}
+	if counter.total != 1 {
+		t.Errorf("expected TotalSpecs=1, got %d", counter.total)
+	}
+}
+
+// TestExpectToFailureReachesTheReporterAndTheSuiteCount is the untyped counterpart, so the two paths
+// are held to the same observable contract rather than only the typed one being pinned.
+func TestExpectToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
+	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+		ctx.Expect(42).To(Equal(43))
+	})
+
+	if len(rep.specFinished) != 1 {
+		t.Fatalf("expected exactly one SpecFinished event, got %d", len(rep.specFinished))
+	}
+	if !rep.specFinished[0].Failed {
+		t.Error("expected SpecResultEvent.Failed=true for the untyped path")
+	}
+	if counter.failed != 1 {
+		t.Errorf("expected SuiteEndEvent.FailedSpecs=1, got %d", counter.failed)
+	}
 }
