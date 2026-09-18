@@ -10,8 +10,6 @@
 package specs
 
 import (
-	"fmt"
-	"runtime/debug"
 	"sync"
 	"testing"
 	"time"
@@ -394,13 +392,7 @@ func runAfterRecovered(ctx *Context, after []step) (message, output string) {
 // when s(ctx) returns normally, including via runtime.Goexit (a real testing.T.Fatalf/FailNow) —
 // recover() cannot observe that case, so it is indistinguishable here from a spec that never failed.
 func runStepRecovered(ctx *Context, s step, label string) (message, output string) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			message = fmt.Sprintf("%s: %v", label, recovered)
-			output = string(debug.Stack())
-			reportRecoveredPanic(ctx, message, output)
-		}
-	}()
+	defer func() { message, output = recoverSpecFailure(ctx, recover(), label) }()
 	s(ctx)
 	return
 }
