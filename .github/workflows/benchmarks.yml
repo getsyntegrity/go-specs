@@ -19,10 +19,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Benchmark numbers are only comparable across runs when the toolchain
+      # is, so this job installs the same pinned version as CI rather than a
+      # floating minor.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Create results directory
