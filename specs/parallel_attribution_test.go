@@ -13,7 +13,7 @@ import (
 )
 
 // This file pins #108's fix: an ItParallel failure's recorded message embeds the user's own
-// assertion file:line (see parallelCallerLocation and parallelFailure in scheduler.go). It runs the
+// assertion file:line (see parallelCallerLocation and failureRecord in scheduler.go). It runs the
 // fixture in testdata/parallel_attribution as a real `go test` subprocess, for the same reason
 // attribution_test.go does: the thing under test is what `go test` actually prints.
 //

@@ -166,7 +166,7 @@ func runAll(steps []step) step {
 //
 // Each goroutine runs its own *Context, pulled from contextPool and backed by a parallelBackend
 // (the same type RunParallel's worker pool uses) with abortOnFatal set, instead of sharing ctx:
-// Context.failed and the underlying *testing.T are not safe for concurrent access, and
+// Context's failure record and the underlying *testing.T are not safe for concurrent access, and
 // testing.T.FailNow (used by Fatal/Fatalf) must only be called from the goroutine running the
 // test. Once every goroutine has finished, failures are replayed on ctx from the calling
 // goroutine, so Fatalf/FailFast still happen on the right goroutine.
@@ -192,7 +192,7 @@ func runAll(steps []step) step {
 // execObserver (i.e. Runner.Run has a Reporter), each goroutine reports its own spec directly —
 // SpecStarted right before running it, SpecFinished once results[i] is known (after classifying
 // nil/parallelAbort{}/a real panic) — instead of the group being reported as a single opaque unit.
-// Failed is that spec's own result, not the group's aggregate ctx.failed. Events from different
+// Failed is that spec's own result, not the group's aggregate failure record. Events from different
 // goroutines may interleave in any order; only started-before-finished is guaranteed per spec.
 // obs is read once from ctx before any goroutine starts, then only read (never mutated) by them,
 // so no synchronization is needed for the pointer itself; obs's own methods serialize the actual
@@ -208,7 +208,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		}
 		pathValues := ctx.Path()
 		obs := ctx.execObserver
-		results := make([]parallelFailure, len(steps))
+		results := make([]failureRecord, len(steps))
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
@@ -239,12 +239,12 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 					case parallelAbort{}:
 						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
 					default:
-						if results[i].Message == "" {
-							results[i] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
+						if !results[i].Failed {
+							results[i] = failureRecord{Failed: true, Message: fmt.Sprintf("panic: %v", r)}
 						}
 					}
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i].Message != "", Message: results[i].Message})
+						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message})
 					}
 					release()
 				}()
@@ -253,7 +253,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		}
 		wg.Wait()
 		for _, r := range results {
-			if r.Message != "" {
+			if r.Failed {
 				ctx.recordFailure()
 				break
 			}

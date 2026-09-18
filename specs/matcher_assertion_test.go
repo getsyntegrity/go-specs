@@ -27,7 +27,7 @@ func TestExpectToReportsNothingWhenTheMatcherPasses(t *testing.T) {
 	if b.failed {
 		t.Fatalf("expected no failure, got %q", b.message)
 	}
-	if ctx.failed {
+	if ctx.hasFailed() {
 		t.Fatal("expected the context to stay unfailed after a passing matcher")
 	}
 }
@@ -46,14 +46,14 @@ func TestExpectToReportsTheMatcherMessageWhenItFails(t *testing.T) {
 }
 
 // A matcher failure must mark the Context, not just the backend: FailFast and the Failed flag on
-// SpecResultEvent both read ctx.failed, and a failure invisible to them reports a green spec on a
+// SpecResultEvent both read ctx.hasFailed(), and a failure invisible to them reports a green spec on a
 // red run — the same class of defect as issue #115 on the snapshot path.
 func TestExpectToMarksTheContextFailedSoFailFastAndReportersSeeIt(t *testing.T) {
 	ctx, _ := newCapturedContext()
 
 	ctx.Expect(42).To(Equal(43))
 
-	if !ctx.failed {
+	if !ctx.hasFailed() {
 		t.Fatal("expected the context to be marked failed after a matcher failure")
 	}
 }
@@ -121,7 +121,7 @@ func TestExpectTToMarksTheContextFailedLikeTheUntypedPath(t *testing.T) {
 
 	ExpectT(ctx, true).To(BeFalse())
 
-	if !ctx.failed {
+	if !ctx.hasFailed() {
 		t.Fatal("expected the context to be marked failed after a typed matcher failure")
 	}
 }
@@ -183,7 +183,7 @@ func TestAssertionsWithoutABackendReturnQuietlyInsteadOfPanicking(t *testing.T) 
 
 			// Nothing was reported, so nothing may be recorded either: a failure the runner can
 			// see but no backend ever heard would stop a FailFast run with no message to show.
-			if ctx.failed {
+			if ctx.hasFailed() {
 				t.Error("expected no recorded failure when the assertion had nowhere to report")
 			}
 		})
@@ -305,16 +305,17 @@ func (p *planBackend) Name() string                         { return "planBacken
 func (p *planBackend) Cleanup(func())                       {}
 func (p *planBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
 
-// runFailingTypedSpec compiles a one-spec suite whose only assertion fails through the typed matcher
-// path, runs it over the real execution plan, and returns what the reporter and the suite counter
-// saw. specCounter is the exact type CompiledSuite.run builds SuiteEndEvent.FailedSpecs from, so
-// counter.failed here is that field's value, not a proxy for it.
-func runFailingTypedSpec(t *testing.T, body func(ctx *Context)) (*recordingReporter, *specCounter) {
+// runSpecThroughPlan compiles a one-spec suite around body, runs it over the real execution plan,
+// and returns what the reporter and the suite counter saw. specCounter is the exact type
+// CompiledSuite.run builds SuiteEndEvent.FailedSpecs from, so counter.failed here is that field's
+// value, not a proxy for it. Shared with assertion_failure_contract_test.go, which drives every
+// built-in assertion entry point through it.
+func runSpecThroughPlan(t *testing.T, body func(ctx *Context)) (*recordingReporter, *specCounter) {
 	t.Helper()
 	c := newBytecodeCompiler()
 	c.PushScope("TypedMatcherSuite")
 	s := &Spec{name: "TypedMatcherSuite", compiler: c}
-	s.It("fails a typed matcher assertion", body)
+	s.It("runs one assertion", body)
 	plan := c.TakePlan()
 
 	rep := &recordingReporter{}
@@ -324,13 +325,13 @@ func runFailingTypedSpec(t *testing.T, body func(ctx *Context)) (*recordingRepor
 }
 
 // TestExpectTToFailureReachesTheReporterAndTheSuiteCount closes the gap the unit tests above leave.
-// They assert ctx.failed, which is the mechanism; this asserts the properties the CHANGELOG actually
+// They assert ctx.hasFailed(), which is the mechanism; this asserts the properties the CHANGELOG actually
 // promises a consumer — SpecResultEvent.Failed and SuiteEndEvent.FailedSpecs — driven by a real
 // ExpectT(ctx, x).To(matcher) failure running through the compiled plan. Without it, a refactor that
-// decouples ctx.failed from the reporter leaves ctx.failed true, the unit tests green, and the
+// decouples ctx.hasFailed() from the reporter leaves ctx.hasFailed() true, the unit tests green, and the
 // original defect back: a red run reported to every reporter-driven consumer as a passing spec.
 func TestExpectTToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
-	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+	rep, counter := runSpecThroughPlan(t, func(ctx *Context) {
 		ExpectT(ctx, true).To(BeFalse())
 	})
 
@@ -351,7 +352,7 @@ func TestExpectTToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
 // TestExpectToFailureReachesTheReporterAndTheSuiteCount is the untyped counterpart, so the two paths
 // are held to the same observable contract rather than only the typed one being pinned.
 func TestExpectToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
-	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+	rep, counter := runSpecThroughPlan(t, func(ctx *Context) {
 		ctx.Expect(42).To(Equal(43))
 	})
 

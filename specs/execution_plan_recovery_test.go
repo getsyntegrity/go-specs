@@ -49,8 +49,8 @@ func TestRunProgramAfterHookSurvivesBodyPanic(t *testing.T) {
 	if !afterRan {
 		t.Fatal("expected the after hook to run despite the body panic")
 	}
-	if !ctx.failed {
-		t.Fatal("expected ctx.failed to be set after an unrecovered body panic")
+	if !ctx.hasFailed() {
+		t.Fatal("expected ctx.hasFailed() to be set after an unrecovered body panic")
 	}
 	if len(backend.errors) != 1 || !strings.Contains(backend.errors[0], "boom") {
 		t.Fatalf("expected one recorded failure mentioning the panic message, got %v", backend.errors)

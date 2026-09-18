@@ -47,7 +47,7 @@ func isGoSpecsInternalFrame(fn string) bool {
 // one. This is the parallel path's replacement for testing.T.Helper()'s frame-marking (see
 // #101/#106): there is no live testing.TB on a worker goroutine to mark, so the location has to be
 // captured here, on the still-live stack, while the frame exists, and carried as data (see
-// parallelFailure) instead.
+// failureRecord) instead.
 //
 // A "runtime." frame ends the walk with ok=false rather than being reported as a location: real
 // call chains always pass through the user's own frame before unwinding into the runtime (the
@@ -79,10 +79,10 @@ func parallelCallerLocation() (file string, line int, ok bool) {
 	}
 }
 
-// parallelFailure is one spec's recorded failure on the parallel path. Message is exactly what a
-// sequential Fatal/Fatalf/Error/Errorf would have recorded — see
-// TestParallelStepWithObserverPassesFailureStringStraightToMessage, which pins that a
-// report.EventReporter still receives this string verbatim, with no location text mixed in: an
+// The parallel path records into failureRecord, the same type Context carries for the sequential
+// path (see failure.go). Message is exactly what a sequential Fatal/Fatalf/Error/Errorf would have
+// recorded — see TestParallelStepWithObserverPassesFailureStringStraightToMessage, which pins that
+// a report.EventReporter still receives this string verbatim, with no location text mixed in: an
 // EventReporter is a structured consumer and can be handed structured data directly, unlike a plain
 // `go test` run's terminal output.
 //
@@ -90,25 +90,6 @@ func parallelCallerLocation() (file string, line int, ok bool) {
 // parallelCallerLocation, resolved while the worker goroutine's frame was still live. By the time
 // reportFailures runs, that goroutine is gone, so this is the only source of that information — see
 // parallelCallerLocation's doc comment and #108.
-type parallelFailure struct {
-	Message string
-	File    string
-	Line    int
-}
-
-// text renders f for a plain-string consumer: "file:line: message" when a location was captured, or
-// the bare message otherwise (e.g. FailNow, which records "fail now" with no assertion to locate).
-// reportFailures is the only caller — it is the sole place a parallelFailure becomes the text
-// `go test` actually prints, keeping the format in one place. Go's own decoration on that Fatalf
-// call still names the internal frame that made it (see reportFailures); this embeds the real
-// location in the message text itself, since that is the only place a plain `go test` run (no
-// custom report.EventReporter) can show it at all.
-func (f parallelFailure) text() string {
-	if f.File == "" {
-		return f.Message
-	}
-	return fmt.Sprintf("%s:%d: %s", f.File, f.Line, f.Message)
-}
 
 // parallelAbort is the sentinel panic value FailNow/Fatal/Fatalf use, when abortOnFatal is set, to
 // unwind just the current spec body — mirroring testing.T.FailNow's runtime.Goexit without ever
@@ -120,7 +101,7 @@ type parallelAbort struct{}
 // One per worker; worker sets specIndex before running each spec. No reflection, no boxing.
 type parallelBackend struct {
 	specIndex int
-	results   *[]parallelFailure
+	results   *[]failureRecord
 	// abortOnFatal, when true, makes FailNow/Fatal/Fatalf panic(parallelAbort{}) after recording,
 	// so a fatal assertion stops the rest of the spec body — matching testing.T.FailNow's abort
 	// semantics. Both parallelStep (ItParallel, program.go) and RunParallel's worker pool
@@ -135,12 +116,17 @@ func (p *parallelBackend) Helper() {}
 // finds one. Shared by all five reporting methods so the walk depth and bounds check live in one
 // place.
 //
+// Failed is set explicitly rather than left for a reader to infer from Message. A FailNow records
+// "fail now", but Fatal() with no arguments, Fatalf("%s", "") and a Matcher whose FailureMessage
+// returns "" all record a genuine failure whose message is legitimately empty — and every one of
+// those used to vanish, because each consumer tested `Message != ""` (#175).
+//
 //go:noinline
 func (p *parallelBackend) record(msg string) {
 	if p.results == nil || p.specIndex < 0 || p.specIndex >= len(*p.results) {
 		return
 	}
-	f := parallelFailure{Message: msg}
+	f := failureRecord{Failed: true, Message: msg}
 	f.File, f.Line, _ = parallelCallerLocation()
 	(*p.results)[p.specIndex] = f
 }
@@ -196,7 +182,7 @@ func (p *parallelBackend) Run(name string, fn func(testing.TB)) {
 // runWorker runs specs whose indexes it acquires via next. Uses one Context from the pool for
 // the whole worker lifetime; resets it per spec. Backend is the worker's dedicated parallelBackend.
 // No allocations in the loop: context from pool, backend is preallocated, specs slice is read-only.
-func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure) {
+func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]failureRecord) {
 	ctx, release := acquireContext(backend)
 	defer release()
 
@@ -221,13 +207,13 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 // recorded as an ordinary spec failure instead of crashing the worker goroutine. Mirrors
 // parallelStep's per-spec recover in program.go, applied per spec here too so one spec's fatal
 // assertion or panic doesn't stop the worker from running the rest of its specs.
-func runWorkerSpec(fn func(*Context), ctx *Context, results *[]parallelFailure, idx int) {
+func runWorkerSpec(fn func(*Context), ctx *Context, results *[]failureRecord, idx int) {
 	defer func() {
 		switch r := recover(); r {
 		case nil, parallelAbort{}:
 		default:
-			if (*results)[idx].Message == "" {
-				(*results)[idx] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
+			if !(*results)[idx].Failed {
+				(*results)[idx] = failureRecord{Failed: true, Message: fmt.Sprintf("panic: %v", r)}
 			}
 		}
 	}()
@@ -243,11 +229,11 @@ type failureReporter interface {
 // reportFailures reports the first failure in spec index order (deterministic). tb.Fatalf's own
 // decoration still names whichever internal frame called it here — there is no live worker frame
 // left to mark as a helper (see parallelCallerLocation) — so a captured location is embedded in the message
-// text itself via parallelFailure.text(), the only way it can reach a plain `go test` run's output at
+// text itself via failureRecord.text(), the only way it can reach a plain `go test` run's output at
 // all. See #108.
-func reportFailures(tb failureReporter, results []parallelFailure) {
+func reportFailures(tb failureReporter, results []failureRecord) {
 	for i, r := range results {
-		if r.Message != "" {
+		if r.Failed {
 			tb.Helper()
 			tb.Fatalf("spec[%d]: %s", i, r.text())
 			return
