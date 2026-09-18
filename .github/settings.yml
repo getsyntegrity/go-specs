@@ -1,0 +1,45 @@
+# Repository configuration as code.
+#
+# Applied by the Probot "Settings" GitHub App (https://github.com/apps/settings).
+# WITHOUT THAT APP INSTALLED ON THE ORGANISATION, THIS FILE DOES NOTHING — it is a
+# declaration of intent that no process enforces. Install it before relying on this
+# file as the source of truth for repository configuration.
+#
+# The app is authoritative once installed: it applies this file on every push to the
+# default branch, so a value changed in the GitHub UI is reverted on the next push,
+# and a key omitted here is left untouched rather than reset. Every value below was
+# read from the live repository at the time this file was added, so installing the
+# app changes exactly one thing — nothing — until someone edits this file.
+#
+# Branch protection is deliberately NOT declared here: `develop` currently has none,
+# and adding a `branches:` block would create protection rules as a side effect of
+# installing the app rather than as a reviewed decision. See CONTRIBUTING.md for the
+# branching model this repository actually follows.
+
+repository:
+  name: go-specs
+  description: High-performance BDD testing framework for Go with zero allocations and nanosecond assertions.
+  private: false
+
+  # CONTRIBUTING.md's Branching Model: every feature, fix, refactor and doc change
+  # targets `develop`; `main` holds releases and hotfixes only.
+  default_branch: develop
+
+  has_issues: true
+  has_projects: true
+  has_wiki: true
+  has_downloads: false
+
+  # All three merge methods stay available: CONTRIBUTING.md requires a merge (not a
+  # squash) when syncing `develop` into `main` for a release, because a squash creates
+  # a commit on `main` that does not exist on `develop` and the branches diverge again.
+  allow_squash_merge: true
+  allow_merge_commit: true
+  allow_rebase_merge: true
+
+  # The change this file was created for: delete the head branch once a PR is merged,
+  # so merged branches stop accumulating. Applies to future merges only — branches
+  # already merged are not removed retroactively.
+  delete_branch_on_merge: true
+
+  allow_auto_merge: false
