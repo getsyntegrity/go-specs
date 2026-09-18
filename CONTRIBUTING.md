@@ -41,13 +41,15 @@ Clone:
 git clone https://github.com/getsyntegrity/go-specs
 ```
 
-Run tests (from repo root; use `make test` because there is no root module):
+Run tests from the repository root:
 
 ```
 make test
 ```
 
-Or run tests per module, e.g. `go test ./specs/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...` (see `Makefile` for the full list).
+`make test` runs `go test ./...`. The repository is a **single Go module** with its `go.mod` at the
+root — there is no `go.work` and no per-package module — so `go test ./...` covers everything and
+running per-package (`go test ./specs/... ./snapshots/...`) is only useful to narrow a run.
 
 Race detector:
 

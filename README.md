@@ -130,7 +130,23 @@ go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) int
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
 - **mock** — Spies and argument matchers
 - **snapshots** — Snapshot testing support
+- **report** — Event model, normalized report, and XML/HTML/TXT/JSON renderers
+- **gen/generators** — Adversarial value generators (present, not yet wired into the DSL)
+- **tools/perfcheck** — Benchmark regression CLI for contributors
 - **examples** — Example tests (basic, hooks, parallel, and more)
+
+## Documentation
+
+The full documentation suite lives in [`docs/`](docs/README.md):
+
+| | |
+|---|---|
+| [00 · Overview](docs/00-OVERVIEW.md) | what go-specs is, what it guarantees, and its honest gaps |
+| [02 · The DSL](docs/02-DSL.md) | the authoritative reference for every construct |
+| [03 · Execution model](docs/03-EXECUTION-MODEL.md) | how a suite compiles and runs |
+| [07 · Reporting](docs/07-REPORTING.md) | structured reports and coverage |
+| [08 · Performance](docs/08-PERFORMANCE.md) | measured numbers and where they come from |
+| [ADRs](docs/adr/README.md) | the binding architecture decisions, and their costs |
 
 ## Running benchmarks
 

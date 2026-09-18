@@ -21,9 +21,14 @@ package with `go doc ./specs <Identifier>`.
 ## Result
 
 **104 / 120 (87%) exist on `develop` under the same name**, including every
-identifier [RULES.md](../RULES.md) names as part of the stable public DSL:
-`Describe`, `When`/`It` (as `Spec`/`SuiteTree` methods), `Paths`, `ctx.Expect(...).ToEqual`,
-`ctx.Expect(...).ToBeNil`.
+identifier [RULES.md](../../RULES.md) names as part of the stable public DSL:
+`Describe`, `When`/`It` (as `Spec`/`SuiteTree` methods), `Paths`, `ctx.Expect(...).ToEqual`.
+
+> **Correction.** This list originally also named `ctx.Expect(...).ToBeNil`, inherited from
+> `RULES.md` rather than verified with `go doc`. No such method exists on `develop` or on any earlier
+> branch; calling it is a compile error. The nil check is `ctx.Expect(x).To(specs.BeNil())`. The
+> parity count above is unaffected, because the identifier was never part of either API.
+> See [ADR-0011](../adr/0011-public-dsl-stability-contract.md).
 
 The 16 that don't resolve under their old name fall into two groups, neither of
 which is a capability regression:

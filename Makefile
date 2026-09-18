@@ -20,9 +20,9 @@ help:
 	@echo "  make bench-report  Benchmarks with 10 iterations → benchmarks/results/current.txt"
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
 	@echo "  make lint          Lint (golangci-lint or go vet)"
-	@echo "  make build         Build all modules and specs-cli"
+	@echo "  make build         Build all packages"
 	@echo "  make tidy          go mod tidy"
-	@echo "  make clean         Remove specs-cli, coverage.*, benchmark results"
+	@echo "  make clean         Remove coverage.*, benchmark results"
 	@echo "  make check-go-version  Verify go.mod and .go-version agree on the Go minor"
 	@echo ""
 
@@ -74,5 +74,5 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f specs-cli coverage.out coverage.html
+	rm -f coverage.out coverage.html
 	rm -f $(BENCH_RESULTS)/*.txt $(BENCH_RESULTS)/*.png

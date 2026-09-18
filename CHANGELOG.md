@@ -84,7 +84,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 - The intended status of the `Analyze` extension surface is now documented rather than inferred:
   `Analyze`, `CurrentSuite`, `CurrentArena`, `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen`
   are a deliberate, supported API for building a `SuiteTree` without going through `Describe`, not
-  legacy residue. `docs/DSL.md` gains "Where a `*Spec` comes from" and "Analyze and the registry
+  legacy residue. `docs/02-DSL.md` (then `docs/DSL.md`) gains "Where a `*Spec` comes from" and "Analyze and the registry
   extension surface", stating the valid construction context, the per-goroutine scoping rule, and why
   the read-only and mutating helpers behave differently outside it.
   ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
@@ -128,7 +128,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
-- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. See [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md#generated-candidate-identity). ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
+- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. See [docs/appendix/subtest-identity.md](docs/appendix/subtest-identity.md#generated-candidate-identity). ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
 - Reporter events for generated candidates now carry the candidate's own name — `includes tier [tier=pro] #2` — instead of the bare spec name repeated per candidate, so each executed candidate is distinguishable in report output and the ordinal links it to its `go test -v` subtest. ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
 - Sequential specs now run as a subtest named by their full `Describe`/`When`/`It` breadcrumb
   instead of the leaf `It` name alone, in both sequential execution models (`Describe`/`Spec` and
@@ -338,6 +338,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   different `PathValues` in place of the one that failed; with the exact copied candidate name
   (values and hash included), it can instead make the regenerated candidate stop matching the
   pattern, so no candidate executes at all. `Cartesian`, `Sample`, and plain `Explore` are not
-  exposed — see `docs/EXECUTION_MODEL.md`'s "Adaptive strategies" section for the full mechanism.
+  exposed — see `docs/appendix/subtest-identity.md`'s "Adaptive strategies" section for the full mechanism.
   Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
