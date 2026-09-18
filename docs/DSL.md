@@ -108,6 +108,27 @@ ctx.Expect(value).To(specs.Equal(expected))
 
 `ExpectT(ctx, x).ToEqual(y)` is the preferred form for typed equality; it avoids matcher allocations.
 
+### An expectation is single-use
+
+The value returned by `ctx.Expect(x)` or `specs.ExpectT(ctx, x)` carries exactly one assertion. The
+first `To` or `ToEqual` call spends it, and asserting through the same handle again panics:
+
+```go
+e := ctx.Expect(1)
+e.ToEqual(1)
+e.ToEqual(999) // panics: assertion handle reused
+```
+
+Write `ctx.Expect(...)` once per assertion instead. The panic is deliberate: the runner recovers it
+and reports the spec as failed, which is the only safe outcome for a framework whose job is to tell
+you the truth about your tests. Before this was enforced the second assertion silently passed — and
+worse, could report against whichever spec had since acquired the recycled object.
+
+The claim is atomic, so this holds under concurrency too. If several goroutines reach the same
+handle, exactly one of them asserts and the rest panic — whatever the interleaving, and without a
+data race on the handle. You still should not share a handle between goroutines; the guarantee
+exists so that doing so by accident fails loudly instead of quietly asserting twice.
+
 ### Equality semantics differ between the three `ToEqual`-shaped APIs — by design
 
 `EqualTo`, `ExpectT(ctx, x).ToEqual(y)`, and `ctx.Expect(x).ToEqual(y)` do not always agree on equal-looking values, because they trade off differently between speed and generality:
