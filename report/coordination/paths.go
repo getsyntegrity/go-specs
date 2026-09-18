@@ -2,7 +2,7 @@ package coordination
 
 import "path/filepath"
 
-// The run directory layout from contract v1.2.6 §5:
+// The run directory layout from contract v1.2.7 §5:
 //
 //	<BaseDir>/<RunID>/
 //	  run.json                                             # ownership marker
@@ -15,7 +15,7 @@ const (
 )
 
 // RunID is validated before it reaches any of these, so it can never contribute a path separator
-// or a traversal segment (contract v1.2.6 §10).
+// or a traversal segment (contract v1.2.7 §10).
 
 func runDir(baseDir string, id RunID) string {
 	return filepath.Join(baseDir, string(id))

@@ -12,13 +12,13 @@ import (
 //
 // It is never silently tolerated: two shards for the same package path in one run means either a
 // producer ran twice or two packages resolved to one identity, and both are facts the finalizer
-// must be able to see (contract v1.2.6 §5).
+// must be able to see (contract v1.2.7 §5).
 var ErrDuplicateProducer = errors.New("go-specs report: a file for this producer identity was already published")
 
 // publishOps is the injection seam for the create-no-replace publish. The NFS false-EEXIST branch
 // is the contract's only network-filesystem defence and is written once, never exercised, and
 // load-bearing exactly when least observable — so it is built to be testable rather than left to
-// be correct by inspection (contract v1.2.6 §10, §13).
+// be correct by inspection (contract v1.2.7 §10, §13).
 type publishOps struct {
 	link      func(oldname, newname string) error
 	linkCount func(path string) (uint64, error)
@@ -75,7 +75,7 @@ func writeAndPublish(dir, finalName string, body []byte, ops publishOps) error {
 // observe an absent destination and the later rename then destroys the earlier file. The run
 // marker does not rescue that check either — it excludes foreign invocations from the run
 // directory, it does not serialize producers inside the legitimate one, which is precisely the
-// case a duplicate-producer error must catch (contract v1.2.6 §5).
+// case a duplicate-producer error must catch (contract v1.2.7 §5).
 //
 // The atomicity therefore has to come from a single filesystem operation that fails when the
 // destination exists: link(2), which returns EEXIST.

@@ -88,7 +88,7 @@ func TestShardWriterPublishesACompleteIdentifiableShard(t *testing.T) {
 func TestShardNeverCarriesCoverage(t *testing.T) {
 	// Producers do not calculate, parse, copy or point at coverage data. The invoker hands the one
 	// combined profile straight to the finalizer, which alone owns block deduplication and
-	// coverage arithmetic (contract v1.2.6 §9).
+	// coverage arithmetic (contract v1.2.7 §9).
 	base := secureTempDir(t)
 	cfg := enabledConfig(t, base, "example.com/m/calc")
 
@@ -184,7 +184,7 @@ func TestTwoPackagesWithCollidingPrefixesProduceTwoShards(t *testing.T) {
 func TestAShardWithZeroExecutedTestsIsStillPublished(t *testing.T) {
 	// -run, -skip and -short filter TESTS, not packages: the binary still runs and must still
 	// publish. Treating "no tests ran" as "skip the shard" would make a filtered run
-	// indistinguishable from a crashed one (contract v1.2.6 §5).
+	// indistinguishable from a crashed one (contract v1.2.7 §5).
 	base := secureTempDir(t)
 	cfg := enabledConfig(t, base, "example.com/m/calc")
 

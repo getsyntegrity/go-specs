@@ -55,7 +55,7 @@ func TestWriteConfigErrorRecordsTheDistinctionTheExitCodeCannotCarry(t *testing.
 func TestWriteConfigErrorIsFirstWriterWins(t *testing.T) {
 	// Every package in the invocation observes the same misconfiguration. The first account of it
 	// is as good as the tenth, so a second failing package must neither overwrite the record nor
-	// report an error on that account (contract v1.2.6 §5).
+	// report an error on that account (contract v1.2.7 §5).
 	base := secureTempDir(t)
 
 	if err := WriteConfigError(base, "run-1", "pkg/a", ReasonMissingRunToken, "first"); err != nil {
@@ -95,7 +95,7 @@ func TestWriteConfigErrorRejectsAnUnsafeRunID(t *testing.T) {
 func TestWriteConfigErrorAppliesTheDirectoryGuard(t *testing.T) {
 	// This is the one write path that runs precisely when the configuration is already suspect, so
 	// it is the last place that should skip the guard every other write applies
-	// (contract v1.2.6 §10, rule 2).
+	// (contract v1.2.7 §10, rule 2).
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX mode bits do not carry the same meaning on Windows")
 	}

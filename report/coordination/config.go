@@ -11,7 +11,7 @@ import (
 )
 
 // ShardConfig is resolved once per package process, typically inside TestMain
-// (contract v1.2.6 §7).
+// (contract v1.2.7 §7).
 type ShardConfig struct {
 	// Activated reports whether EnvGate asked for shard emission. When false every field below
 	// is ignored and nothing is ever written.
@@ -27,7 +27,7 @@ type ShardConfig struct {
 	PackagePath string
 	// Ownership is the verified proof that this process belongs to RunID. It is populated only
 	// by ShardConfigFromEnv, and only after the run marker has been checked — a producer never
-	// holds an enabled config it has not proved it owns (contract v1.2.6 §5, §7).
+	// holds an enabled config it has not proved it owns (contract v1.2.7 §5, §7).
 	Ownership RunOwnership
 }
 
@@ -35,7 +35,7 @@ type ShardConfig struct {
 func (c ShardConfig) Enabled() bool { return c.Activated }
 
 // environment abstracts the two deliberately different ways this package reads variables. The
-// distinction is normative, not stylistic (contract v1.2.6 §5), and an interface makes it
+// distinction is normative, not stylistic (contract v1.2.7 §5), and an interface makes it
 // testable: a fake can assert which path a variable was read through, which is the only way to
 // notice one rule being "simplified" into the other.
 type environment interface {
@@ -77,7 +77,7 @@ var defaultResolver = &resolver{
 //
 // When the gate is on, the invocation has explicitly asked for coordination, so a missing or
 // invalid value is a configuration error that fails loudly. Invalid configuration is never
-// downgraded to disabled reporting (contract v1.2.6 §5, §8).
+// downgraded to disabled reporting (contract v1.2.7 §5, §8).
 func ShardConfigFromEnv(packagePath string) (ShardConfig, error) {
 	cfg, err := defaultResolver.resolve(packagePath)
 	if err != nil || !cfg.Enabled() {
@@ -86,7 +86,7 @@ func ShardConfigFromEnv(packagePath string) (ShardConfig, error) {
 	// Ownership is verified here rather than at write time. A producer that discovers at
 	// os.Exit that it never owned its run directory has already run the whole suite against a
 	// namespace belonging to someone else; the check belongs before m.Run(), where the binary can
-	// still fail loudly and record why (contract v1.2.6 §3 step 3, §5).
+	// still fail loudly and record why (contract v1.2.7 §3 step 3, §5).
 	own, err := VerifyRunOwnership(cfg.BaseDir, cfg.RunID, cfg.Token)
 	if err != nil {
 		return ShardConfig{}, err
@@ -98,7 +98,7 @@ func ShardConfigFromEnv(packagePath string) (ShardConfig, error) {
 func (r *resolver) resolve(packagePath string) (ShardConfig, error) {
 	// The gate itself may be read either way: it is stable within an environment, so enrolling it
 	// in the cache key costs nothing. Only the per-invocation identity variables must avoid the
-	// testlog (contract v1.2.6 §5).
+	// testlog (contract v1.2.7 §5).
 	gate, _ := r.env.Lookup(EnvGate)
 	on, err := parseGate(gate)
 	if err != nil {
@@ -144,7 +144,7 @@ func (r *resolver) resolveDisabled(packagePath string) (ShardConfig, error) {
 	}
 	if rawToken != "" {
 		if _, err := ValidateRunToken(rawToken); err != nil {
-			// The value is never echoed, not even when malformed (contract v1.2.6 §5).
+			// The value is never echoed, not even when malformed (contract v1.2.7 §5).
 			faults = append(faults, fmt.Sprintf("%s does not match %s", EnvRunToken, runTokenPattern))
 		}
 	}
@@ -162,7 +162,7 @@ func (r *resolver) resolveDisabled(packagePath string) (ShardConfig, error) {
 // warnOnce emits the warn-only diagnostic at most once per process, on one line, prefixed
 // distinctly so it is attributable and greppable. It is a diagnostic, not a contract signal: no
 // tooling may key behaviour off it, and it never affects exit status, the filesystem, or
-// coordination (contract v1.2.6 §5).
+// coordination (contract v1.2.7 §5).
 func (r *resolver) warnOnce(faults []string) {
 	r.once.Do(func() {
 		// The write error is deliberately discarded. This path MUST NOT affect the process's
@@ -176,7 +176,7 @@ func (r *resolver) warnOnce(faults []string) {
 // resolveEnabled implements the gate-on path. Every read goes through Lookup precisely so that
 // `go test` records these variables in its cache key and a new GO_SPECS_RUN_ID invalidates a
 // stale cached result — the inverse of the disabled path, and equally normative
-// (contract v1.2.6 §5).
+// (contract v1.2.7 §5).
 func (r *resolver) resolveEnabled(packagePath string) (ShardConfig, error) {
 	rawID, _ := r.env.Lookup(EnvRunID)
 	rawToken, _ := r.env.Lookup(EnvRunToken)

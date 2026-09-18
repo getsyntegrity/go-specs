@@ -18,7 +18,7 @@ import (
 // characters. What breaks is the CONSUMER side — archivers, artifact uploaders, CI runners and
 // editors that still assume MAX_PATH will choke on a deep run directory that Go itself wrote
 // without complaint. A silently-created path that downstream tooling cannot read is a worse
-// failure than a loud one, discovered later and further away (contract v1.2.6 §5).
+// failure than a loud one, discovered later and further away (contract v1.2.7 §5).
 const maxAssembledPathBytes = 260
 
 // ShardWriter is the producer entry point: one call from TestMain, after m.Run() returns and
@@ -42,12 +42,12 @@ func NewShardWriter(cfg ShardConfig) *ShardWriter {
 // publishes: TestMain's post-m.Run() code runs on failure, including a panic recovered by the
 // testing package, so the failure is fully represented in the merged report. Only abrupt process
 // termination bypasses it, and making that fact loud is the finalizer's job, not this one's
-// (contract v1.2.6 §8, F5).
+// (contract v1.2.7 §8, F5).
 //
 // A shard reporting zero executed tests is a valid shard, not a missing producer: -run, -skip and
 // -short filter TESTS, not packages, and the binary still runs. Treating "no tests ran" as "skip
 // the shard" would make a filtered run indistinguishable from a crashed one
-// (contract v1.2.6 §5, Expected producer set).
+// (contract v1.2.7 §5, Expected producer set).
 func (w *ShardWriter) Write(rep report.NormalizedReport) error {
 	if !w.cfg.Enabled() {
 		return nil
@@ -61,7 +61,7 @@ func (w *ShardWriter) Write(rep report.NormalizedReport) error {
 
 	// The producer repeats the ancestor check before writing: ownership was verified earlier, and
 	// a directory whose parent someone else can swap is not the directory that was verified
-	// (contract v1.2.6 §10).
+	// (contract v1.2.7 §10).
 	if err := requireAbsoluteBaseDir(w.cfg.BaseDir); err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func (w *ShardWriter) Write(rep report.NormalizedReport) error {
 	// Coverage is stripped rather than trusted to be absent. A producer that passes through a
 	// populated Coverage would have the finalizer merging per-process numbers it is supposed to
 	// own exclusively, and the resulting totals would be wrong in a way nothing downstream can
-	// detect (contract v1.2.6 §9).
+	// detect (contract v1.2.7 §9).
 	rep.Coverage = report.Coverage{}
 
 	body, err := json.MarshalIndent(ShardEnvelope{
@@ -96,7 +96,7 @@ func (w *ShardWriter) Write(rep report.NormalizedReport) error {
 }
 
 // checkContainedAndBounded revalidates the assembled destination. A shard's own package path is
-// never trusted as a write destination without this check (contract v1.2.6 §10).
+// never trusted as a write destination without this check (contract v1.2.7 §10).
 func checkContainedAndBounded(dir, name string) error {
 	full := filepath.Join(dir, name)
 	cleanDir := filepath.Clean(dir) + string(os.PathSeparator)

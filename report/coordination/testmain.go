@@ -15,10 +15,10 @@ import (
 //
 // On a configuration or ownership failure it records config-error.json best-effort before
 // returning the error, because the test binary's own exit status cannot carry that distinction:
-// cmd/go never propagates a test binary's exit code (contract v1.2.6 §8). The caller surfaces the
+// cmd/go never propagates a test binary's exit code (contract v1.2.7 §8). The caller surfaces the
 // error and fails the binary before m.Run().
 //
-// The complete integration, which is all that contract v1.2.6 §3 step 3 asks of a package:
+// The complete integration, which is all that contract v1.2.7 §3 step 3 asks of a package:
 //
 //	var reporter = report.NewMultiFormat()
 //
@@ -40,7 +40,7 @@ import (
 // so a red package still publishes a complete shard; only abrupt termination bypasses it (F5).
 //
 // Note what the example does NOT do: it never exits non-zero because Write failed. Contract
-// v1.2.6 §8 row 8 is explicit that a publish failure leaves the original test result "preserved,
+// v1.2.7 §8 row 8 is explicit that a publish failure leaves the original test result "preserved,
 // unchanged", and that reporting failure "never overwrites or falsifies the test result that
 // already happened". Exiting 1 there turns a green package red for a reporting problem — and a
 // duplicate publish into the same run id, which is what a re-run of one package produces, is
@@ -62,7 +62,7 @@ func ShardWriterFromEnv(packagePath string) (*ShardWriter, error) {
 // It is best-effort by design. When the run identity itself is what failed, there is no run
 // directory to address and no record to write — the binary still fails loudly with the same
 // diagnostic on stderr, and finalize reports the affected producers as missing
-// (contract v1.2.6 §5).
+// (contract v1.2.7 §5).
 func recordConfigError(packagePath string, cause error) {
 	var cfgErr *ConfigError
 	if !errors.As(cause, &cfgErr) {

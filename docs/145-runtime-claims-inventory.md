@@ -1,6 +1,6 @@
 # REPORT-002B: Runtime-dependent claims inventory
 
-Satisfies issue #145 hardening item 4, which carries contract v1.2.6 §13's planning item into
+Satisfies issue #145 hardening item 4, which carries contract v1.2.7 §13's planning item into
 this slice. Produced **before** implementation, deliberately: an inventory written after the code
 exists documents the tests that were going to be written anyway, which is the opposite of the
 point.
@@ -42,7 +42,7 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 | # | Claim | Source | Status |
 |---|---|---|---|
 | B1 | `os.Environ` delegates to `syscall.Environ` and records **nothing** in the testlog, so a gate-off scan does not enroll variables in the test-cache key. | §5 *disabled path* | **Pinned, by `TestTheEnvironScanIsActuallyAnEnvironScan` — and only by it.** Mutation-checked: rewriting `envread.Scan`'s body as `os.LookupEnv` makes it fail. Getting there took two corrections worth recording, because both are ways a test can look like a pin and not be one. See **The B1 pin** below. |
-| B2 | ~~`os.Getenv`/`os.LookupEnv` route through `testlog`, so a gate-on read enrolls the variable and a new `GO_SPECS_RUN_ID` invalidates that package's cached result.~~ **FALSE at this contract's call site.** | §5 *Environment, not files, is the transport* | **Pinned as refuted.** Measured: a variable read via `os.Getenv` **inside a test function** does invalidate the cache; the same read **in `TestMain` before `m.Run()`** does not — the value can change on every run and `go test` still reports `(cached)`. The mechanism is that `testlog`'s logger is installed by `m.before()`, which runs inside `m.Run()`; before that, `testlog.Getenv` sees a nil logger and records nothing. Contract §3 step 3 mandates the read happen exactly there. Consequences in **The B2 finding** below. |
+| B2 | ~~`os.Getenv`/`os.LookupEnv` route through `testlog`, so a gate-on read enrolls the variable and a new `GO_SPECS_RUN_ID` invalidates that package's cached result.~~ **Refuted, and now withdrawn from the contract.** | §5 *Environment, not files, is the transport* | **Closed.** Measured here, then withdrawn by contract v1.2.7 (#194), which also narrows §13's pattern. The access rule survives with a new justification — the uniformity of the activation surface — and `-count=1` becomes the sole cache-correctness mechanism. Detail in **The B2 finding** below, kept because the *method* is the reusable part. |
 | B3 | `cmd/go` never propagates a test binary's exit code; a failed test action sets the literal `1`. This is why the config-error distinction lives in `config-error.json` + `78`/`EX_CONFIG` rather than in an exit status. | §8 | **Pinned, and stronger than §8 claims.** §8's note says a `TestMain` calling `os.Exit(2)` at least "produces the text `exit status 2` in the output". Measured: a binary whose tests passed and which then exits `78` leaves no trace of `78` anywhere — `cmd/go` prints `PASS`, then `FAIL` for the package, and exits `1`. CI cannot branch on the code even by scraping the log. |
 | B4 | A cache hit skips `TestMain` **entirely**, so a cached package never publishes a shard — which is why `-count=1` is mandatory for reporting runs. | F4, §6 | **Pinned.** Confirmed directly, and it is worse than "no shard": with the gate on and an invalid configuration, a cached package reports `ok (cached)` and exits `0` — no failure, no `config-error.json`, nothing to distinguish a misconfigured reporting run from a healthy green one. |
 | B5 | `TestMain`'s post-`m.Run()` code runs on ordinary test failure, including a panic recovered by the testing package; only abrupt termination (F5) bypasses it. | §8 row 2, F5 | **Required** — a package with a failing test and a panicking test still publishes a complete shard. Issue #145 lists this as an acceptance criterion in its own right. |
@@ -77,12 +77,13 @@ platform behaviour rather than on go-specs' own logic, and states for each wheth
 B1 was first written as two tests, and neither one pinned it. The sequence is worth keeping,
 because each failure mode looks exactly like coverage.
 
-**Attempt 1 — the process-level cache test the contract asks for.**
-`TestGateOffIsCacheStableAcrossEveryCoordinationVariable` varies `GO_SPECS_RUN_ID` and
-`GO_SPECS_REPORT_DIR` across two gate-off runs and asserts `(cached)`. It passes. It also passes
+**Attempt 1 — the process-level cache test the contract used to ask for.**
+`TestGateOffIsCacheStableAcrossEveryCoordinationVariable` varied `GO_SPECS_RUN_ID` and
+`GO_SPECS_REPORT_DIR` across two gate-off runs and asserted `(cached)`. It passed. It also passed
 with `os.Getenv` everywhere, because the reads happen in `TestMain` where the test log does not
-exist yet — see *The B2 finding*. Vacuous. It is kept, relabelled in its own doc comment, as a
-guard against these reads **moving** somewhere the cache can see them.
+exist yet — see *The B2 finding*. Vacuous. Contract v1.2.7 §5 withdraws it and forbids
+reintroducing it, and it has been **deleted** from this branch rather than relabelled: a test that
+cannot fail is worse than no test, because it occupies the space where a real one would go.
 
 **Attempt 2 — the unit tests over the `environment` seam.** A fake records whether each variable
 arrived through `Lookup` or `Scan`, in both directions. These are good tests and they stay, but
@@ -96,6 +97,14 @@ which is inside a test function. `internal/envread` holds the real implementatio
 call them directly, and `internal/shardfixture/envprobe` calls one of them from a test function
 while the caller varies the probed variable across two runs. `Scan` must stay `(cached)`; `Lookup`
 must re-run.
+
+**This is not the test v1.2.7 forbids, and the difference is the whole point.** The withdrawn one
+reads from `TestMain`, where neither access path reaches the cache key, so it cannot fail. This one
+reads from inside a test function, where they are distinguishable, and it has been shown to fail
+when `envread.Scan` is rewritten as `os.LookupEnv`. §5 requires the seam assertion as the pin and
+this branch has it; this test exists because the seam assertion alone does **not** catch that
+rewrite — it pins which method the resolver calls, not what the method does. That gap was found by
+adversarial review of this branch, not by reasoning about it.
 
 The control arm is load-bearing rather than decorative: without it, a change making *both* paths
 uncacheable would leave the assertion passing for the wrong reason, and a change making both

@@ -15,7 +15,7 @@ const importPath = "github.com/getsyntegrity/go-specs/report/coordination/intern
 
 var reporter = report.NewMultiFormat()
 
-// TestMain is the complete per-package integration contract v1.2.6 §3 step 3 asks for. It is
+// TestMain is the complete per-package integration contract v1.2.7 §3 step 3 asks for. It is
 // reproduced verbatim in docs/REPORTING.md, so keep the two in step.
 func TestMain(m *testing.M) {
 	writer, err := coordination.ShardWriterFromEnv(importPath)
@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// A reporting failure must never overwrite or falsify the test result that already happened
-	// (contract v1.2.6 §8, row 8). Report it and preserve the code: the finalizer surfaces a
+	// (contract v1.2.7 §8, row 8). Report it and preserve the code: the finalizer surfaces a
 	// missing or rejected producer through its own, independent exit status.
 	if err := writer.Write(reporter.Report()); err != nil {
 		fmt.Fprintln(os.Stderr, err)

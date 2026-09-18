@@ -29,7 +29,7 @@ func TestValidateRunIDAcceptsConformingValues(t *testing.T) {
 }
 
 func TestValidateRunIDRejectsPathAndTraversalValues(t *testing.T) {
-	// Every one of these is a path-traversal or path-separator vector: contract v1.2.6 §10
+	// Every one of these is a path-traversal or path-separator vector: contract v1.2.7 §10
 	// requires them rejected before the value is ever used as a path segment.
 	for name, in := range map[string]string{
 		"empty":         "",
@@ -69,7 +69,7 @@ func TestValidateRunIDErrorNamesTheVariableAndTheRemedy(t *testing.T) {
 	if cfgErr.Reason != ReasonInvalidRunID {
 		t.Fatalf("Reason = %q, want %q", cfgErr.Reason, ReasonInvalidRunID)
 	}
-	// Contract v1.2.6 §5: "Invalid reporting configuration" without a variable name is not an
+	// Contract v1.2.7 §5: "Invalid reporting configuration" without a variable name is not an
 	// acceptable diagnostic — the person hitting this usually does not know the variable is set.
 	msg := cfgErr.Error()
 	for _, want := range []string{EnvRunID, "unset", `^[A-Za-z0-9_.-]{1,128}$`} {
@@ -111,7 +111,7 @@ func TestValidateRunTokenAcceptsOnlyWholeBytePairsInRange(t *testing.T) {
 }
 
 func TestValidateRunTokenErrorNeverEchoesTheTokenValue(t *testing.T) {
-	// Contract v1.2.6 §5: "Never echo the value." A truncated-but-secret-looking token must not
+	// Contract v1.2.7 §5: "Never echo the value." A truncated-but-secret-looking token must not
 	// reach a CI log through the diagnostic that rejects it.
 	secret := strings.Repeat("dead", 9) + "a" // odd number of hex digits => invalid
 	_, err := ValidateRunToken(secret)
@@ -158,7 +158,7 @@ func TestGenerateRunTokenProducesConformingLowercaseHex(t *testing.T) {
 }
 
 func TestHashRunTokenHashesDecodedBytesNotHexText(t *testing.T) {
-	// Contract v1.2.6 §5, claim D1: the digest is taken over the token's DECODED BYTES. Hashing
+	// Contract v1.2.7 §5, claim D1: the digest is taken over the token's DECODED BYTES. Hashing
 	// the hex text would make AB… and ab… differ despite decoding to identical bytes, and that
 	// only surfaces when a shell, a CI secret store or a Windows environment round-trip
 	// case-folds the value.
@@ -208,7 +208,7 @@ func TestHashRunTokenEmitsLowercaseHexAndRejectsNonHex(t *testing.T) {
 func TestTokenHashesEqualComparesNormalizedDigestsInConstantTime(t *testing.T) {
 	lower := strings.Repeat("0a", 32)
 	if !TokenHashesEqual(lower, strings.ToUpper(lower)) {
-		t.Fatal("TokenHashesEqual is case-sensitive; contract v1.2.6 §5 normalizes before comparing")
+		t.Fatal("TokenHashesEqual is case-sensitive; contract v1.2.7 §5 normalizes before comparing")
 	}
 	if TokenHashesEqual(lower, strings.Repeat("0b", 32)) {
 		t.Fatal("TokenHashesEqual accepted two different digests")

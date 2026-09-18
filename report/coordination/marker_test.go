@@ -96,7 +96,7 @@ func TestInitializeRunRefusesAnExistingMarker(t *testing.T) {
 		t.Fatal("a second InitializeRun on the same RunID succeeded; exclusive creation is what makes RunID reuse detectable")
 	}
 	// The failure must be actionable: it means either the RunID generator is not unique per
-	// invocation, or a previous run was abandoned (contract v1.2.6 §5).
+	// invocation, or a previous run was abandoned (contract v1.2.7 §5).
 	msg := err.Error()
 	for _, want := range []string{"run-1", "gc", "--force"} {
 		if !strings.Contains(msg, want) {

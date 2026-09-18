@@ -177,7 +177,7 @@ func TestConcurrentIndependentRunsDoNotSeeEachOthersShards(t *testing.T) {
 func TestAFailingPackageStillPublishesACompleteShard(t *testing.T) {
 	// Claim B5. TestMain's post-m.Run() code runs on ordinary failure, including a panic recovered
 	// by the testing package, so a red package is fully represented in the merged report
-	// (contract v1.2.6 §8).
+	// (contract v1.2.7 §8).
 	base := secureTempDir(t)
 	mustInitRun(t, base, "run-1", validToken)
 
@@ -210,7 +210,7 @@ func TestCmdGoDoesNotPropagateATestBinaryExitCode(t *testing.T) {
 	// Claim B3, and the entire reason config-error.json exists. On a failed test action cmd/go
 	// sets the literal 1, having already reported the package as FAIL; the child's status never
 	// reaches base.SetExitStatus. If this ever stopped holding, the simpler exit-code design would
-	// be correct and the record would be needless machinery (contract v1.2.6 §8).
+	// be correct and the record would be needless machinery (contract v1.2.7 §8).
 	base := secureTempDir(t)
 	mustInitRun(t, base, "run-1", validToken)
 
@@ -224,7 +224,7 @@ func TestCmdGoDoesNotPropagateATestBinaryExitCode(t *testing.T) {
 	if res.exitCode != 1 {
 		t.Fatalf("go test exited %d, want 1:\n%s", res.exitCode, res.out)
 	}
-	// Stronger than contract v1.2.6 §8 claims. The note there says a TestMain calling os.Exit(2)
+	// Stronger than contract v1.2.7 §8 claims. The note there says a TestMain calling os.Exit(2)
 	// at least "produces the text `exit status 2` in the output". Measured here, a binary whose
 	// tests PASSED and which then exits 78 leaves no trace of 78 anywhere: cmd/go prints PASS,
 	// then FAIL for the package, and exits 1. So CI cannot branch on the code even by scraping
@@ -235,38 +235,8 @@ func TestCmdGoDoesNotPropagateATestBinaryExitCode(t *testing.T) {
 	}
 }
 
-func TestGateOffIsCacheStableAcrossEveryCoordinationVariable(t *testing.T) {
-	// Claim B1, and an honest note about what it proves. This passes — but it would pass even if
-	// every read went through os.Getenv, because ShardConfigFromEnv is called from TestMain BEFORE
-	// m.Run(), and testlog's logger is installed by m.before() inside m.Run(). A read that happens
-	// earlier is recorded nowhere and never reaches the cache key.
-	//
-	// So this test is a regression guard against the reads MOVING somewhere the cache can see them
-	// — not a pin on the access path. The access path is pinned by the unit tests that assert
-	// which os function each variable was read through. See docs/145-runtime-claims-inventory.md.
-	first := runGoTest(t, map[string]string{
-		EnvRunID:     "cache-probe-1",
-		EnvReportDir: filepath.Join(secureTempDir(t), "one"),
-	}, "./report/coordination/internal/shardfixture/alpha")
-	if first.exitCode != 0 {
-		t.Fatalf("warm-up run failed:\n%s", first.out)
-	}
-
-	second := runGoTest(t, map[string]string{
-		EnvRunID:     "cache-probe-2",
-		EnvReportDir: filepath.Join(secureTempDir(t), "two"),
-		EnvRunToken:  validToken,
-	}, "./report/coordination/internal/shardfixture/alpha")
-	if second.exitCode != 0 {
-		t.Fatalf("second run failed:\n%s", second.out)
-	}
-	if !second.cached() {
-		t.Fatalf("a gate-off run stopped being cache-stable; a coordination variable is now reaching the cache key:\n%s", second.out)
-	}
-}
-
 func TestACachedPackagePublishesNothingWhichIsWhyCountOneIsMandatory(t *testing.T) {
-	// Claims B2 and B4, and the finding that corrects contract v1.2.6 §5.
+	// Claims B2 and B4, and the finding that corrects contract v1.2.7 §5.
 	//
 	// §5 states that reading run identity through the environment makes a new GO_SPECS_RUN_ID
 	// invalidate that package's cached result, and calls -count=1 a supporting requirement rather
@@ -303,7 +273,7 @@ func TestACachedPackagePublishesNothingWhichIsWhyCountOneIsMandatory(t *testing.
 
 func TestACachedPackageHidesAConfigurationErrorEntirely(t *testing.T) {
 	// The sharpest operational consequence, and the one worth a test of its own: with the gate on
-	// and an invalid configuration, contract v1.2.6 §3 step 3 requires the binary to fail loudly
+	// and an invalid configuration, contract v1.2.7 §3 step 3 requires the binary to fail loudly
 	// before m.Run(). On a cached package it does not run at all, so `go test` reports ok (cached)
 	// and exits 0 — a misconfigured reporting run that looks exactly like a healthy green one.
 	//
@@ -335,7 +305,7 @@ func TestACachedPackageHidesAConfigurationErrorEntirely(t *testing.T) {
 func TestAMisconfiguredRunWithNoOwnerRecordsConfigErrorJSON(t *testing.T) {
 	// The useful case: the preflight was skipped, so no marker exists and no legitimate run can be
 	// harmed. The record is what lets finalize say "misconfigured" rather than merely "incomplete"
-	// — a distinction the test binary's own exit status cannot carry (contract v1.2.6 §8).
+	// — a distinction the test binary's own exit status cannot carry (contract v1.2.7 §8).
 	base := secureTempDir(t)
 	env := runEnv(base, "never-initialized", validToken)
 
@@ -439,6 +409,12 @@ func TestTheEnvironScanIsActuallyAnEnvironScan(t *testing.T) {
 	//
 	// It only works from inside a test function: in TestMain the test log is not yet installed and
 	// the two access paths are indistinguishable.
+	//
+	// This is NOT the cache-stability test contract v1.2.7 §5 withdraws and forbids reintroducing.
+	// That one reads from TestMain, where neither access path reaches the cache key, so it cannot
+	// fail. This one reads from a position where they differ, and it does fail when envread.Scan
+	// is rewritten as os.LookupEnv. §5's mandated seam assertion is also present and is the pin of
+	// record; this covers what the seam cannot see, which is the body of the method itself.
 	nonce := probeNonce(t)
 
 	if seed := probeRun(t, "scan", nonce+"-one"); seed.exitCode != 0 {
@@ -469,7 +445,7 @@ func TestTheEnvironScanIsActuallyAnEnvironScan(t *testing.T) {
 }
 
 func TestAReportingFailureNeverFalsifiesAPassingTestResult(t *testing.T) {
-	// Contract v1.2.6 §8, row 8: a write, publish or duplicate-producer failure after a valid,
+	// Contract v1.2.7 §8, row 8: a write, publish or duplicate-producer failure after a valid,
 	// ownership-verified m.Run() leaves the original test result "preserved, unchanged", and
 	// reporting failure "never overwrites or falsifies the test result that already happened".
 	//

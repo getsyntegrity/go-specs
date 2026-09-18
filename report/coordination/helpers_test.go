@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// secureTempDir returns a temporary directory that satisfies contract v1.2.6 §10 rule 2.
+// secureTempDir returns a temporary directory that satisfies contract v1.2.7 §10 rule 2.
 //
 // t.TempDir() is not usable as-is: it creates its numbered subdirectory with os.Mkdir(…, 0777),
 // so under the common umask 002 the result is 0775 — group-writable, which ensureSafeBaseDir

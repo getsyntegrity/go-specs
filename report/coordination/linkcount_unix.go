@@ -11,7 +11,7 @@ import (
 // linkCount returns the number of directory entries pointing at path.
 //
 // It exists for one narrow purpose: distinguishing a genuine duplicate producer from NFS
-// reporting EEXIST for a link that actually succeeded (contract v1.2.6 §10). See publishExclusive.
+// reporting EEXIST for a link that actually succeeded (contract v1.2.7 §10). See publishExclusive.
 func linkCount(path string) (uint64, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

@@ -4,7 +4,7 @@ package coordination
 
 import "syscall"
 
-// oNoFollow makes an open fail rather than traverse a final-component symlink. Contract v1.2.6
+// oNoFollow makes an open fail rather than traverse a final-component symlink. Contract v1.2.7
 // §10 requires it on every open of run.json, config-error.json, shard temp files and shard final
 // names, on both the write and the read side: <base>/<run-id>/... is a predictable path, and the
 // base directory frequently lives somewhere another local user can reach.

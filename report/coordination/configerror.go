@@ -18,7 +18,7 @@ const configErrorSchemaVersion = "1"
 // propagates a test binary's exit code — on a failed test action it sets the literal 1 — so a
 // TestMain exiting 2 produces "exit status 2" in the output while `go test` exits 1, and CI cannot
 // branch on it. The record, not the exit code, is what the preflight/finalize layer maps to exit
-// 78 (EX_CONFIG) (contract v1.2.6 §8).
+// 78 (EX_CONFIG) (contract v1.2.7 §8).
 //
 // It never contains the raw token.
 type ConfigErrorRecord struct {
@@ -37,7 +37,7 @@ type ConfigErrorRecord struct {
 // First writer wins: a second failing package that finds the record already present does not
 // overwrite it and does not report an error on that account — every package in the invocation
 // observes the same misconfiguration, and the first account of it is as good as the tenth
-// (contract v1.2.6 §5).
+// (contract v1.2.7 §5).
 //
 // Callers invoke this on the ShardConfigFromEnv error path and then fail the binary. When the run
 // directory is itself unusable — which is often what failed — the record cannot be written; the

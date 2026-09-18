@@ -104,7 +104,7 @@ each participating package publishes one isolated **shard**, and a separate fina
 them into module-wide reports. This section covers the producer side, which is what a package
 wires in. The normative rules are in
 [`144-report-coordination-contract.md`](144-report-coordination-contract.md); cite it as
-"contract v1.2.6 §N", never a bare section number, because sections are amended in place.
+"contract v1.2.7 §N", never a bare section number, because sections are amended in place.
 
 ### The per-package integration
 

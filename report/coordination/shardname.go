@@ -17,7 +17,7 @@ const (
 	// digest, separator and suffix leave 178 bytes for the prefix, and percent-escaping consumes
 	// up to three bytes per unsafe byte — so a legal Go import path spanning enough directory
 	// components would fail to produce a filename even though the package builds and tests
-	// normally (contract v1.2.6 §5).
+	// normally (contract v1.2.7 §5).
 	maxPrefixBytes = 40
 	// maxShardFileNameBytes is what the budget above adds up to: 40 + 2 + 64 + 11. The filename is
 	// bounded at this, not fixed at it — nothing is padded, and a short import path produces a
@@ -30,7 +30,7 @@ const (
 // Normatively: the SHA-256 digest alone carries producer identity. The prefix is readability
 // only — it is never parsed, never compared, never used to look a shard up, and never used to
 // reconstruct a package path. Two shard filenames are "for the same package" if and only if their
-// digests are equal, whatever their prefixes say (contract v1.2.6 §5, §10).
+// digests are equal, whatever their prefixes say (contract v1.2.7 §5, §10).
 //
 // That is not merely because the sanitization is lossy but because it is not injective: "foo/bar"
 // and "foo_bar" both sanitize to "foo_bar", and would produce the same filename under a

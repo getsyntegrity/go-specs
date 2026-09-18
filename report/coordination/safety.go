@@ -28,7 +28,7 @@ func openFileNoFollow(path string, flag int, perm fs.FileMode) (*os.File, error)
 }
 
 // ensureSafeBaseDir refuses to operate when the base directory, or any of its existing ancestors,
-// is group- or other-writable without the sticky bit (contract v1.2.6 §10, rule 2).
+// is group- or other-writable without the sticky bit (contract v1.2.7 §10, rule 2).
 //
 // If any ancestor is writable by someone else, another local user can swap a directory component
 // and every downstream check — exclusive marker creation, create-no-replace publication,
@@ -134,7 +134,7 @@ func checkNotForeignWritable(path string, info fs.FileInfo) error {
 //
 // Verification is not defensive noise: umask does not apply to a subsequent Chmod, and a
 // directory that already existed was not created by this implementation at all, so its mode is
-// evidence about who else can reach it (contract v1.2.6 §10, rule 3). A pre-existing directory
+// evidence about who else can reach it (contract v1.2.7 §10, rule 3). A pre-existing directory
 // with a wider mode is refused rather than quietly tightened — tightening it would hide the fact
 // that something else created the path first.
 func mkdirSecure(dir string) error {

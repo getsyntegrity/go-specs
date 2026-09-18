@@ -10,9 +10,15 @@ import (
 )
 
 // fakeEnv records which of the two deliberately different access paths each variable was read
-// through. Contract v1.2.6 §5 makes the choice normative in both directions, and neither rule may
-// be "simplified" into the other, so the tests below assert the access pattern itself rather than
-// only its observable effect.
+// through. Contract v1.2.7 §5 makes the choice normative in both directions — for different
+// reasons, which is worth keeping straight: the gate-off Scan rule is about not enrolling these
+// variables in the test cache, and the gate-on Lookup rule is about keeping the activation
+// surface uniform and auditable at the invocation boundary.
+//
+// Asserting the access pattern directly, rather than some observable effect of it, is what §5
+// now requires. The effect-based version — run twice with the gate off and assert (cached) — is
+// withdrawn as vacuous, because from TestMain before m.Run() neither access path reaches the
+// cache key at all.
 type fakeEnv struct {
 	vars     map[string]string
 	lookedUp []string
@@ -62,7 +68,7 @@ const (
 
 func TestGateAbsentOrFalseDisablesReportingSilently(t *testing.T) {
 	// The case that protects a developer shell with a leftover export: no shard, no diagnostic,
-	// no effect on exit status whatsoever (contract v1.2.6 §5, row 1).
+	// no effect on exit status whatsoever (contract v1.2.7 §5, row 1).
 	for name, tc := range map[string]struct {
 		gate string
 		set  bool
@@ -122,7 +128,7 @@ func TestGateOnActivatesReporting(t *testing.T) {
 }
 
 func TestUnparseableGateIsAConfigurationErrorAndIsNotGuessed(t *testing.T) {
-	// Contract v1.2.6 §5: "an unparseable gate must not be guessed either way".
+	// Contract v1.2.7 §5: "an unparseable gate must not be guessed either way".
 	for _, gate := range []string{"yes", "on", "2", "maybe", " 1"} {
 		t.Run(gate, func(t *testing.T) {
 			_, _, err := resolveWith(t, newFakeEnv(map[string]string{EnvGate: gate}))
@@ -141,7 +147,7 @@ func TestUnparseableGateIsAConfigurationErrorAndIsNotGuessed(t *testing.T) {
 }
 
 func TestGateOffReadsIdentityVariablesOnlyByScanningEnviron(t *testing.T) {
-	// The load-bearing half of contract v1.2.6 §5: on the disabled path EVERY variable this
+	// The load-bearing half of contract v1.2.7 §5: on the disabled path EVERY variable this
 	// contract introduces must come from an os.Environ() scan. os.Getenv/os.LookupEnv route
 	// through testlog, which enrolls the variable in go test's cache key for every package in the
 	// module — so a per-invocation GO_SPECS_RUN_ID sitting in a shell defeats caching module-wide
@@ -159,7 +165,7 @@ func TestGateOffReadsIdentityVariablesOnlyByScanningEnviron(t *testing.T) {
 	}
 	for _, name := range []string{EnvRunID, EnvRunToken, EnvReportDir} {
 		if env.didLookUp(name) {
-			t.Fatalf("%s was read with Lookup on the disabled path; contract v1.2.6 §5 requires an os.Environ() scan", name)
+			t.Fatalf("%s was read with Lookup on the disabled path; contract v1.2.7 §5 requires an os.Environ() scan", name)
 		}
 		if !env.didScan(name) {
 			t.Fatalf("%s was never read on the disabled path; the warn-only check needs it", name)
@@ -167,11 +173,18 @@ func TestGateOffReadsIdentityVariablesOnlyByScanningEnviron(t *testing.T) {
 	}
 }
 
-func TestGateOnReadsIdentityVariablesThroughLookupSoTheyEnrollInTheCacheKey(t *testing.T) {
-	// The other half, and the one no other test in this package pins. If this path were
-	// "simplified" into an os.Environ() scan for symmetry, the disabled-path test still passes,
-	// the code looks tidier, and a cached package silently stops republishing its shard — which is
-	// indistinguishable from a crash (contract v1.2.6 §5, F4).
+func TestGateOnReadsIdentityVariablesThroughLookup(t *testing.T) {
+	// The enabled path reads through Lookup, and the disabled path does not. Contract v1.2.7 §5
+	// keeps that rule and replaces its justification: it is the uniformity of the activation
+	// surface, not the test cache. One invocation-scoped mechanism that a CI wrapper sets once and
+	// every participating package observes identically, with nothing per-package to keep in sync
+	// and nothing baked into a binary that outlives the run; a value smuggled in by any other
+	// route is unauditable at the invocation boundary, which is where this protocol is configured
+	// and where a misconfiguration has to be diagnosable.
+	//
+	// What v1.2.7 withdrew is the claim this test used to assert in its name — that reading with
+	// Getenv makes a new GO_SPECS_RUN_ID invalidate the package's cached result. It does not, from
+	// TestMain before m.Run(). The access rule survives the correction; only its reason changed.
 	env := newFakeEnv(map[string]string{
 		EnvGate:      "1",
 		EnvRunID:     "run-1",
@@ -183,7 +196,7 @@ func TestGateOnReadsIdentityVariablesThroughLookupSoTheyEnrollInTheCacheKey(t *t
 	}
 	for _, name := range []string{EnvRunID, EnvRunToken, EnvReportDir} {
 		if !env.didLookUp(name) {
-			t.Fatalf("%s was not read with Lookup on the enabled path; a new %s must invalidate the cached result", name, EnvRunID)
+			t.Fatalf("%s was not read with Lookup on the enabled path; run identity must come from the environment so the invocation boundary stays auditable", name)
 		}
 	}
 }
@@ -313,7 +326,7 @@ func TestGateOnRejectsEveryPartialOrInvalidIdentityCombination(t *testing.T) {
 }
 
 func TestMissingTokenDiagnosticPointsAtThePreflightStep(t *testing.T) {
-	// Contract v1.2.6 §5: the message MUST state that the token is generated by the same preflight
+	// Contract v1.2.7 §5: the message MUST state that the token is generated by the same preflight
 	// step that created the run marker — otherwise the reader has no idea where it comes from.
 	_, _, err := resolveWith(t, newFakeEnv(map[string]string{EnvGate: "1", EnvRunID: "run-1"}))
 	if err == nil {

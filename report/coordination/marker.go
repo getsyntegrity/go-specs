@@ -18,7 +18,7 @@ const markerSchemaVersion = "1"
 
 // maxMarkerBytes bounds the read before decoding. A marker is a few hundred bytes; anything
 // larger is corrupt or hostile, and an unbounded read of an attacker-influenced path is an OOM
-// waiting to happen (contract v1.2.6 §10).
+// waiting to happen (contract v1.2.7 §10).
 const maxMarkerBytes = 64 << 10
 
 // markerPublishOps is the publish seam for run.json.
@@ -30,7 +30,7 @@ const maxMarkerBytes = 64 << 10
 var markerPublishOps = realPublishOps
 
 // runMarker is the on-disk ownership evidence for one run. It never contains the raw token —
-// only the digest of the token's decoded bytes (contract v1.2.6 §5).
+// only the digest of the token's decoded bytes (contract v1.2.7 §5).
 type runMarker struct {
 	SchemaVersion string    `json:"schemaVersion"`
 	RunID         RunID     `json:"runId"`
@@ -59,7 +59,7 @@ type RunOwnership struct {
 }
 
 // InitializeRunOptions configures the preflight step that runs once, before `go test`
-// (contract v1.2.6 §3 step 2).
+// (contract v1.2.7 §3 step 2).
 type InitializeRunOptions struct {
 	RunID   RunID
 	Token   RunToken
@@ -67,7 +67,7 @@ type InitializeRunOptions struct {
 	// Force is explicit operator recovery only: it removes an existing marker and its shard
 	// directory before recreating them. It is never set automatically as a fallback after a
 	// failed create — the force path is a deliberate operator action, not a race resolver
-	// (contract v1.2.6 §5).
+	// (contract v1.2.7 §5).
 	Force bool
 }
 
@@ -78,7 +78,7 @@ type InitializeRunOptions struct {
 // only fail-closed if reuse is genuinely abnormal, which is why the contract makes per-invocation
 // uniqueness the primary rule rather than relying on a staleness heuristic — a marker left by a
 // killed run is byte-for-byte identical to one held by a slow but living run
-// (contract v1.2.6 §5).
+// (contract v1.2.7 §5).
 //
 // This is the only code path allowed to create a run marker. Producers only ever read and verify.
 func InitializeRun(ctx context.Context, opts InitializeRunOptions) (RunOwnership, error) {
@@ -169,7 +169,7 @@ func writeAndSync(f *os.File, body []byte) error {
 // package's producer, or the finalizer. A marker with a different digest, or no marker at all
 // while the gate is on, means a RunID collision or a misconfiguration — never "proceed as if
 // reporting were disabled", and never "ownership is unverified but probably fine"
-// (contract v1.2.6 §5).
+// (contract v1.2.7 §5).
 func VerifyRunOwnership(baseDir string, runID RunID, token RunToken) (RunOwnership, error) {
 	id, err := ValidateRunID(string(runID))
 	if err != nil {
