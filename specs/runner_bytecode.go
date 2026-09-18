@@ -27,7 +27,7 @@ func NewBytecodeRunner(p BCProgram) *BytecodeRunner {
 // Run executes all specs in order. One context from the pool, reused for every spec.
 //
 // A panic anywhere in one spec's instruction range is recovered instead of crashing the process:
-// it's recorded as a failure (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace),
+// it's recorded as a failure (via reportRecoveredPanic, message and stack trace),
 // and the next spec still runs. Recovery is per spec, not per instruction, matching RunParallel's
 // granularity.
 func (r *BytecodeRunner) Run(tb testing.TB) {
@@ -58,8 +58,7 @@ func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
 func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+			reportRecoveredPanic(ctx, fmt.Sprintf("panic: %v", recovered), string(debug.Stack()))
 		}
 	}()
 	for i := start; i < end; i++ {
