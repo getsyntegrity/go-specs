@@ -226,18 +226,6 @@ func DescribeFastWithReporter(tb testing.TB, name string, rep report.EventReport
 	DescribeFlatWithReporter(tb, name, rep, fn)
 }
 
-func newSpec(tb testing.TB, withReporter bool, rep report.EventReporter) *Spec {
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend}
-	if withReporter && rep != nil {
-		s.reporter = rep
-	}
-	return s
-}
-
 // Run runs the compiled suite. Call after Compile(); no-op if suite or tb is nil.
 func (s *Spec) Run() {
 	if s != nil && s.suite != nil && s.tb != nil {

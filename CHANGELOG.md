@@ -36,6 +36,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams), which it always did; its doc comment
   claimed it also seeded the context RNG, which was never true. A spec body that needs randomness
   brings its own generator and seeds it explicitly. ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+- Removed the unexported `newSpec` constructor, which that deleted test was the only caller of
+  anywhere in the module. It returned a `Spec` carrying neither a compiler nor a registry nor an
+  arena, so `Describe` on the result had nothing to build into and silently did nothing — which is
+  precisely why the RNG test's spec body never ran. No production code path used it: the exported
+  entry points build their `Spec` directly. Removing it deletes the seam that let a test look like it
+  exercised the framework while executing none of it. Internal only, so no public API change.
+  ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
 
 ### Added
 
