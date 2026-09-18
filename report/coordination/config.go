@@ -23,6 +23,10 @@ type ShardConfig struct {
 	BaseDir string
 	// PackagePath is this package's own import path, supplied by the caller.
 	PackagePath string
+	// Ownership is the verified proof that this process belongs to RunID. It is populated only
+	// by ShardConfigFromEnv, and only after the run marker has been checked — a producer never
+	// holds an enabled config it has not proved it owns (contract v1.2.6 §5, §7).
+	Ownership RunOwnership
 }
 
 // Enabled reports whether this process should publish a shard.
@@ -92,7 +96,20 @@ var defaultResolver = &resolver{
 // invalid value is a configuration error that fails loudly. Invalid configuration is never
 // downgraded to disabled reporting (contract v1.2.6 §5, §8).
 func ShardConfigFromEnv(packagePath string) (ShardConfig, error) {
-	return defaultResolver.resolve(packagePath)
+	cfg, err := defaultResolver.resolve(packagePath)
+	if err != nil || !cfg.Enabled() {
+		return cfg, err
+	}
+	// Ownership is verified here rather than at write time. A producer that discovers at
+	// os.Exit that it never owned its run directory has already run the whole suite against a
+	// namespace belonging to someone else; the check belongs before m.Run(), where the binary can
+	// still fail loudly and record why (contract v1.2.6 §3 step 3, §5).
+	own, err := VerifyRunOwnership(cfg.BaseDir, cfg.RunID, cfg.Token)
+	if err != nil {
+		return ShardConfig{}, err
+	}
+	cfg.Ownership = own
+	return cfg, nil
 }
 
 func (r *resolver) resolve(packagePath string) (ShardConfig, error) {

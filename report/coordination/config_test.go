@@ -2,6 +2,8 @@ package coordination
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -341,5 +343,72 @@ func TestBaseDirDefaultsAndIsHonouredWhenSet(t *testing.T) {
 	}
 	if cfg.BaseDir != "/srv/runs" {
 		t.Fatalf("BaseDir = %q, want the configured value", cfg.BaseDir)
+	}
+}
+
+func TestShardConfigFromEnvVerifiesOwnershipBeforeReturningAnEnabledConfig(t *testing.T) {
+	base := secureTempDir(t)
+	mustInitRun(t, base, "run-1", validToken)
+
+	t.Setenv(EnvGate, "1")
+	t.Setenv(EnvRunID, "run-1")
+	t.Setenv(EnvRunToken, validToken)
+	t.Setenv(EnvReportDir, base)
+
+	cfg, err := ShardConfigFromEnv("example.com/m/pkg")
+	if err != nil {
+		t.Fatalf("ShardConfigFromEnv: %v", err)
+	}
+	if !cfg.Enabled() {
+		t.Fatal("config is not enabled despite a valid gate and a matching marker")
+	}
+	wantHash, _ := HashRunToken(validToken)
+	if cfg.Ownership.TokenHash != wantHash {
+		t.Fatalf("Ownership.TokenHash = %q, want %q", cfg.Ownership.TokenHash, wantHash)
+	}
+	if cfg.Ownership.MarkerPath != markerPath(base, "run-1") {
+		t.Fatalf("Ownership.MarkerPath = %q", cfg.Ownership.MarkerPath)
+	}
+}
+
+func TestShardConfigFromEnvFailsWhenTheRunWasNeverInitialized(t *testing.T) {
+	base := secureTempDir(t)
+
+	t.Setenv(EnvGate, "1")
+	t.Setenv(EnvRunID, "never-initialized")
+	t.Setenv(EnvRunToken, validToken)
+	t.Setenv(EnvReportDir, base)
+
+	cfg, err := ShardConfigFromEnv("example.com/m/pkg")
+	if err == nil {
+		t.Fatal("an enabled config was returned for a run with no marker")
+	}
+	if cfg.Enabled() {
+		t.Fatal("a failed ownership check returned an enabled config")
+	}
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) || cfgErr.Reason != ReasonMarkerMissing {
+		t.Fatalf("got %v, want a *ConfigError with reason %q", err, ReasonMarkerMissing)
+	}
+}
+
+func TestShardConfigFromEnvTouchesNoFilesystemWhenTheGateIsOff(t *testing.T) {
+	// The disabled path must never require a run directory to exist: that is what makes a stale
+	// export in a developer shell inert rather than fatal.
+	base := filepath.Join(secureTempDir(t), "does-not-exist")
+
+	t.Setenv(EnvRunID, "run-1")
+	t.Setenv(EnvRunToken, validToken)
+	t.Setenv(EnvReportDir, base)
+
+	cfg, err := ShardConfigFromEnv("example.com/m/pkg")
+	if err != nil {
+		t.Fatalf("the disabled path failed: %v", err)
+	}
+	if cfg.Enabled() {
+		t.Fatal("reporting activated without the gate")
+	}
+	if _, err := os.Stat(base); !os.IsNotExist(err) {
+		t.Fatal("the disabled path created the reporting directory")
 	}
 }
