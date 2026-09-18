@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type NodeType int
@@ -301,13 +302,28 @@ func PrintTreeArena(arena *NodeArena, rootID int, depth int, w io.Writer) {
 	}
 }
 
-// CaptureCallerLocation controls whether file/line are captured for nodes (Describe, When, It).
-// When false (default), callerLocation returns "", 0 without calling runtime.Caller, saving
-// ~21% of runner allocations. Set to true when locations are needed (e.g. IDE, tree printing).
-var CaptureCallerLocation bool
+// captureCallerLocation controls whether file/line are captured for nodes (Describe, When, It).
+// It is atomic because suite construction is safe across concurrent goroutines: a consumer may
+// flip the toggle while another goroutine is declaring specs.
+var captureCallerLocation atomic.Bool
+
+// SetCaptureCallerLocation enables or disables caller-location capture for declaration nodes
+// (Describe, When, It). When disabled (the default), callerLocation returns "", 0 without
+// calling runtime.Caller, saving ~21% of runner allocations. Enable it when ArenaNode.File and
+// ArenaNode.Line are needed (e.g. IDE integration, tree printing). It is safe to call from any
+// goroutine, including while suites are being declared.
+func SetCaptureCallerLocation(enabled bool) {
+	captureCallerLocation.Store(enabled)
+}
+
+// CaptureCallerLocationEnabled reports whether caller-location capture is currently enabled.
+// It is safe to call from any goroutine.
+func CaptureCallerLocationEnabled() bool {
+	return captureCallerLocation.Load()
+}
 
 func callerLocation(skip int) (string, int) {
-	if !CaptureCallerLocation {
+	if !captureCallerLocation.Load() {
 		return "", 0
 	}
 	_, file, line, ok := runtime.Caller(skip)

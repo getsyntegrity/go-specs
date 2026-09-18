@@ -59,6 +59,18 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
+- **Breaking.** Replaced the exported `CaptureCallerLocation bool` with the concurrency-safe pair
+  `SetCaptureCallerLocation(enabled bool)` and `CaptureCallerLocationEnabled() bool`, backed by an
+  `atomic.Bool`. Suite construction is documented as safe across concurrent goroutines, so any
+  consumer writing the exported variable while another goroutine declared specs produced an
+  unsynchronized read/write data race on the `callerLocation` read — a race the variable's type made
+  unavoidable, not a misuse callers could code around. Behaviour is unchanged: capture is still off
+  by default, and when off `callerLocation` still returns `"", 0` without calling `runtime.Caller`.
+  Replace `specs.CaptureCallerLocation = true` with `specs.SetCaptureCallerLocation(true)` and any
+  read of the variable with `specs.CaptureCallerLocationEnabled()`. The setter also restores the name
+  the pre-rewrite `main` branch exported, closing the one parity gap `docs/LEGACY_PARITY.md` recorded
+  as having no equivalent. ([#153](https://github.com/getsyntegrity/go-specs/issues/153))
+
 - **Breaking.** `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen` now panic when called with no
   active registry, instead of silently returning. Each one exists to write into the registry that
   `Analyze` or `Describe` pushed; with no registry there is no destination, so returning quietly
