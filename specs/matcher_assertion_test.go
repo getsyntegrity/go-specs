@@ -190,21 +190,45 @@ func TestAssertionsWithoutABackendReturnQuietlyInsteadOfPanicking(t *testing.T) 
 	}
 }
 
-// The pooled Expectation must be returned even on the guarded early-return paths; otherwise every
-// assertion made against a backend-less context leaks one, and the pool stops amortising anything.
-// Acquiring after the guarded call must hand back a clean Expectation, never one still carrying the
-// previous actual value.
-func TestGuardedAssertionsStillReleaseThePooledExpectation(t *testing.T) {
+// Every assertion claims its handle before the guards run, so an assertion that early-returns for
+// want of a backend still spends its Expectation. That ordering is the contract: were the claim
+// made after the guard, a handle used against a backend-less context would stay assertable, and the
+// next assertion through it would silently pass — the exact false green issue #170 is about, just
+// reached by a different door.
+//
+// This test previously pinned the pool instead: it checked that the guarded paths returned the
+// object to expectationPool. There is no pool any more (see Context.Expect), so that contract is
+// gone and this is the one that replaced it.
+func TestGuardedAssertionsStillSpendTheExpectation(t *testing.T) {
 	noBackend := &Context{}
-	noBackend.Expect("stale").To(Equal(1))
-	noBackend.Expect("stale").ToEqual(1)
-	ExpectT(noBackend, 99).To(Equal(1))
 
+	t.Run("Expect.To", func(t *testing.T) {
+		e := noBackend.Expect("stale")
+		e.To(Equal(1))
+		assertPanicsWith(t, func() { e.To(Equal(1)) }, "go-specs", "reused")
+	})
+	t.Run("Expect.ToEqual", func(t *testing.T) {
+		e := noBackend.Expect("stale")
+		e.ToEqual(1)
+		assertPanicsWith(t, func() { e.ToEqual(1) }, "go-specs", "reused")
+	})
+	t.Run("ExpectT.To", func(t *testing.T) {
+		x := ExpectT(noBackend, 99)
+		x.To(Equal(1))
+		assertPanicsWith(t, func() { x.To(Equal(1)) }, "go-specs", "reused")
+	})
+	t.Run("ExpectT.ToEqual", func(t *testing.T) {
+		x := ExpectT(noBackend, 99)
+		x.ToEqual(1)
+		assertPanicsWith(t, func() { x.ToEqual(1) }, "go-specs", "reused")
+	})
+
+	// A guarded assertion must leave nothing behind for a well-formed one on another context.
 	ctx, b := newCapturedContext()
 	ctx.Expect(42).To(Equal(42))
 
 	if b.failed {
-		t.Fatalf("expected a clean pooled Expectation to assert normally, got %q", b.message)
+		t.Fatalf("expected a normal assertion to pass after guarded ones, got %q", b.message)
 	}
 }
 
