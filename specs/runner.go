@@ -282,10 +282,16 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // doc comment on why t.Run's return can't be trusted for this) — which only runs at all when the
 // filter accepted the subtest.
 func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran bool) {
-	t.Run(subtestName, func(subT *testing.T) {
-		ran = true
+	var parked bool
+	ran, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
+	if parked {
+		// The body called the unsupported ctx.T.Parallel(): runSpecBody's deferred restore has not
+		// run and cannot be run here, because the parked body still needs ctx pointing at its own
+		// subtest. Stop the run instead of letting the next spec swap over it (#172).
+		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
+	}
 	return
 }
 

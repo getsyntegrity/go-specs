@@ -120,6 +120,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   order and whitespace remain irrelevant, and numbers compare by exact numeric value rather than by
   literal text — `1`, `1.0`, `1e0` and `100e-2` are the same snapshot, as are `0` and `-0`. No stored
   snapshot needs regeneration. ([#154](https://github.com/getsyntegrity/go-specs/issues/154))
+- **Breaking for suites that called it.** Calling Go's `ctx.T.Parallel()` from inside a sequential
+  spec body is now defined as unsupported and fails the run immediately with a diagnostic naming the
+  operation and pointing at `ItParallel`/`RunParallel`. It previously corrupted the run in two ways:
+  `testing.T.Run` returns as soon as the subtest parks, so the runner resumed with its shared
+  `*Context` still bound to a spec that had not executed — the next spec opened its subtest *under*
+  the previous one (`suite/bravo/suite/charlie`), and, worse, the runner released that Context back
+  to the pool before the parked body ran, so every assertion the body later made hit the
+  `backend == nil` guards, returned silently, and left the suite reporting `PASS` having proven
+  nothing. A parked body's `*Context` is now poisoned rather than recycled, so if the body does
+  resume, its assertions still report against its own subtest instead of vanishing or landing on an
+  unrelated spec. Both sequential models (`Describe`/`ExecutionPlan` and `Builder`/`Runner`) and the
+  generated-case path are covered. Suites that relied on the previously green — and meaningless —
+  behaviour will now fail; move those specs to `ItParallel`, which gives each spec its own `Context`
+  and never exposes a live `*testing.T`.
+  ([#172](https://github.com/getsyntegrity/go-specs/issues/172))
 - `go.mod` declared `module github.com/pablogore/go-specs` while the repository is hosted at `github.com/getsyntegrity/go-specs`, so `go get github.com/getsyntegrity/go-specs@<version>` failed with a module-path mismatch for every external consumer. Corrected the module path and every internal import, doc reference, and CI/script reference to `github.com/getsyntegrity/go-specs`. ([#139](https://github.com/getsyntegrity/go-specs/issues/139))
 
 ### ⚠️ v0.1.0 is broken — do not use

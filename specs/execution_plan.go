@@ -414,14 +414,20 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
 func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran bool) {
-	t.Run(subtestName, func(subT *testing.T) {
-		ran = true
+	var parked bool
+	ran, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
 		ctx.SetPathValues(PathValues{})
 		message, output = runProgram(program, ctx, nil)
 	})
+	if parked {
+		// The body called the unsupported ctx.T.Parallel(). ctx is still Reset to that subtest's
+		// backend and the parked body needs it that way, so stop the run rather than let the caller
+		// release ctx back to the pool underneath it (#172).
+		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
+	}
 	return
 }
 
@@ -641,12 +647,30 @@ func backendNamesSubtests(backend testBackend) bool {
 // never read back from t.Name(), and reported identity comes from the plan and the generator.
 func runIsolatedCase(backend testBackend, name string, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
 	if real, ok := backend.(*runnableBackend); ok {
-		real.Run(name, func(tb testing.TB) {
-			caseBackend := asTestBackend(tb)
+		t, isT := real.tb.(*testing.T)
+		if !isT {
+			real.Run(name, func(tb testing.TB) {
+				caseBackend := asTestBackend(tb)
+				defer putTestBackend(caseBackend)
+				defer func() { result.Failed = result.Failed || tb.Failed() }()
+				result = runIsolatedCaseDirect(caseBackend, program, path, cov)
+			})
+			return result
+		}
+		// Generated cases open real subtests too, so ctx.T.Parallel() can park one here exactly as it
+		// can in a hand-written spec body (#172). This case's Context is acquired inside
+		// runIsolatedCaseDirect and released by a defer that a parked goroutine never reaches, so it
+		// is already abandoned rather than recycled; what is missing without this guard is the
+		// failure itself — result would stay zero and the case would report as passed.
+		_, parked := runSubtestGuardingParallel(t, name, func(subT *testing.T) {
+			caseBackend := asTestBackend(subT)
 			defer putTestBackend(caseBackend)
-			defer func() { result.Failed = result.Failed || tb.Failed() }()
+			defer func() { result.Failed = result.Failed || subT.Failed() }()
 			result = runIsolatedCaseDirect(caseBackend, program, path, cov)
 		})
+		if parked {
+			failUnsupportedSpecBodyParallel(t, nil, name)
+		}
 		return result
 	}
 	return runIsolatedCaseDirect(backend, program, path, cov)

@@ -24,6 +24,14 @@ func acquireContext(backend testBackend) (*Context, func()) {
 	ctx := contextPool.Get().(*Context)
 	ctx.Reset(backend)
 	return ctx, func() {
+		// A poisoned Context is deliberately neither reset nor pooled: a spec body called
+		// ctx.T.Parallel() and is still parked on a subtest goroutine that holds this pointer, so
+		// recycling it here is what turns that body's later assertions into silent no-ops or, worse,
+		// into failures charged to whichever unrelated spec next took the Context out of the pool.
+		// Abandoning it costs one Context on a run that is already failing. See spec_body_parallel.go.
+		if ctx.poisoned {
+			return
+		}
 		ctx.Reset(nil)
 		contextPool.Put(ctx)
 	}
@@ -61,6 +69,20 @@ type Context struct {
 	// Runner reference). Installed by Runner.Run only when it has a report.EventReporter; nil
 	// otherwise, so execution is unaffected without one.
 	execObserver specExecutionObserver
+	// poisoned marks a Context the runner may no longer own or recycle because a spec body called
+	// the unsupported ctx.T.Parallel() and is still parked on its subtest goroutine (#172). Set by
+	// poison, read only by the release func acquireContext hands out. Both run on the runner's own
+	// goroutine while the offending body is parked, so a plain bool needs no synchronisation; the
+	// parked body never reads it. See spec_body_parallel.go for the full rationale.
+	poisoned bool
+}
+
+// poison marks c as unsafe to reset or return to contextPool. It is deliberately one-way: Reset
+// clears it, and a poisoned Context is never reset again, so it can never be handed back out.
+func (c *Context) poison() {
+	if c != nil {
+		c.poisoned = true
+	}
 }
 
 // NewContext builds a context for the given test/bench. Use *testing.T or *testing.B.
@@ -85,6 +107,7 @@ func (c *Context) Reset(backend testBackend) {
 	c.failed = false
 	c.failFast = false
 	c.execObserver = nil
+	c.poisoned = false
 	if backend != nil {
 		// runnableBackend wraps the subtest T; unwrap so ctx.T points to the current subtest.
 		if r, ok := backend.(*runnableBackend); ok {
