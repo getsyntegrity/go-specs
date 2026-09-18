@@ -6,6 +6,48 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking.** Removed the exported legacy pointer-based declaration tree from `specs`: the `Node`
+  struct, `PrintTree(*Node, int, io.Writer)` and `Walk(*Node, func(*Node))`. The registry has built
+  into `NodeArena` — a flat, index-based arena — since the arena migration, and nothing in the module
+  ever constructed a `Node`: the type survived only as the parameter of those two functions, which
+  had no callers anywhere, so the three symbols formed a closed island unreachable from any live
+  execution path. Code that printed a tree should call `PrintTreeArena(arena, rootID, depth, w)` or
+  `SuiteTree.Tree()`; code that walked one should call `SuiteTree.Walk(func(id int))`, which visits
+  arena node indices. Note that `PrintTreeArena` prints the node at `rootID` itself, so passing `0`
+  emits the synthetic `suite` root line, whereas `SuiteTree.Tree()` omits it. `specs.Walk` was a free
+  function over `*Node` and is unrelated to the retained `SuiteTree.Walk` method, which is unchanged.
+  ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+- Removed the internal package `specs/internal/registry`, a second, self-contained registry
+  implementation (its own `Node`, `NodeType`, `ScopeMeta` and `Registry` with `Push`/`Pop`/`Attach`)
+  that no package in the module imported. The live registry lives in `specs/registry.go` and builds
+  into `NodeArena`; the internal copy never participated in execution and had diverged from it. This
+  is an internal package, so no public API changes. ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+- Removed `Context`'s per-context RNG: the unexported `rng` field and `randomInt64` method. The field
+  was seeded only in `NewContext`, and only from `time.Now().UnixNano()` — a wall-clock seed, which
+  the framework's deterministic-execution contract does not allow — while every runner acquires
+  contexts from `contextPool` via `acquireContext`, whose `Reset` set `rng` to `nil`. The RNG was
+  therefore nil for the entire life of every spec the runners execute, `randomInt64` had no
+  production caller, and the `TestContextRNGDeterminism` test that appeared to guarantee its
+  determinism was vacuous: its spec body never ran, so it compared two untouched zero-filled slices
+  and would have passed against any implementation. `Spec.RandomSeed` is unaffected and remains the
+  single seam for seeded behaviour — it seeds `Paths()` generation (`Sample` draws and the
+  `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams), which it always did; its doc comment
+  claimed it also seeded the context RNG, which was never true. A spec body that needs randomness
+  brings its own generator and seeds it explicitly. ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+
+### Added
+
+- Direct tests for the retained exported registry helpers — `PrintTreeArena`, `CurrentArena`,
+  `CurrentSuite`, `AppendBeforeHook`, `AppendAfterHook` and `SetPathGen` — which previously had none.
+  They pin the documented behaviour of each, including that all of them are no-ops rather than panics
+  when no registry is active or when the arena, root id or writer is absent, and that
+  `PrintTreeArena` includes its `rootID` node in the output. Each helper's doc comment now states the
+  purpose it is retained for: together they are the supported surface for building into the registry
+  that `Analyze` or `Describe` pushed, without access to the unexported registry type.
+  ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+
 ### Fixed
 
 - `go.mod` declared `module github.com/pablogore/go-specs` while the repository is hosted at `github.com/getsyntegrity/go-specs`, so `go get github.com/getsyntegrity/go-specs@<version>` failed with a module-path mismatch for every external consumer. Corrected the module path and every internal import, doc reference, and CI/script reference to `github.com/getsyntegrity/go-specs`. ([#139](https://github.com/getsyntegrity/go-specs/issues/139))

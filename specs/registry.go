@@ -19,23 +19,6 @@ const (
 	ItNode
 )
 
-// Node is the legacy pointer-based node type. The registry now uses NodeArena (index-based);
-// Node is retained for reference and for any external use of SuiteTree that may still expect it.
-type Node struct {
-	Name        string
-	Type        NodeType
-	Children    []*Node
-	Parent      *Node
-	Fn          func(*Context)
-	File        string
-	Line        int
-	PathGen     *PathGenerator
-	BeforeHooks []func(*Context)
-	AfterHooks  []func(*Context)
-	BeforeAll   []func(*Context)
-	AfterAll    []func(*Context)
-}
-
 // registry holds an arena and a stack of node indices. All nodes are stored in the arena.
 type registry struct {
 	mu    sync.Mutex
@@ -245,6 +228,10 @@ func Analyze(fn func()) *SuiteTree {
 	return reg.currentSuite()
 }
 
+// CurrentSuite returns a SuiteTree view over the registry active on the calling goroutine, or nil
+// when none is active. With CurrentArena, AppendBeforeHook, AppendAfterHook and SetPathGen it forms
+// the supported extension surface for code that builds into the registry Analyze or Describe pushed
+// — an external DSL or a generator — without needing the unexported registry type.
 func CurrentSuite() *SuiteTree {
 	it := currentRegistry()
 	if it == nil {
@@ -261,22 +248,12 @@ func enterAnalyzeNode(nodeType NodeType, name, file string, line int, fn func(*C
 	return reg.enterNode(nodeType, name, file, line, fn)
 }
 
-// PrintTree prints the pointer-based node tree (legacy).
-func PrintTree(node *Node, depth int, w io.Writer) {
-	if node == nil {
-		return
-	}
-	indent := strings.Repeat("  ", depth)
-	if w == nil {
-		w = io.Discard
-	}
-	_, _ = fmt.Fprintf(w, "%s%s\n", indent, node.Name)
-	for _, child := range node.Children {
-		PrintTree(child, depth+1, w)
-	}
-}
-
-// PrintTreeArena prints the arena-based tree from rootID. Skips suite root (id 0) children when rootID is 0.
+// PrintTreeArena writes the arena-backed declaration tree rooted at rootID to w, one node name per
+// line, indented two spaces per level. It is the supported way to inspect a built suite's shape from
+// outside the package — debugging a Describe/When/It nesting, or rendering the tree in tooling — and
+// it is the only tree printer, because the arena is the live node representation. Pass rootID 0 for
+// the suite root. A nil arena, an out-of-range rootID, and a nil w (treated as io.Discard) are all
+// no-ops rather than panics, so a possibly-absent tree can be printed unguarded.
 func PrintTreeArena(arena *NodeArena, rootID int, depth int, w io.Writer) {
 	if arena == nil || rootID < 0 || rootID >= len(arena.Nodes) {
 		return
@@ -288,16 +265,6 @@ func PrintTreeArena(arena *NodeArena, rootID int, depth int, w io.Writer) {
 	_, _ = fmt.Fprintf(w, "%s%s\n", indent, arena.Nodes[rootID].Name)
 	for _, cid := range arena.Children[rootID] {
 		PrintTreeArena(arena, cid, depth+1, w)
-	}
-}
-
-func Walk(node *Node, fn func(*Node)) {
-	if node == nil || fn == nil {
-		return
-	}
-	fn(node)
-	for _, child := range node.Children {
-		Walk(child, fn)
 	}
 }
 

@@ -369,7 +369,10 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	}
 }
 
-// RandomSeed sets the RNG seed for path/context in this spec subtree.
+// RandomSeed sets the seed for Paths() generation in this spec subtree: Sample's draws and the
+// Explore/ExploreCoverage/ExploreSmart explorers' candidate streams. It is the only randomness
+// go-specs owns — a Context carries no RNG of its own, so a spec body that needs randomness must
+// bring its own generator and seed it explicitly.
 func (s *Spec) RandomSeed(seed int64) {
 	if s != nil {
 		s.seed = seed
