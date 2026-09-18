@@ -93,6 +93,14 @@ jobs:
         run: go test -race ./...
 
   shipwright:
+    # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
+    # single workflow step with "failed to acquire Dagger client: daemon connected but not
+    # ready ... context deadline exceeded after 1 attempts", despite reporting
+    # max_retries=11 — the configured retry is not honoured. Observed twice on unrelated
+    # PRs, each cleared by a plain re-run, so it gates merges on luck rather than on the
+    # code. `test` and `goreleaser` are independent jobs and keep running.
+    # To re-enable: delete this `if` line. Nothing else was changed.
+    if: false
     runs-on: ubuntu-latest
     env:
       SHIPWRIGHT_VERSION: v0.12.0
