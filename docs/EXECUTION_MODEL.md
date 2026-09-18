@@ -46,7 +46,7 @@ For the ExecutionPlan path, the loop is over instructions within each spec’s s
 
 ## Performance properties
 
-- **Zero allocations** — Context (and expectation objects) are pooled. The runner reuses one Context per spec (or per group). On the assertion fast path, no heap allocations occur on success.
+- **Zero allocations** — the Context is pooled and the runner reuses one per spec (or per group); expectations are stack-allocated rather than pooled. On the assertion fast path, no heap allocations occur on success.
 - **Sequential memory access** — The plan is a contiguous slice (or a small number of slices). The runner walks them in order, which is cache-friendly.
 - **No reflection** — Steps are plain function pointers. Assertions use generics and direct comparison where possible; no `reflect.DeepEqual` or type switches on the hot path.
 - **Direct function calls** — Each step is invoked as `step(ctx)`. No indirection or dynamic dispatch in the inner loop.
@@ -75,7 +75,7 @@ There is no branching on step type in the hot path; the compiler has already lai
 
 **Properties:**
 
-- **Zero allocations** — The loop does not allocate; Context and expectations are pooled.
+- **Zero allocations** — The loop does not allocate; the Context is pooled and expectations are stack-allocated.
 - **Sequential memory access** — Walking a slice of function pointers is cache-friendly.
 - **No reflection** — Steps are plain function pointers; no type switches or reflection in the inner loop.
 - **Direct function dispatch** — Each step is invoked as `step(ctx)`; no indirection.

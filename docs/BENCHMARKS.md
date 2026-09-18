@@ -68,7 +68,7 @@ Full suite run (1000 specs, one assertion per spec). Time per run:
 
 - **No reflection** — Assertions use generics and direct comparison. The fast path does not use `reflect.DeepEqual` or runtime type switches.
 - **Compiled execution plan** — Suites are compiled once into a flat list of steps. The runner does not resolve hooks or look up specs at run time.
-- **Zero allocations** — Context and expectations are pooled; the assertion and runner success path allocate nothing in the measured loop.
+- **Zero allocations** — the Context is pooled and the expectation never escapes the assertion that consumes it, so it is stack-allocated; the assertion and runner success path allocate nothing in the measured loop.
 - **Simple runner loop** — The runner just iterates over steps and calls `step(ctx)`. No maps, no reflection, no per-spec allocation.
 
 ### Allocation comparison

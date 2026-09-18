@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -37,12 +38,13 @@ func acquireContext(backend testBackend) (*Context, func()) {
 	}
 }
 
-// expectationPool reuses Expectation instances for Expect(...).To() / ToEqual() to reduce allocations.
-var expectationPool = sync.Pool{
-	New: func() any {
-		return &Expectation{}
-	},
-}
+// expectationReusedMessage is the panic raised when an assertion handle is used twice. An
+// Expectation is spent by its first To/ToEqual call; a second one is a bug in the spec, and in a
+// testing framework the only safe way to report a bug in a spec is loudly. Silently returning —
+// which is what the released handle used to do — turns the second assertion into a false green.
+const expectationReusedMessage = "go-specs: assertion handle reused. " +
+	"The value from ctx.Expect(x) or specs.ExpectT(ctx, x) is spent by its first To/ToEqual call; " +
+	"call Expect again for each assertion"
 
 // Fixture is a before/after hook that receives the context.
 type Fixture func(*Context)
@@ -164,16 +166,21 @@ func (c *Context) RecordCoverage(edge uint64) {
 	c.coverage.Hit(edge)
 }
 
-// Expect returns an expectation for the given actual value. The returned Expectation
-// is reused from a pool; it is returned to the pool when To() or ToEqual() completes.
+// Expect returns an expectation for the given actual value. The returned Expectation is spent by
+// its first To() or ToEqual() call; asserting through it again panics (see
+// expectationReusedMessage).
+//
+// This allocates nothing on the fast path despite the composite literal: Expect is small enough to
+// inline into the caller, the Expectation never escapes the assertion that consumes it, and escape
+// analysis therefore stack-allocates it. That is also why it is no longer pooled — see
+// Expectation.release.
 func (c *Context) Expect(actual any) *Expectation {
-	e := expectationPool.Get().(*Expectation)
-	e.ctx = c
-	e.actual = actual
-	return e
+	return &Expectation{ctx: c, actual: actual}
 }
 
-// expectT is the generic return type of ExpectT; holds a pooled Expectation.
+// expectT is the generic return type of ExpectT; holds the single-use Expectation it will assert
+// through. Copying the struct copies the pointer, not the handle, so two copies still contend for
+// the one atomic claim and exactly one of them can assert.
 type expectT[T comparable] struct{ e *Expectation }
 
 // EqualTo asserts that actual equals expected. Zero alloc; single comparison, no type switch, no reflection.
@@ -210,8 +217,12 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 	c.backend.Fatalf("expected %v to equal %v", actual, expected)
 }
 
-// ExpectT returns a typed expectation for comparable types. Zero allocations (reuses pooled Expectation).
+// ExpectT returns a typed expectation for comparable types. Zero allocations (the Expectation does
+// not escape the assertion that consumes it, so it is stack-allocated — see Context.Expect).
 // ToEqual(expected) does one type assertion and direct comparison.
+//
+// Like Context.Expect, the returned handle is spent by its first To/ToEqual call; a second
+// assertion through it panics (see expectationReusedMessage).
 //
 // ToEqual and To are NOT inlineable today, and must not become so — see the ATTRIBUTION note on
 // EqualTo. (An earlier version of this comment claimed ToEqual was inlineable; `go build
@@ -221,10 +232,7 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 //
 // Example: specs.ExpectT(ctx, 42).ToEqual(42) or specs.ExpectT(ctx, true).To(specs.BeTrue())
 func ExpectT[T comparable](c *Context, v T) expectT[T] {
-	e := expectationPool.Get().(*Expectation)
-	e.ctx = c
-	e.actual = v
-	return expectT[T]{e: e}
+	return expectT[T]{e: &Expectation{ctx: c, actual: v}}
 }
 
 // ToEqual asserts that the value equals expected using ==, not reflect.DeepEqual (see ExpectT's doc
@@ -234,6 +242,9 @@ func (x expectT[T]) ToEqual(expected T) {
 	e := x.e
 	if e == nil {
 		return
+	}
+	if !e.spent.CompareAndSwap(false, true) {
+		panicReused()
 	}
 	defer e.release()
 	if e.ctx == nil || e.ctx.backend == nil {
@@ -286,6 +297,9 @@ func (x expectT[T]) To(m Matcher) {
 	e := x.e
 	if e == nil {
 		return
+	}
+	if !e.spent.CompareAndSwap(false, true) {
+		panicReused()
 	}
 	defer e.release()
 	// The backend guard matches EqualTo and ExpectT.ToEqual: with no backend there is nowhere to
@@ -344,20 +358,51 @@ func (c *Context) Snapshot(name string, value any) {
 	}
 }
 
-// Expectation is the result of Context.Expect(actual).
+// Expectation is the result of Context.Expect(actual). It carries a single assertion: the first
+// To/ToEqual call spends it, and spent is permanent.
 type Expectation struct {
 	ctx    *Context
 	actual any
+	// spent is claimed by whichever To/ToEqual call reaches this handle first, and is never
+	// cleared: an Expectation is not recycled, so a retained handle can only ever refer to the
+	// assertion it was created for. While expectations were pooled, release handed this object to
+	// the next Expect call — so a retained handle silently became another spec's handle, and
+	// asserting through it reported into that spec's backend (issue #170).
+	//
+	// It is an atomic.Bool rather than a plain bool because the assertions claim it with
+	// CompareAndSwap. A plain `if e.spent { panic }; e.spent = true` is check-then-act: two
+	// goroutines sharing one fresh handle both read false and both proceed, which is a data race on
+	// ctx and actual as well as a second silent assertion. CompareAndSwap makes "spent" a real
+	// property rather than a merely sequential one — exactly one caller can win it, whatever the
+	// interleaving — and gives the loser a happens-before edge, so the race detector has nothing to
+	// report either.
+	spent atomic.Bool
 }
 
-// release returns the Expectation to the pool. Called at end of To()/ToEqual().
+// release drops the handle's references once its assertion has run. It does not mark the handle
+// spent: the assertion already claimed it with CompareAndSwap on entry, which is what makes the
+// claim exclusive. Called at the end of To()/ToEqual().
+//
+// It deliberately does not return the object to a pool. Pooling was worth an allocation only
+// because the handle is short-lived, but correctness needs the opposite guarantee — that a handle
+// user code still holds is never handed to anyone else — and the two cannot both be true. Dropping
+// the pool costs nothing measurable: the Expectation does not escape the assertion that consumes
+// it, so escape analysis stack-allocates it and the fast path still allocates zero.
 func (e *Expectation) release() {
 	if e == nil {
 		return
 	}
 	e.ctx = nil
 	e.actual = nil
-	expectationPool.Put(e)
+}
+
+// panicReused reports an assertion attempted through a spent handle. It is split out and marked
+// noinline so each assertion's fast path carries only the branch, not the panic setup — the same
+// reason reportMatcherFailure is split out of To.
+//
+//go:noinline
+func panicReused() {
+	panic(expectationReusedMessage)
 }
 
 // To asserts that the actual value matches the matcher. Helper() only on failure; must stay
@@ -365,6 +410,9 @@ func (e *Expectation) release() {
 func (e *Expectation) To(m Matcher) {
 	if e == nil {
 		return
+	}
+	if !e.spent.CompareAndSwap(false, true) {
+		panicReused()
 	}
 	defer e.release()
 	// See expectT.To for why the backend is guarded alongside the context and the matcher.
@@ -412,6 +460,9 @@ func (e *Expectation) reportMatcherFailure(m Matcher) {
 func (e *Expectation) ToEqual(expected any) {
 	if e == nil {
 		return
+	}
+	if !e.spent.CompareAndSwap(false, true) {
+		panicReused()
 	}
 	defer e.release()
 	// See expectT.To for why the backend is guarded alongside the context.

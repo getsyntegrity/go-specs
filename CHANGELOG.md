@@ -110,6 +110,28 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Breaking.** An assertion handle from `ctx.Expect(x)` or `specs.ExpectT(ctx, x)` could be used
+  more than once, and the second use was a false green. The first `To`/`ToEqual` call returned the
+  `Expectation` to `expectationPool`, so a retained handle either silently returned (its `ctx` had
+  been cleared) or — once the pool had handed that same object to another spec — reported the
+  assertion against *that* spec's backend. `e := ctx.Expect(1); e.ToEqual(1); e.ToEqual(999)` passed.
+  In a testing framework a silently-passing assertion is the worst possible defect, so the handle is
+  now single-use: it is spent by its first `To`/`ToEqual`, and a second one panics with an actionable
+  message. The runner recovers the panic and reports the spec as failed, so the misuse is visible
+  rather than green. The handle is claimed with `atomic.Bool.CompareAndSwap`, not a plain flag: a
+  `if spent { panic }` followed by a later write is check-then-act, so several goroutines sharing one
+  fresh handle would all read `false` and all assert — a second silent assertion again, plus an
+  unsynchronized read/write on the handle's `ctx` and `actual`. The swap makes single-use a real
+  property rather than a merely sequential one, and gives the losing callers a happens-before edge
+  so `-race` has nothing to report. Removing `expectationPool` is the other half: a flag cannot stop
+  a recycled object from being handed to another spec while the original caller still holds it.
+  Expectations are now stack-allocated instead — they never escape the assertion that consumes them,
+  so the fast path still allocates zero. Net effect on the assertion path, measured on go1.26.6 with
+  `-count=6`: `BenchmarkAssertion_GoSpecs_ExpectToEqual` 13.5 ns/op → 9.7 ns/op and
+  `BenchmarkMatcher_GoSpecs` 13.0 ns/op → ~11 ns/op, both still at 0 allocs/op. Dropping the pool's
+  `Get`/`Put` is worth more than the atomic claim costs, so the path is faster than before despite
+  gaining the guarantee. Specs that assert once per `Expect` call — every documented usage — are
+  unaffected. ([#170](https://github.com/getsyntegrity/go-specs/issues/170))
 - Snapshot comparison decoded both the stored and the newly marshaled JSON into `any`, where
   `encoding/json` represents every number as a `float64`. Integers above 2^53 lose their last digits
   there, so adjacent 64-bit IDs such as `9007199254740992` and `9007199254740993` collapsed onto one

@@ -61,7 +61,7 @@ For more detail, see [ARCHITECTURE.md](ARCHITECTURE.md) and [EXECUTION_MODEL.md]
 
 ## What we encourage
 
-- **Zero allocations in hot paths** — Use sync.Pool for Context and expectation objects; avoid allocating in the assertion success path and in the runner loop.
+- **Zero allocations in hot paths** — Use sync.Pool for the Context; avoid allocating in the assertion success path and in the runner loop. Do **not** pool objects that are handed to user code: an expectation the caller still holds must never be handed to another spec (see issue #170). Rely on escape analysis instead — keep the object from escaping the call that consumes it and it costs nothing.
 - **Deterministic execution** — Specs run in a fixed order; no map iteration or nondeterministic scheduling that could change outcome order.
 - **Minimal reflection** — Prefer generics and direct comparison; avoid `reflect.DeepEqual` and runtime type switches on the hot path.
 

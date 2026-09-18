@@ -70,8 +70,8 @@ func TestExpectToRecordsACoverageEdgeWhenTheMatcherPasses(t *testing.T) {
 	}
 }
 
-// The guards are what keep a misuse from panicking mid-suite; each one releases the pooled
-// Expectation and returns without reporting.
+// The guards are what keep a misuse from panicking mid-suite; each one spends the Expectation and
+// returns without reporting.
 func TestExpectToIgnoresANilMatcher(t *testing.T) {
 	ctx, b := newCapturedContext()
 
