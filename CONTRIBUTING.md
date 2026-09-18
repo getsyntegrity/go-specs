@@ -45,10 +45,36 @@ Important rules:
 
 ---
 
+# Branching Model
+
+Two long-lived branches, with one rule each.
+
+| Branch | What lands there | How |
+|--------|------------------|-----|
+| `develop` | Every feature, fix, refactor and doc change | PR targeting `develop`. This is the default branch, so a PR opened without choosing a base already points here. |
+| `main` | Releases and hotfixes only | PR from `develop` to `main` when a release is due; a hotfix branches from `main` and PRs back into it, then is merged down into `develop`. |
+
+Never open a feature PR against `main`. `main` exists to hold the commit a release is cut from, and a feature landing there directly is invisible to `develop` until someone notices and reconciles the two branches by hand.
+
+When syncing `develop` into `main` for a release, merge — do not squash. A squash creates a commit on `main` that does not exist on `develop`, so the branches diverge again the moment the release lands.
+
+## Releasing
+
+Releases are manual and deliberate. The `Release` workflow runs on `workflow_dispatch` only: a push or merge to `main` does not publish by itself.
+
+```bash
+gh workflow run release.yml --ref main
+```
+
+Leave the `version` input empty to auto-bump the patch version from the latest tag, or pass an explicit `vX.Y.Z`. The workflow skips if `HEAD` is already tagged.
+
+---
+
 # Pull Requests
 
 PRs must include:
 
+* a base branch that matches the Branching Model above
 * tests
 * benchmarks (if performance related)
 * documentation updates if APIs change
