@@ -63,8 +63,10 @@ func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) 
 }
 
 // RunParallel runs each spec (instruction range) on a worker pool. Workers pull spec indexes via
-// atomic counter; each worker reuses one Context. Failures are recorded by spec index and reported
-// in order (deterministic). No allocations in the worker loop.
+// atomic counter; each worker reuses one Context. Failures are recorded by spec index and every
+// failing spec is reported in order (deterministic), through Errorf rather than Fatalf so a failing
+// run does not end the calling test function — see reportFailures and #173. No allocations in the
+// worker loop.
 func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 	if r == nil || tb == nil || r.program.BCLen() == 0 {
 		return

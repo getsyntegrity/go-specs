@@ -24,7 +24,7 @@ func TestRunParallel_DeterministicReport(t *testing.T) {
 	r.Add("s3", func(ctx *Context) { EqualTo(ctx, 1, 1) })
 
 	var reported string
-	fake := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	fake := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallel(fake, 2)
 	if reported == "" {
 		t.Error("expected failure to be reported")
@@ -63,7 +63,7 @@ func TestRunParallelBatched_DeterministicReport(t *testing.T) {
 	r.Add("s1", func(ctx *Context) { EqualTo(ctx, 1, 2) }) // fail at 1
 	r.Add("s2", func(ctx *Context) { EqualTo(ctx, 1, 1) })
 	var reported string
-	fake := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	fake := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallelBatched(fake, 2, 4)
 	if reported == "" {
 		t.Error("expected failure to be reported")
@@ -86,7 +86,7 @@ func TestRunParallel_FatalAssertionStopsSpecBody(t *testing.T) {
 	})
 
 	var reported string
-	fake := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	fake := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallel(fake, 1)
 
 	if reported == "" {
@@ -110,7 +110,7 @@ func TestRunParallel_FatalAssertionDoesNotStopOtherSpecs(t *testing.T) {
 	r.Add("s1", func(ctx *Context) { atomic.AddInt32(&laterRan, 1); EqualTo(ctx, 1, 1) })
 	r.Add("s2", func(ctx *Context) { atomic.AddInt32(&laterRan, 1); EqualTo(ctx, 1, 1) })
 
-	fake := &fakeReporter{fatalf: func(string, ...any) {}}
+	fake := &fakeReporter{errorf: func(string, ...any) {}}
 	r.RunParallel(fake, 1)
 
 	if laterRan != 2 {
@@ -132,7 +132,7 @@ func TestRunParallelBatched_FatalAssertionStopsSpecBody(t *testing.T) {
 	r.Add("s1", func(ctx *Context) { atomic.AddInt32(&laterRan, 1); EqualTo(ctx, 1, 1) })
 
 	var reported string
-	fake := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	fake := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallelBatched(fake, 1, 4) // 1 worker, chunkSize 4 so both specs land in the same chunk
 
 	if reported == "" {
@@ -196,14 +196,16 @@ func TestParallelBackend_RunAbortsSpecWhenAbortOnFatal(t *testing.T) {
 	}
 }
 
-// fakeReporter implements failureReporter for tests (captures Fatalf instead of failing).
+// fakeReporter implements failureReporter for tests (captures the reported failure instead of
+// failing). reportFailures reports through Errorf, never Fatalf — see its doc comment and #173 —
+// so errorf is where a captured message arrives.
 type fakeReporter struct {
-	fatalf func(string, ...any)
+	errorf func(string, ...any)
 }
 
 func (f *fakeReporter) Helper() {}
-func (f *fakeReporter) Fatalf(format string, args ...any) {
-	if f.fatalf != nil {
-		f.fatalf(format, args...)
+func (f *fakeReporter) Errorf(format string, args ...any) {
+	if f.errorf != nil {
+		f.errorf(format, args...)
 	}
 }

@@ -102,9 +102,11 @@ func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
 }
 
 // RunParallel runs specs across workers goroutines. Each worker reuses one Context from contextPool.
-// Failures are recorded by spec index; after all workers finish, the first failure is reported in
+// Failures are recorded by spec index; after all workers finish, every failing spec is reported in
 // spec order (deterministic). workers <= 0 uses GOMAXPROCS. No allocations in the worker loop.
-// tb is used only for reporting (Helper, Fatalf) after workers finish; pass testing.T or a type implementing failureReporter.
+// tb is used only for reporting (Helper, Errorf) after workers finish; pass testing.T or a type
+// implementing failureReporter. Reporting uses Errorf, so a failing run does not end the calling
+// test function — see reportFailures and #173.
 func (r *MinimalRunner) RunParallel(tb failureReporter, workers int) {
 	r.runParallelWith(tb, workers, runWorker)
 }

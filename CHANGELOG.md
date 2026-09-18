@@ -133,6 +133,23 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- A parallel group with several failing specs showed only one of them, and reporting it silently
+  turned on fail-fast. `reportFailures` stopped at the first failed record and reported it with
+  `Fatalf`, which ends in `runtime.Goexit` on a real `*testing.T`: the loop could not continue past
+  it, so four failing specs out of five were invisible, and the calling test function ended there
+  too — a `MinimalRunner.RunParallel(t, n)` never reached the statement after it, and a `Runner`
+  skipped the groups declared after the parallel one, with `FailFast` left at its default. A run that
+  ends early looks like a run that finished. Every failing spec is now reported, still in spec index
+  order, through `Errorf`, so all N failures reach `go test` output and execution continues;
+  fail-fast is again only what `Runner.FailFast` asks for, and still stops at the next group
+  boundary. Repeated failures within one spec are now explicitly first-write-wins — `Error`/`Errorf`
+  do not abort, so one spec body can report twice, and the first failure is the one that explains it
+  — matching the sequential path's sticky `failureRecord` and the panic recovery that already refused
+  to overwrite an assertion failure. All three parallel engines (`MinimalRunner.RunParallel`,
+  `RunParallelBatched`, `BytecodeRunner.RunParallel`) and `ItParallel`'s group step share the one
+  reporting path, so all four change together. The unexported `failureReporter` interface now
+  requires `Errorf` instead of `Fatalf`; `*testing.T` satisfies it unchanged.
+  ([#173](https://github.com/getsyntegrity/go-specs/issues/173))
 - **Breaking.** Invalid sharding configuration degraded silently into "run the whole suite". A
   `total <= 0`, a negative index or an index at or above the total made `ShardSpecs` and
   `ShardBCProgram` return every spec, and made `RunShard`/`RunShardWithReporter` run every group;
