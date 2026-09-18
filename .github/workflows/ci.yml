@@ -1,5 +1,5 @@
 # CI: build, vet, and test (including -race) on every PR and push to develop/main.
-# Runs once, on Go 1.25 (the version go.mod requires) and ubuntu-latest only --
+# Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
 # (an OS-specific bug class, a toolchain deprecation window); this repo never
 # had one, so it was pure CI runtime with no coverage payoff. If a real reason
@@ -11,9 +11,9 @@
 # the canonical definition of what "go-specs passes CI" means; this file only
 # adds what Shipwright cannot express today. It complements rather than
 # replaces the `test` job below: Dagger only runs Linux containers and pins
-# its own Go toolchain (not 1.25), so it can't stand in for the native
-# build/vet/test step that actually verifies the go.mod floor compiles and
-# passes. Both run in parallel, so the small overlap on `test` costs nothing.
+# its own Go toolchain (not the one pinned in .go-version), so it can't stand
+# in for the native build/vet/test step that actually verifies the go.mod floor
+# compiles and passes. Both run in parallel, so the small overlap on `test` costs nothing.
 #
 # Build and vet stay native because Shipwright has no provider for either
 # on a library module: its only `build` provider compiles a single `main`
@@ -60,10 +60,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Catches a bump to go.mod's `go` directive without .go-version, or the
+      # reverse. Patch-level drift is allowed; minor-level drift fails.
+      - name: Check Go version pin
+        run: ./.github/scripts/check-go-version.sh
+
       - name: Set up Go
+        # The toolchain CI installs is pinned in .go-version, never inline
+        # here: go.mod declares the *minimum* the code needs (the floor every
+        # consumer inherits), .go-version the *exact* patched toolchain we
+        # build and test with. One file per role, one place to bump each.
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Verify module path matches repository
@@ -140,7 +149,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version-file: .go-version
           cache: false
 
       - name: Install GoReleaser

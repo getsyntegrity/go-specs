@@ -7,7 +7,7 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-report bench-compare lint build tidy clean
+.PHONY: help test test-race coverage bench bench-report bench-compare lint build tidy clean check-go-version
 
 # Default target: show all tasks with short descriptions
 help:
@@ -23,7 +23,13 @@ help:
 	@echo "  make build         Build all modules and specs-cli"
 	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove specs-cli, coverage.*, benchmark results"
+	@echo "  make check-go-version  Verify go.mod and .go-version agree on the Go minor"
 	@echo ""
+
+# Fail when go.mod's `go` directive and .go-version drift apart on the minor
+# version. Same script CI runs, so a bad bump is caught before pushing.
+check-go-version:
+	./.github/scripts/check-go-version.sh
 
 # Run tests
 test:

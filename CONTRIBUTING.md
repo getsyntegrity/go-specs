@@ -8,8 +8,32 @@ Thanks for contributing to go-specs.
 
 Requirements:
 
-* Go 1.22+
+* Go — install the exact version recorded in `.go-version`; that file is the
+  source of truth for the toolchain CI builds and tests with, and version
+  managers (`asdf`, `mise`, `goenv`, `gvm`) read it automatically.
 * make (optional)
+
+## Go version pinning
+
+Two files, two different jobs — do not collapse them:
+
+| File | Meaning |
+| --- | --- |
+| `go.mod`'s `go` directive | **Minimum** language version the code needs. This is the floor every downstream consumer of go-specs inherits, so it stays conservative. |
+| `.go-version` | **Exact** toolchain CI installs and contributors run. Tracks a current patch release so security fixes land without moving the consumer floor. |
+
+They are allowed to differ on the *patch* component, and normally do. They
+must agree on `<major>.<minor>`.
+
+Bumping either one means bumping both (minor bumps) and running:
+
+```
+make check-go-version
+```
+
+CI runs the same check (`.github/scripts/check-go-version.sh`) in the `test`
+and `release` jobs, so drift fails the build instead of silently changing the
+toolchain a release is built with.
 
 Clone:
 
