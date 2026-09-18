@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.6** (amended by #148)
+Contract version: **v1.2.7** (amended by #148, #194)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -8,13 +8,14 @@ semantics, and coverage-merge responsibilities for module-wide `go test ./...` r
 `NormalizedReport` or any renderer from #142.
 
 Downstream issues and code comments **must cite the contract version plus the section**
-(for example "contract v1.2.6 §8"), never a bare section number: sections are amended in place,
+(for example "contract v1.2.7 §8"), never a bare section number: sections are amended in place,
 so `§8` alone resolves to different normative text depending on when it was read.
 
 ### Changelog
 
 | Version | PR | Change |
 |---|---|---|
+| v1.2.7 | #194 | Withdraws two normative claims about toolchain behaviour that did not survive being run, both verified on `go1.26.8` rather than inferred. (1) §5's cache-enrollment claim: environment reads performed in `TestMain` **before** `m.Run()` never reach `go test`'s cache key, because the testlog logger is installed by `m.deps.StartTestLog` inside `M.before()`, which runs inside `m.Run()` — so at the call site §3 step 3 mandates, neither `os.Getenv`/`os.LookupEnv` nor `os.Environ` affects cache validity. `-count=1` (§6) was already mandatory and is now the **sole** cache-correctness mechanism, not a supplement to a second one. The `os.Environ()` access rule is **kept** as defence-in-depth for reads made from inside a test or a helper it calls, but the cache-stability regression test v1.2.3 mandated is withdrawn as **vacuous** — it passes even with `os.Getenv` everywhere — and replaced by a direct `Lookup`-vs-`Scan` assertion through the `environment` seam plus a process-level test that a cached package under an enabled gate publishes neither a shard nor `config-error.json`. (2) §8's correction note: `cmd/go` leaves **no trace** of a test binary's exit code in its output, not merely an unpropagated status, so `config-error.json` is the **only** carrier of the configuration-failure distinction and no log-scraping fallback exists. |
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
 | v1.1 | #148 (initial) | Added the run-ownership marker (`GO_SPECS_RUN_TOKEN` + exclusively-created `run.json`), a collision-safe shard filename carrying the SHA-256 of the import path, and an invalid-configuration row in §8. |
 | v1.2.6 | #148 (review follow-up 6) | Internal-consistency sweep, no design change. §7's `ShardConfigFromEnv` sketch still closed with the pre-v1.2.3 blanket "all environment reads go through `os.Getenv`", flatly contradicting the gate-off `os.Environ()` rule stated ten lines above it in the same comment and normatively in §5 — the single most likely way for #145 to reimplement the exact cache-enrollment regression v1.2.3 exists to prevent. The comment now states both paths and why they differ, and its gate-off clause is widened from "those two values" to the full variable set v1.2.4 defined. §7's CLI verb set gains `init`, which §3 step 2 and §5's `init --force` recovery path both require but the sketch omitted. §10's shard-filename bullet no longer implies a shard write fails at Windows' 260-character limit, which §5 (v1.2.1) had already corrected to a downstream-consumer-tooling constraint. |
@@ -242,8 +243,10 @@ package binary of one `go test ./...` invocation. A run identifier must be gener
 3. **`go test ./... -count=1 ...`** runs exactly as today. Every package that has already wired
    go-specs into its own `TestMain` (unchanged requirement — see §10) reads
    `GO_SPECS_REPORT_SHARDS`, `GO_SPECS_RUN_ID` and `GO_SPECS_RUN_TOKEN` from its environment
-   (F2: harmless to packages that don't; §5 requires these reads to go through the environment
-   so the `go test` cache treats them as inputs). If `GO_SPECS_REPORT_SHARDS` is absent or false,
+   (F2: harmless to packages that don't; §5 requires these reads to go through the environment as
+   the single invocation-scoped transport — **not**, since v1.2.7, so that the `go test` cache
+   treats them as inputs: a read from `TestMain` before `m.Run()` never reaches the cache key, and
+   `-count=1` is what guarantees this step executes at all, §5/§6). If `GO_SPECS_REPORT_SHARDS` is absent or false,
    shard emission is disabled and a stale `GO_SPECS_RUN_ID` or `GO_SPECS_RUN_TOKEN` in the
    environment is **inert: read and checked for well-formedness, but never acted on**. "Inert"
    is the precise claim — no effect on exit status, on the filesystem, or on coordination — not
@@ -405,12 +408,28 @@ gate is that the person hitting this is usually a developer who does not know th
 **Environment, not files, is the transport — and how it is read is normative.** When the gate is
 on, producers MUST read run identity through environment variables using `os.Getenv` /
 `os.LookupEnv`, and MUST NOT source it from a config file, a build flag, or a compiled-in value.
-`go test` records the environment variables a test binary actually reads into its test-cache key,
-so an env-var read makes a new `GO_SPECS_RUN_ID` invalidate the cached result for that package; a
-value smuggled in by any other route leaves the cache key unchanged, the package is served from
-cache, its binary never executes, and it therefore never publishes a shard (F4) — silently, and
-indistinguishably from a crash. This is a supporting reason for the `-count=1` requirement in §6,
-not a replacement for it: `-count=1` remains mandatory for reporting runs.
+The reason is the uniformity of the activation surface: one invocation-scoped mechanism that a CI
+wrapper sets once and that every participating package observes identically, with nothing
+per-package to keep in sync and nothing baked into a binary that outlives the run (F2). A value
+smuggled in by any other route is unauditable at the invocation boundary, which is where this
+protocol is configured and where a misconfiguration must be diagnosable.
+
+> **Correction in contract v1.2.7 (#194).** v1.2.3–v1.2.6 justified that rule differently, and the
+> justification is **withdrawn**. It claimed that `go test` records the environment variables a
+> test binary reads into its test-cache key, so an env-var read makes a new `GO_SPECS_RUN_ID`
+> invalidate the cached result for that package. That is false **at the call site this contract
+> mandates**: §3 step 3 requires the identity read to happen inside `TestMain`, *before*
+> `m.Run()`. `cmd/go` derives cache validity from the testlog, and the testlog logger is installed
+> by `m.deps.StartTestLog` inside `M.before()`, which runs *inside* `m.Run()`. Until then the
+> logger is nil and `testlog.Getenv` discards every event, so **no** environment read performed
+> from `TestMain` ahead of `m.Run()` reaches the cache key — not through `os.Getenv`, not through
+> `os.LookupEnv`, not through `os.Environ`. Verified against the toolchain source and reproduced
+> on `go1.26.8`, not inferred from behaviour.
+>
+> The protocol's **safety** is unchanged, because `-count=1` was already mandatory under §6. Its
+> **structure** changes: `-count=1` is no longer defensive redundancy layered on a second
+> mechanism, it is the **sole** cache-correctness requirement, because the second mechanism does
+> not exist. See §6.
 
 **On the disabled path the access pattern inverts, and this is load-bearing.** When the gate is
 off, **every** variable this contract introduces — `GO_SPECS_RUN_ID`, `GO_SPECS_RUN_TOKEN` and
@@ -426,8 +445,9 @@ exception must be argued explicitly, not assumed from silence.
 per-process reporter on its own path, is not part of run coordination, and its semantics are
 unchanged by this contract.
 
-The reason is the same cache mechanism, working against us. `cmd/go` derives test-cache validity
-from the testlog, which records every `getenv` event the binary emits; `os.Getenv` and
+The reason is the same cache mechanism, working against us — **wherever such a read can actually
+reach it**. `cmd/go` derives test-cache validity from the testlog, which records every `getenv`
+event the binary emits once the logger is installed; `os.Getenv` and
 `os.LookupEnv` both call `testlog.Getenv(key)`, while `os.Environ` delegates straight to
 `syscall.Environ` and records nothing. So reading these variables with `Getenv` on the disabled
 path enrolls them in the inputs ID of **every package in the module**, and a stale or
@@ -437,6 +457,16 @@ off. Before this contract added the diagnostic, a gate-off run touched nothing a
 normally. That regression is silent, cumulative, and typically diagnosed months later as "our CI
 got slow"; it is strictly worse than the typo it would be paying for.
 
+**Scope correction (v1.2.7, #194) — the rule is kept, its justification is narrowed.** That
+enrollment does **not** happen for a read made from `TestMain` before `m.Run()`, which is exactly
+where §3 step 3 puts today's call. The `os.Environ()` requirement nonetheless stays normative and
+is not weakened: it is defence-in-depth that becomes load-bearing the moment any of these reads
+moves inside a test function, into a helper a test invokes, or into a fixture running under
+`m.Run()` — one ordinary refactor away, and invisible in review precisely because the access path
+looks like a style choice. What v1.2.7 withdraws is only the claim that the access path determines
+the cache key *at the call site this contract mandates*. The rule survives the correction intact;
+the test that was supposed to guard it does not (below).
+
 Two consequences #145 must honour:
 
 - The `os.Environ()` scan is a **deliberate use of an implementation detail** — that testlog
@@ -444,20 +474,31 @@ Two consequences #145 must honour:
   stylistic choice. It is not a documented API guarantee. It MUST therefore carry a comment at
   the call site stating why `Getenv` is forbidden there, or the first person tidying the code
   reintroduces the problem with a change that looks like a pure simplification.
-- It MUST be covered by a regression test asserting that a gate-off run is **cache-stable**: run
-  a package twice with the gate off and assert the second run reports `(cached)`. A test that
-  only checks the diagnostic text will not catch a `Getenv` creeping back in.
+- It MUST be pinned **directly, at the seam** — not through process-level caching. A fake
+  `environment` implementation that records which method (`Lookup` vs `Scan`) each variable was
+  read through asserts the rule exactly: on the gate-off path every variable in the set was
+  obtained by `Scan`, and none by `Lookup`. The test MUST cover **every** variable in the set, so
+  adding a variable without extending the test is the thing that fails.
 
-  The test MUST vary **at least two** of the contract's variables between the two runs — use
-  `GO_SPECS_RUN_ID` *and* `GO_SPECS_REPORT_DIR` — because a test that varies only the run ID
-  passes even when some other variable is still read through `os.Getenv`. That is the exact shape
-  of the leak this rule exists to prevent, and a one-variable test would certify the codebase
-  against it while leaving it open. Ideally the test varies every variable in the set, so adding
-  a variable without extending the test is the thing that fails.
+  This **replaces** the cache-stability regression test v1.2.3 mandated and v1.2.4 widened —
+  "run a package twice with the gate off, vary at least `GO_SPECS_RUN_ID` and
+  `GO_SPECS_REPORT_DIR`, assert the second run reports `(cached)`". That test is **vacuous** and
+  MUST NOT be reintroduced: called from `TestMain` before `m.Run()`, `os.Getenv` and `os.Environ`
+  are indistinguishable to the cache (v1.2.7, #194), so it passes **even with `os.Getenv`
+  everywhere**. A test that cannot fail certifies nothing — which is the same failure shape
+  v1.2.4's own two-variable rule was written to prevent, one level deeper.
+
+- The operationally meaningful process-level property MUST be pinned separately, and it is a
+  different property: that a reporting invocation actually passes `-count=1`, that the producer
+  therefore executes, and that it publishes a shard. A companion test MUST cover the failure the
+  withdrawn test could never have caught — with the gate **on** and `-count=1` absent, a package
+  served from cache publishes no shard *and* writes no `config-error.json`, so a configuration
+  error §3 step 3 requires to fail loudly before `m.Run()` surfaces as `ok (cached)`. See §6.
 
 The gate variable itself may be read either way: it is stable within an environment, so enrolling
-`GO_SPECS_REPORT_SHARDS` in the cache key costs nothing. Only the identity variables vary per
-invocation, and only they must avoid the testlog.
+`GO_SPECS_REPORT_SHARDS` in the cache key would cost nothing even from a position where
+enrollment happens at all. Only the identity variables vary per invocation, and only they must
+avoid the testlog wherever a read can reach it.
 
 Filesystem layout:
 
@@ -755,12 +796,19 @@ assume a missing shard means "unchanged, reuse the last one"; a missing shard is
 as missing (§8), because there is no way to distinguish "cached and skipped" from "crashed"
 (F5) or "never built."
 
-`-count=1` is the requirement; reading run identity from the environment (§5) is a supporting
-property, not a substitute. Because `go test` records the environment variables a test binary
-actually reads into its cache key, a new `GO_SPECS_RUN_ID` does invalidate that package's cached
-result — but only for packages that already read it, which is why identity must never be
-delivered by any other route, and why `-count=1` stays mandatory for the packages that were
-otherwise unchanged and read nothing new.
+**`-count=1` is the sole cache-correctness mechanism, and not a performance footnote** (v1.2.7,
+#194). Nothing else guarantees a producer executes. Reading run identity from the environment (§5)
+is **not** a supporting property: it does not enroll anything in the cache key, because the read
+happens in `TestMain` before `m.Run()` and reads from there never reach the testlog (§5's v1.2.7
+correction). There is no second mechanism.
+
+The consequence must be documented wherever reporting is configured, because it is worse than a
+lost optimization. A reporting run that omits `-count=1` can be served **entirely from cache**:
+no binary executes, no shard is published, and a configuration error that §3 step 3 requires to
+fail loudly before `m.Run()` is never detected — the run reports `ok (cached)`. If the pipeline
+also skips finalize, that misconfiguration is a **silent green**. Identity must still never be
+delivered by any route other than the environment (§5), for uniformity and auditability — but that
+is a separate requirement, carrying none of the cache guarantee it was once credited with.
 
 **Exit semantics** — see §8, kept as its own section since #144 requires every state defined
 independently (five in v1.0; eight since v1.2, after the configuration-failure row was split into
@@ -868,8 +916,11 @@ type ShardConfig struct {
 // stderr diagnostic for a present-but-invalid GO_SPECS_RUN_ID / GO_SPECS_RUN_TOKEN (§5), which
 // never affects the returned error or the process's exit status — and it MUST obtain every
 // variable it touches on that path (GO_SPECS_RUN_ID, GO_SPECS_RUN_TOKEN and GO_SPECS_REPORT_DIR)
-// by scanning os.Environ(), never via os.Getenv/os.LookupEnv, which would enroll them in the
-// test cache key and defeat caching for every package on the disabled path (§5).
+// by scanning os.Environ(), never via os.Getenv/os.LookupEnv. From a position the testlog can
+// see — inside a test, or a helper a test calls — those would enroll the variables in the test
+// cache key and defeat caching for every package on the disabled path; from TestMain before
+// m.Run() they reach nothing (v1.2.7, #194), so this is defence-in-depth against that read
+// moving, and it stays normative either way (§5).
 // When the gate is on, it reads GO_SPECS_RUN_ID /
 // GO_SPECS_RUN_TOKEN / GO_SPECS_REPORT_DIR and verifies the run marker (§5), populating
 // ShardConfig.Ownership on success. When either identity variable is absent or invalid, the
@@ -879,10 +930,12 @@ type ShardConfig struct {
 // check must never be treated as disabled reporting.
 //
 // The two paths read the environment differently, and the difference is normative (§5): on the
-// gate-ON path every read goes through os.Getenv/os.LookupEnv precisely so `go test` records
-// these variables in its cache key and a new GO_SPECS_RUN_ID invalidates a stale cached result;
-// on the gate-OFF path that enrollment is exactly the harm, so the same variables MUST be read
-// only by scanning os.Environ(). Neither rule may be "simplified" into the other.
+// gate-ON path every read goes through os.Getenv/os.LookupEnv, because the environment is the
+// single invocation-scoped transport for run identity (F2) — NOT, since v1.2.7 (#194), to enroll
+// these variables in the cache key, which a read from TestMain before m.Run() cannot do; cache
+// correctness is -count=1's job alone (§6). On the gate-OFF path enrollment is exactly the harm
+// wherever it can occur, so the same variables MUST be read only by scanning os.Environ().
+// Neither rule may be "simplified" into the other.
 func ShardConfigFromEnv(packagePath string) (ShardConfig, error)
 func (c ShardConfig) Enabled() bool
 
@@ -1021,8 +1074,21 @@ no run can start without it.
 > having already reported the package as `FAIL`; it never passes the child's status through.
 > `base.SetExitStatus` itself keeps the *maximum* of the values it is given
 > (`if exitStatus < n { exitStatus = n }`), so it is not the call that discards the `2` — the `2`
-> simply never reaches it. A `TestMain` calling `os.Exit(2)` therefore produces the text
-> `exit status 2` in the output while `go test` exits `1`, and CI cannot branch on it.
+> simply never reaches it.
+>
+> **Sharpened in v1.2.7 (#194).** v1.2 added that a `TestMain` calling `os.Exit(2)` "produces the
+> text `exit status 2` in the output while `go test` exits `1`". The first half is **false**:
+> `cmd/go` does not merely decline to propagate the child's status, it leaves **no trace of it in
+> the output at all**. A `TestMain` calling `os.Exit(78)` produces output byte-identical to a
+> control run that never called it — whether the tests passed or failed, the number appears
+> nowhere — so CI cannot branch on it even by scraping the log. Reproduced on `go1.26.8` with
+> `-count=1` throughout, so no cached result is involved.
+>
+> This **strengthens** the design rather than weakening it. §8 had already moved the distinct exit
+> code out of the test binary and into the preflight/finalize layer, and that decision stands.
+> What it removes is the last apparent escape hatch: `config-error.json` (§5) is the **only**
+> carrier of the configuration-failure distinction, not the preferred one among several, and no
+> log-scraping fallback may be reintroduced as an alternative to it.
 > Independently, `2` would be a poor
 > reservation even when a test binary is executed directly, because the Go runtime already exits
 > with status `2` on an unrecovered panic, so the value is ambiguous on its own terms. Any
@@ -1267,7 +1333,7 @@ Responsibility split:
 | 3 | Aggregation cannot read a shard still being written | §5: temp-write + fsync + close + an **atomic create-no-replace publish** (`link`+`unlink` on Unix; `CREATE_NEW`/non-replacing `MoveFileEx` on Windows — `os.Rename` and pre-rename existence checks are explicitly rejected as racy); finalizer globs only final names, never `.tmp-*`, and verifies run ownership via `run.json` before reading any shard |
 | 4 | Existing Go flags and package discovery retain normal behavior | No new required test flags (§1 F1, §2); activation is env-var only (`GO_SPECS_REPORT_SHARDS`, §5), `go test`'s own discovery remains untouched. Expected shard producers are supplied separately and authoritatively, with membership and exclusions defined in §5, never inferred by changing or reinterpreting `go test` discovery. |
 | 5 | Packages without go-specs integration do not fail due to unknown flags | §1 F1/F2: no forwarded flag is used for module-wide activation; env vars are silently ignored by non-participating packages. §5 additionally makes the identity variables inert unless `GO_SPECS_REPORT_SHARDS` is on, so an integrating package is not broken by a stale export either. |
-| 6 | Cache behavior explicit and tested in the later integration slice | §6/§1 F4: `-count=1` required, documented as a stated tradeoff; §5 additionally requires run identity to be read from the environment so it participates in the test-cache key; the finalizer compares shards with the authoritative expected-producer list, so a cache-skipped producer is reported missing and specified for #146 to test |
+| 6 | Cache behavior explicit and tested in the later integration slice | §6/§1 F4: `-count=1` required and documented as a stated tradeoff — and, since v1.2.7 (#194), as the **sole** cache-correctness mechanism rather than one of two, since an identity read from `TestMain` before `m.Run()` never enters the test-cache key; the finalizer compares shards with the authoritative expected-producer list, so a cache-skipped producer is reported missing and specified for #146 to test |
 | 7 | Test failure and reporting failure exit semantics defined independently | §8, full 8-state table. The two signals are carried by **different commands**: `go test`'s exit code reports test results only, while configuration failures and reporting failures are reported by the preflight/finalize commands (`78` = `EX_CONFIG` for configuration, other non-zero for reporting). A configuration failure detected inside a package binary is carried by the `config-error.json` record (§5), not by an exit code, because `cmd/go` never propagates a test binary's own exit code — it reports the package `FAIL` and sets status `1` for any failed test action. |
 | 8 | Run directories cannot collide across concurrent invocations | §3/§5/§10: run ID is a validated, caller-supplied, non-empty path segment namespacing `<base>/<run-id>/shards/`, and `InitializeRun`'s exclusively-created `run.json` marker plus per-participant `RunToken` verification makes an actual `RunID` reuse a fail-closed error rather than a probabilistic non-event. §5 closes the lifecycle around that marker (uniqueness per invocation including reruns, explicit `--force` recovery, `gc` for abandoned markers) and §10 sets the token's `crypto/rand` entropy floor, without which two clock-seeded invocations could produce identical tokens and defeat the check |
 | 9 | #141 and #143 contain no contradictory execution requirements after this decision | §12: no contradiction found; #141 explicitly pre-authorized exactly this "document the limitation, propose an external coordinator" outcome |
@@ -1296,8 +1362,11 @@ Recommended (non-blocking) updates:
   `GO_SPECS_REPORT_SHARDS` as the sole activation gate, with a gate-off run that cannot fail and
   a gate-off warn-only stderr diagnostic for a malformed identity variable; the `os.Environ()`
   access pattern on the disabled path for **every** variable this contract introduces, with the
-  call-site comment and the **cache-stability regression test** §5 requires (two runs, gate off,
-  varying at least `GO_SPECS_RUN_ID` *and* `GO_SPECS_REPORT_DIR`, second must report `(cached)`);
+  call-site comment and the **`Lookup`-vs-`Scan` seam test** §5 requires (a fake `environment`
+  recording the access path of every variable in the set; the earlier cache-stability test is
+  withdrawn as vacuous — v1.2.7, #194 — and must not be reintroduced), plus the process-level
+  tests that a reporting invocation uses `-count=1` and that a cached package under an **enabled**
+  gate publishes neither a shard nor `config-error.json`;
   every partial-variable row in §5 with the exact variable named in the
   diagnostic; the
   `config-error.json` record on the pre-test failure path (and *no* reliance on a distinguishable
@@ -1381,8 +1450,14 @@ line should be restated as:
   amendment — the token digest's case sensitivity, the matrix `RunID` collision, and the
   test-cache enrollment on the disabled path — shared a shape: the contract was internally
   consistent, and the failure lived in what the environment does *underneath* it. Internal review
-  does not catch that class; only a test that exercises the real behaviour does. The
-  cache-stability test above is the pattern.
+  does not catch that class; only a test that exercises the real behaviour does.
+
+  **v1.2.7 (#194) found the same shape inside this item's own answer.** The cache-stability test
+  named here as *the pattern* was itself vacuous: it asserted a property the runtime never
+  evaluates, so it could not fail. The pattern is therefore narrower than "write an integration
+  test" — it is **a test that can fail**: pin the rule directly at the seam that implements it,
+  and pin the operational consequence separately at the process level (§5). An integration test
+  whose subject is a mechanism that does not exist is indistinguishable from a passing one.
 
   #145 should therefore enumerate, before implementation ends, every normative claim in this
   contract that depends on runtime or platform behaviour and is not pinned by a test. Known
@@ -1401,8 +1476,19 @@ line should be restated as:
     requirement rather than a nicety. At minimum it must be unit-tested against an injected
     `EEXIST` with a stubbed `stat` returning `st_nlink == 2` (publish accepted) and `st_nlink == 1`
     (duplicate reported), so both arms run even where the environment that triggers them does not.
-  - **`os.Environ` not routing through testlog** — pinned by the cache-stability test above,
-    deliberately, because it is an implementation detail rather than a documented guarantee.
+  - **`os.Environ` not routing through testlog** — pinned by the `Lookup`-vs-`Scan` seam test
+    §5 requires, deliberately, because it is an implementation detail rather than a documented
+    guarantee. Note that its *consequence* for this contract is now defence-in-depth only
+    (v1.2.7): at the mandated call site no access path enrolls anything.
+  - **Environment reads before `m.Run()` never entering the cache key** (v1.2.7, #194) — the
+    claim this amendment withdraws, and now pinned from the other side: the process-level test
+    that a cached package under an enabled gate publishes neither a shard nor `config-error.json`
+    fails the moment the toolchain starts enrolling those reads, which is the direction that would
+    matter.
+  - **`cmd/go` leaving no observable trace of a test binary's exit code** (v1.2.7, #194) — not
+    pinned by a test and deliberately so: nothing in this contract depends on that trace existing.
+    It is recorded because the *opposite* claim was normative until v1.2.7 and would otherwise be
+    re-derived from the changelog as a fallback to `config-error.json` (§8).
 
   This is a #145 planning item, not a blocker for this contract; recorded here so the question is
   asked while the code is being written rather than after.
