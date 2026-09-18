@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
 #
-# check-go-version.sh -- fail when go.mod and .go-version disagree on the
-# Go minor version.
+# check-go-version.sh -- fail when any go.mod's `go` directive differs from
+# .go-version.
 #
 # Contract:
-#   go.mod's `go` directive      -- minimum language version the code uses
-#                                   (e.g. "go 1.25.0"). This is the floor
-#                                   every downstream consumer of go-specs
-#                                   inherits, so it stays conservative.
-#   .go-version                  -- exact toolchain CI installs, and what
-#                                   asdf/mise/goenv/gvm pick up for
-#                                   contributors (e.g. "1.25.14").
+#   .go-version                  -- single source of truth for the Go version
+#                                   (e.g. "1.25.14"). CI installs it via
+#                                   actions/setup-go's `go-version-file`, and
+#                                   asdf/mise/goenv/gvm pick it up for
+#                                   contributors.
+#   every go.mod `go` directive  -- must match .go-version exactly, patch
+#                                   component included.
 #
-# The two are allowed to differ on the *patch* component (and should: CI
-# pins a patched toolchain ahead of the declared minimum so govulncheck runs
-# against current fixes). They must agree on `<major>.<minor>` -- a drift
-# there means somebody bumped one file and forgot the other, and CI would
-# silently build with a toolchain older or newer than the code declares it
-# needs.
+# Exact match is deliberate: one version, one place to bump. The cost is that
+# the declared minimum language version -- the floor every downstream consumer
+# of go-specs inherits -- moves with the toolchain patch, so consumers must
+# install at least that patch release to build. Bump .go-version, then run
+# this script's companion fix:
+#
+#   go mod edit -go="$(tr -d '[:space:]' <.go-version)"
+#
+# for every module, and commit both.
+#
+# All modules are checked, not just the root one, so this keeps working if the
+# repository ever grows beyond a single module. Directories Go itself ignores
+# (testdata, vendor) are skipped, as are .git and .claude worktrees, which hold
+# copies of the same module rather than modules of this repository.
 #
 # Run from the repo root (CI) or anywhere (the script self-locates).
 #
-# Exits non-zero on mismatch, with a GitHub Actions ::error annotation.
+# Exits non-zero on any mismatch, with a GitHub Actions ::error annotation.
 #
 # Invocation:
 #   ./.github/scripts/check-go-version.sh
@@ -30,18 +38,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-GOMOD_FILE="go.mod"
 GOVERSION_FILE=".go-version"
 
-# Pull the version out of `go X.Y[.Z]` in go.mod. Anchored to the start of a
-# line so a `// go 1.99` comment elsewhere cannot satisfy the match.
-GOMOD_RAW="$(awk '/^go [0-9]/ {print $2; exit}' "$GOMOD_FILE")"
-GOVERSION_RAW="$(tr -d '[:space:]' <"$GOVERSION_FILE")"
-
-if [[ -z "$GOMOD_RAW" ]]; then
-    echo "::error::check-go-version.sh: could not parse 'go' directive from $GOMOD_FILE" >&2
+if [[ ! -f "$GOVERSION_FILE" ]]; then
+    echo "::error::check-go-version.sh: $GOVERSION_FILE not found" >&2
     exit 1
 fi
+
+GOVERSION_RAW="$(tr -d '[:space:]' <"$GOVERSION_FILE")"
+
 if [[ -z "$GOVERSION_RAW" ]]; then
     echo "::error::check-go-version.sh: $GOVERSION_FILE is empty" >&2
     exit 1
@@ -55,21 +60,56 @@ if ! [[ "$GOVERSION_RAW" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
     exit 1
 fi
 
-# Minor = first two dot-separated components ("1.25" from "1.25.14").
-GOMOD_MINOR="$(echo "$GOMOD_RAW" | cut -d. -f1,2)"
-GOVERSION_MINOR="$(echo "$GOVERSION_RAW" | cut -d. -f1,2)"
+# Collect every module manifest that belongs to this repository. `find` rather
+# than a shell glob so nested modules are covered, pruned so that vendored
+# dependencies, test fixtures and worktree checkouts never register as modules
+# of their own. Sorted for deterministic output.
+GOMOD_FILES=()
+while IFS= read -r gomod; do
+    GOMOD_FILES+=("${gomod#./}")
+done < <(
+    find . \
+        \( -name .git -o -name .claude -o -name vendor -o -name testdata -o -name node_modules \) -prune \
+        -o -type f -name go.mod -print |
+        LC_ALL=C sort
+)
 
-if [[ "$GOMOD_MINOR" != "$GOVERSION_MINOR" ]]; then
-    cat >&2 <<MSG
-::error::check-go-version.sh: Go minor-version drift between $GOMOD_FILE and $GOVERSION_FILE.
-  $GOMOD_FILE       : go $GOMOD_RAW (minor: $GOMOD_MINOR)
-  $GOVERSION_FILE   : $GOVERSION_RAW (minor: $GOVERSION_MINOR)
-
-Bump both files together so CI's toolchain matches the minimum language
-version declared in $GOMOD_FILE. Patch differences are fine; minor
-differences are not.
-MSG
+if [[ ${#GOMOD_FILES[@]} -eq 0 ]]; then
+    echo "::error::check-go-version.sh: no go.mod found under $(pwd)" >&2
     exit 1
 fi
 
-echo "check-go-version.sh: OK ($GOMOD_FILE=go $GOMOD_RAW, $GOVERSION_FILE=$GOVERSION_RAW, minor $GOMOD_MINOR matches)"
+FAILED=0
+
+for GOMOD_FILE in "${GOMOD_FILES[@]}"; do
+    # Pull the version out of `go X.Y[.Z]` in go.mod. Anchored to the start of
+    # a line so a `// go 1.99` comment elsewhere cannot satisfy the match.
+    GOMOD_RAW="$(awk '/^go [0-9]/ {print $2; exit}' "$GOMOD_FILE")"
+
+    if [[ -z "$GOMOD_RAW" ]]; then
+        echo "::error::check-go-version.sh: could not parse 'go' directive from $GOMOD_FILE" >&2
+        FAILED=1
+        continue
+    fi
+
+    if [[ "$GOMOD_RAW" != "$GOVERSION_RAW" ]]; then
+        cat >&2 <<MSG
+::error file=$GOMOD_FILE::check-go-version.sh: Go version drift between $GOMOD_FILE and $GOVERSION_FILE.
+  $GOMOD_FILE     : go $GOMOD_RAW
+  $GOVERSION_FILE : $GOVERSION_RAW
+
+They must match exactly, patch component included. Fix with:
+  go mod edit -go="$GOVERSION_RAW" $GOMOD_FILE
+MSG
+        FAILED=1
+        continue
+    fi
+
+    echo "check-go-version.sh: OK $GOMOD_FILE (go $GOMOD_RAW == $GOVERSION_FILE $GOVERSION_RAW)"
+done
+
+if [[ $FAILED -ne 0 ]]; then
+    exit 1
+fi
+
+echo "check-go-version.sh: OK (${#GOMOD_FILES[@]} module(s) match $GOVERSION_FILE $GOVERSION_RAW)"
