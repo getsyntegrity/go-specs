@@ -37,7 +37,9 @@ type Result struct {
 // path. Without it, two specs sharing a snapshot file (e.g. parallel specs in the same test file,
 // each snapshotting under a different name) race: both Load the same on-disk contents, each mutates
 // its own key in its own in-memory copy, and whichever Save runs last silently clobbers the other's
-// update. The lock also protects concurrent reads from observing a partially-written file mid-Save.
+// update. Its scope is this process only: it does not coordinate independent `go test` package
+// processes, and it is not what makes a write crash-safe. Save handles that on its own by replacing
+// the destination atomically.
 var fileLocks sync.Map // map[string]*sync.Mutex
 
 func lockFor(path string) *sync.Mutex {
@@ -163,7 +165,18 @@ func Load(path string) (map[string]json.RawMessage, error) {
 	return data, nil
 }
 
-// Save writes a snapshot file with deterministic key order.
+// renameSnapshot is Save's final replacement step, indirected so tests can simulate a failure that
+// must leave the previous snapshot intact.
+var renameSnapshot = os.Rename
+
+// snapshotFileMode is the mode a snapshot file is published with, regardless of the restrictive mode
+// the staging file is created under.
+const snapshotFileMode os.FileMode = 0644
+
+// Save writes a snapshot file with deterministic key order. The rendered content is staged in a
+// temporary file and swapped over the destination with a single rename, so an interrupted or failing
+// Save never leaves a truncated snapshot behind: a reader sees either the previous file or the
+// complete new one, never a half-written mix.
 func Save(path string, data map[string]json.RawMessage) error {
 	keys := make([]string, 0, len(data))
 	for k := range data {
@@ -184,7 +197,47 @@ func Save(path string, data map[string]json.RawMessage) error {
 		out = append(out, indented...)
 	}
 	out = append(out, "\n}\n"...)
-	return os.WriteFile(path, out, 0644)
+	return writeAtomic(path, out)
+}
+
+// writeAtomic publishes content at path through a temporary file in the same directory. Staging
+// beside the destination is what keeps the final rename atomic: a rename across filesystems is not,
+// so a shared temp directory would silently give up the guarantee. Every failure path removes the
+// staging file and leaves the destination untouched.
+func writeAtomic(path string, out []byte) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp snapshot file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			// Both are best-effort: the write already failed, and a stale temp file is the only
+			// thing left to clean up.
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = tmp.Write(out); err != nil {
+		return fmt.Errorf("write temp snapshot file: %w", err)
+	}
+	// Flush to disk before the rename, so a crash right after the rename cannot expose a destination
+	// that points at unwritten content.
+	if err = tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp snapshot file: %w", err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("close temp snapshot file: %w", err)
+	}
+	// CreateTemp opens at 0600; publish under the mode snapshot files are expected to carry.
+	if err = os.Chmod(tmpPath, snapshotFileMode); err != nil {
+		return fmt.Errorf("chmod temp snapshot file: %w", err)
+	}
+	if err = renameSnapshot(tmpPath, path); err != nil {
+		return fmt.Errorf("replace snapshot file: %w", err)
+	}
+	return nil
 }
 
 func indentJSON(raw []byte, indent string) []byte {

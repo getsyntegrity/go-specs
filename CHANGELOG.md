@@ -86,6 +86,41 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- A failing assertion on a `Context` with no backend now returns quietly instead of panicking.
+  `ctx.Expect(x).To(m)`, `specs.ExpectT(ctx, x).To(m)` and `ctx.Expect(x).ToEqual(y)` checked the
+  context but not the backend behind it, so once the matcher or comparison rejected the value the
+  reporting tail dereferenced a nil `testBackend` and crashed at `reportMatcherFailure` rather than
+  reporting the assertion the user wrote. A backend-less `Context` is a reachable state —
+  `specs.NewContext(nil)` produces one, and so does a `Context` returned to the pool, which
+  `Reset(nil)` leaves with a nil backend. `EqualTo`, `ExpectT(...).ToEqual` and `Snapshot` already
+  guarded it and returned without reporting; all six assertion entry points now degrade the same
+  way, and the guarded paths still release their pooled `Expectation`. The passing fast path is
+  unchanged — the guard is one nil comparison on the failure-side branch, `BenchmarkMatcher_GoSpecs`
+  shows no regression, and all assertion benchmarks stay at zero allocations.
+  ([#150](https://github.com/getsyntegrity/go-specs/issues/150))
+- `snapshots.Save` no longer truncates the destination snapshot file before writing its replacement.
+  It renders the new content into a temporary file in the same directory, flushes it, sets the
+  published `0644` mode, and swaps it over the destination with a single `os.Rename`. An
+  interruption, timeout, or disk error part-way through a `GO_SPECS_UPDATE_SNAPSHOTS=1` run therefore
+  leaves the previous `.snap.json` intact and readable instead of a half-written file that fails to
+  parse on the next run; the staging file is removed on every failure path. Staging beside the
+  destination rather than in `os.TempDir()` is what keeps the rename atomic, because a rename across
+  filesystems is not. The `fileLocks` comment no longer implies more than it delivers: that mutex
+  serializes the load-mutate-save cycle *within one process* and does not coordinate independent
+  `go test` package processes — crash safety comes from the rename, not the lock.
+  ([#152](https://github.com/getsyntegrity/go-specs/issues/152))
+
+- A failing typed matcher assertion — `specs.ExpectT(ctx, x).To(m)` — now marks the `Context` as
+  failed, as the untyped `ctx.Expect(x).To(m)` already did. `expectT[T].To` reported the failure
+  straight to the backend without calling `recordFailure`, so `go test` still exited red but the
+  spec was reported to `report.EventReporter` with `Failed: false`, `SuiteEndEvent.FailedSpecs`
+  undercounted it, and `Runner{FailFast: true}` kept running the groups after it. This is the same
+  defect class as the snapshot path in [#115](https://github.com/pablogore/go-specs/issues/115);
+  only specs whose failing assertion used the typed `.To(matcher)` form were affected — the typed
+  `.ToEqual` and every untyped form already recorded it. The passing fast path is unchanged
+  (`BenchmarkMatcher_GoSpecs` stays at 0 allocs/op); `recordFailure` runs only on the failure
+  branch.
+
 - A failing `ctx.Snapshot` was reported to a `report.EventReporter` as a **passing** spec
   (`SpecResultEvent.Failed` stayed `false`, and `SuiteEndEvent.FailedSpecs` did not count it), even
   though `go test` exited non-zero. #125 attempted to fix this by having `Context.Snapshot` call

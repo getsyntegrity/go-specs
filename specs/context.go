@@ -270,7 +270,10 @@ func (x expectT[T]) To(m Matcher) {
 		return
 	}
 	defer e.release()
-	if e.ctx == nil || m == nil {
+	// The backend guard matches EqualTo and ExpectT.ToEqual: with no backend there is nowhere to
+	// report to, and reportMatcherFailure would dereference a nil interface. An assertion must
+	// never turn a misconfigured context into a panic at an unrelated line.
+	if e.ctx == nil || e.ctx.backend == nil || m == nil {
 		return
 	}
 	if m.Match(e.actual) {
@@ -279,6 +282,11 @@ func (x expectT[T]) To(m Matcher) {
 		}
 		return
 	}
+	// recordFailure is what makes a typed matcher failure reach ctx.failed, exactly as the untyped
+	// Expectation.To does. Without it a spec whose only assertion is ExpectT(ctx, x).To(m) still
+	// fails the run (Fatalf reaches the backend) but reports Failed=false to every reporter, and
+	// FailFast keeps running the groups after it — the same defect class as issue #115.
+	e.ctx.recordFailure()
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
@@ -341,7 +349,8 @@ func (e *Expectation) To(m Matcher) {
 		return
 	}
 	defer e.release()
-	if e.ctx == nil || m == nil {
+	// See expectT.To for why the backend is guarded alongside the context and the matcher.
+	if e.ctx == nil || e.ctx.backend == nil || m == nil {
 		return
 	}
 	if m.Match(e.actual) {
@@ -387,7 +396,8 @@ func (e *Expectation) ToEqual(expected any) {
 		return
 	}
 	defer e.release()
-	if e.ctx == nil {
+	// See expectT.To for why the backend is guarded alongside the context.
+	if e.ctx == nil || e.ctx.backend == nil {
 		return
 	}
 	// The switch only decides equality; reporting happens once at the bottom so that exactly one
