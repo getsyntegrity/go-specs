@@ -415,6 +415,10 @@ func TestTheEnvironScanIsActuallyAnEnvironScan(t *testing.T) {
 	// fail. This one reads from a position where they differ, and it does fail when envread.Scan
 	// is rewritten as os.LookupEnv. §5's mandated seam assertion is also present and is the pin of
 	// record; this covers what the seam cannot see, which is the body of the method itself.
+	//
+	// Since contract v1.2.8 §5 that is no longer a defence: BOTH pins are required, and this is
+	// the second one. The control arm below is required with it. Neither is an optional extra
+	// this branch chose to keep, and deleting either reopens the gap v1.2.8 exists to close.
 	nonce := probeNonce(t)
 
 	if seed := probeRun(t, "scan", nonce+"-one"); seed.exitCode != 0 {

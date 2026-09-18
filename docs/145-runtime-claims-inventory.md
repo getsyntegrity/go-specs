@@ -106,6 +106,11 @@ this branch has it; this test exists because the seam assertion alone does **not
 rewrite — it pins which method the resolver calls, not what the method does. That gap was found by
 adversarial review of this branch, not by reasoning about it.
 
+Since then the status has changed, and the passage above should be read as history rather than as
+a justification: contract v1.2.8 §5 folded this gap into the contract, so the body pin and its
+control arm are **required**, not tolerated. What began here as a defence of an extra test is now
+the rule.
+
 The control arm is load-bearing rather than decorative: without it, a change making *both* paths
 uncacheable would leave the assertion passing for the wrong reason, and a change making both
 cacheable would make it vacuous again. The test fails loudly with "proves nothing" in that case
