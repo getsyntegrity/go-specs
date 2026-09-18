@@ -46,6 +46,32 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `report/coordination`, the producer side of multi-package reporting: every package process in one
+  `go test ./...` invocation publishes a single isolated shard, which a later finalize step merges.
+  A package opts in with one call in `TestMain` — `coordination.ShardWriterFromEnv(importPath)` —
+  and `Write(reporter.Report())` after `m.Run()`, alongside the existing `MultiFormatReporter.Flush`.
+  Shard emission is off unless `GO_SPECS_REPORT_SHARDS` is explicitly enabled, so a package that
+  wires it in is unaffected by ordinary runs and a run identifier left exported in a shell is inert;
+  reporting can never falsify a test result it was not asked to observe. Publication is an atomic
+  create-no-replace operation (`link`+`unlink`), never `os.Rename`, which replaces a destination
+  silently — so two producers can never collapse into one file and a duplicate is reported rather
+  than absorbed. Producer identity is the SHA-256 of the original, unsanitized import path, because
+  the readable prefix is not injective (`foo/bar` and `foo_bar` sanitize alike). Run ownership is
+  proved before any write against a `run.json` marker holding the SHA-256 of the run token's decoded
+  bytes, which is what distinguishes a second producer of the same run from an unrelated invocation
+  that reused the run id. Shards carry execution data only: coverage belongs exclusively to the
+  finalizer. See [docs/REPORTING.md](docs/REPORTING.md), "Multi-package reporting".
+  ([#145](https://github.com/getsyntegrity/go-specs/issues/145))
+- `docs/145-runtime-claims-inventory.md`, which enumerates every normative claim in the coordination
+  contract that rests on runtime, toolchain or platform behaviour, and marks each one pinned,
+  required or deliberately untested. It was written **before** the implementation, on the reasoning
+  that an inventory produced afterwards documents the tests that were going to exist anyway. It paid
+  for itself twice: it surfaced that `O_NOFOLLOW` actually refusing a symlink was unpinned, and it
+  refuted the contract's claim that reading run identity from the environment invalidates a stale
+  cached result — environment reads in `TestMain` before `m.Run()` never reach the test-cache key,
+  because the testlog logger is installed inside `m.Run()`. Contract v1.2.7 withdraws that claim,
+  making `-count=1` the sole cache-correctness mechanism.
+  ([#145](https://github.com/getsyntegrity/go-specs/issues/145))
 - A PR-CI step and a `make bench-smoke` target that execute every benchmark body once
   (`go test -run='^$' -bench=. -benchtime=1x -benchmem ./...`). `go test ./...` never runs a
   `Benchmark` function, so until now benchmark bodies compiled in CI and were never executed --
