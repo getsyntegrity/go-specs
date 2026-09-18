@@ -1,0 +1,580 @@
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   18922	     62830 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13862	     83845 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   16594	     71539 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   16215	     74241 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18873	     64980 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15397	     79906 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16502	     74208 ns/op	   99181 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   16076	     74565 ns/op	  100016 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   35804	     33484 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   32780	     37740 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   35917	     32676 ns/op	   99044 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   34866	     39023 ns/op	   99722 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   35151	     34415 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34671	     34879 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   40722	     31333 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   34444	     38585 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18391	     65657 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14062	     83581 ns/op	   98679 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   15738	     75293 ns/op	   99019 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   15716	     79446 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   34196	     34654 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   30614	     41956 ns/op	   98685 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   31070	     34769 ns/op	   99025 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   34113	     35173 ns/op	   99703 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   18625	     61083 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14766	     85112 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   16263	     71616 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   16399	     74754 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18558	     63521 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15195	     77823 ns/op	   98759 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16531	     80178 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	    9333	    148806 ns/op	  100020 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   20650	     67534 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   30786	     39415 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   34416	     55202 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   26466	     43501 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   31624	     38381 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33339	     36416 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   36283	     37381 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26242	     42285 ns/op	  100025 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   17173	     68697 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12349	     96611 ns/op	   98677 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   14178	     85003 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12538	    102090 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   29167	     37892 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29697	     41540 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   33304	     38147 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   28756	     43227 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   16456	     70074 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13466	     91932 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   14660	     82160 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   12277	     94381 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   15824	     69897 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14274	     87127 ns/op	   98757 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14732	     85392 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   12229	    109951 ns/op	  100019 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   29779	     38184 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   26460	     46147 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   31294	     36714 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   30504	     40432 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   35134	     34726 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   32707	     37327 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   40162	     31684 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   29253	     41812 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   17719	     63143 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14398	     84098 ns/op	   98679 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   16095	     70808 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   15762	     81850 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   34176	     34208 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   33620	     37270 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   35572	     34856 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   28484	     41395 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   16723	     67259 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13246	     90113 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   15402	     82964 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   13105	     95646 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   16298	     71274 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13938	     84439 ns/op	   98757 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14032	     91493 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   10000	    103249 ns/op	  100015 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   34183	     35341 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   31980	     38502 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   37471	     33096 ns/op	   99044 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   29426	     46370 ns/op	   99718 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   29492	     39161 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   27991	     40379 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   32779	     38344 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   25332	     48483 ns/op	  100023 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15684	     76359 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12472	     91462 ns/op	   98676 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   13959	     88071 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    102824 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   29294	     37701 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29688	     43696 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   25574	     47917 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   23732	     45814 ns/op	   99703 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   16466	     66623 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   15040	     88002 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   15418	     80059 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   12561	     96541 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   15976	     76762 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12666	    100056 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   15900	     73776 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   14986	     92777 ns/op	  100017 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   32823	     36670 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27465	     39250 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   35737	     48108 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   28064	     46126 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   28318	     39521 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   26120	     39361 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   33016	     37681 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   27819	     41944 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   16478	     70976 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12864	     92380 ns/op	   98677 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   14686	     85588 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12598	     99366 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   29978	     40264 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   25244	     41813 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   30950	     39419 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   27234	     46445 ns/op	   99706 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   17437	     67921 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12920	     92611 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   14655	     88105 ns/op	   99019 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   10000	    100230 ns/op	   99702 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18639	     64004 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15614	     83507 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   15956	     75623 ns/op	   99181 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   13593	     86551 ns/op	  100016 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   34125	     39326 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27200	     41157 ns/op	   98701 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   32647	     34086 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   25882	     47076 ns/op	   99718 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   32368	     35824 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34808	     34335 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   34581	     37600 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   27218	     53529 ns/op	  100025 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15345	     74826 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12732	     95370 ns/op	   98679 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   12710	     97997 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    111703 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27698	     45389 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   22928	     47758 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   28857	     40252 ns/op	   99028 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   26956	     55839 ns/op	   99705 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   14748	     81497 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   11749	     92496 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   10000	    103372 ns/op	   99025 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	    9406	    110008 ns/op	   99701 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   14820	     93070 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12070	    104763 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14689	     88347 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   11922	    109270 ns/op	  100015 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   27759	     38862 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   30496	     39109 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   38220	     31794 ns/op	   99043 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   28948	     45250 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   35048	     34261 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   33427	     35341 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   40861	     31366 ns/op	   99188 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   32734	     44474 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18728	     63835 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13824	     84938 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   16304	     72843 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   15894	     78467 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   30600	     35375 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   31540	     38452 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   39652	     34042 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   25708	     46429 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   17206	     71249 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13050	     92569 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   13329	     88610 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   10000	    101227 ns/op	   99700 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   15132	     74920 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14100	     85112 ns/op	   98756 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   13143	     87719 ns/op	   99180 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   12032	    101861 ns/op	  100015 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   31065	     37016 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29191	     43899 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   27943	     37861 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   26252	     46446 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   32935	     37225 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34804	     36692 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   32245	     37548 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26636	     43144 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18476	     65295 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14616	     82456 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   16411	     73491 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   16128	     73013 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   36033	     33614 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   33445	     35055 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   36128	     30947 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   29444	     42191 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   19297	     61616 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13689	     90485 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   16017	     87499 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   10000	    188437 ns/op	   99714 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   16605	     64459 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15115	     82029 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14636	     86200 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   13303	    117522 ns/op	  100020 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   29576	     39993 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   26858	     40678 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   17685	     68412 ns/op	   99042 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	    4928	    241208 ns/op	   99726 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   30042	     40277 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   32712	     40987 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   28920	     44837 ns/op	   99187 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26748	     48180 ns/op	  100023 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   16095	     79647 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    8134	    179007 ns/op	   98682 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   11470	     92870 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    108540 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27886	     43830 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   23077	     43890 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   24919	     46968 ns/op	   99024 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   24595	     48973 ns/op	   99703 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   15864	     91053 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12238	    101841 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   13771	     78037 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   14617	     87020 ns/op	   99694 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18390	     65238 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13177	     86331 ns/op	   98756 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   13828	     87113 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   10000	    102950 ns/op	  100014 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   28419	     39886 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   26739	     43799 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   31648	     39822 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   25240	     48078 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   29282	     38596 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   32269	     40245 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   37039	     38623 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   23476	     44889 ns/op	  100025 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15913	     74880 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12456	     97836 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   13450	     90607 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	    9856	    103632 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   28605	     41963 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   31467	     42396 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   34731	     34060 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   31665	     40953 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   18558	     61706 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14359	     83954 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   16069	     82330 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   12693	     90908 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   14376	    102674 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12595	     89932 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   13978	     96489 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	    9310	    110716 ns/op	  100018 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   28951	     40611 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   27288	     44346 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   30856	     41180 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   23913	     41921 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   34586	     34378 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   29835	     34785 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   38121	     35724 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   25453	     42594 ns/op	  100028 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   12532	     90801 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   11061	     96857 ns/op	   98677 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   13782	     95734 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12082	     94649 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27866	     38402 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28516	     45502 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   35132	     38134 ns/op	   99028 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   26401	     46921 ns/op	   99705 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   18525	     65420 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13023	     84431 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   15990	     72544 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   14757	     89634 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18588	     64164 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15055	     81030 ns/op	   98758 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16430	     78418 ns/op	   99183 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   14598	     81046 ns/op	  100018 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   35938	     33302 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   30805	     38051 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   35758	     32213 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   28827	     43927 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   30531	     37639 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   29772	     36764 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   33087	     46893 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26378	     45876 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15682	    100048 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12553	     95659 ns/op	   98678 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   14444	     89700 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    103469 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27813	     41376 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28284	     42836 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   25921	     42612 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   26941	     45079 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   17774	     69967 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   13176	     92604 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   14826	     85340 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   12378	    110790 ns/op	   99694 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   14618	     77444 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13828	     89135 ns/op	   98757 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16144	     73925 ns/op	   99180 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   15298	     80925 ns/op	  100016 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   33538	     33933 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33984	     39790 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   36625	     32514 ns/op	   99044 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   29072	     39021 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   35328	     34138 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35944	     33165 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   38511	     33929 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   28436	     40608 ns/op	  100024 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18813	     63127 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13010	     93397 ns/op	   98676 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   13869	     91683 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12435	     97124 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   30183	     38335 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   30784	     42002 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   36148	     37633 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   25612	     49432 ns/op	   99705 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   17632	     68257 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12621	    100419 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   14096	     83666 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   10000	    101567 ns/op	   99702 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   15265	     67373 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15668	     79639 ns/op	   98757 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16785	     72111 ns/op	   99181 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   15102	     75342 ns/op	  100019 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   35010	     34771 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29238	     38249 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   35440	     31952 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   27717	     45454 ns/op	   99722 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   34660	     34563 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   34240	     35883 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   32353	     42793 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   18825	     53322 ns/op	  100030 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   13012	     80966 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    104979 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   13437	     86345 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12027	     97563 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   29174	     41081 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   26458	     42826 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   31162	     39360 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   27141	     48583 ns/op	   99706 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   15916	     68986 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12238	     94963 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   10000	    133967 ns/op	   99023 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	    8260	    127955 ns/op	   99702 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18190	     64467 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   14388	     81933 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   16743	     73050 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   13849	     97212 ns/op	  100018 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   32793	     37808 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   28580	     39398 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   35446	     31609 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   28960	     43842 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   35053	     34440 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35380	     33774 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   36406	     31563 ns/op	   99190 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   27297	     45983 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18388	     64982 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   14379	     87361 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   15034	     88118 ns/op	   99023 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    102030 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   28587	     39885 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   29799	     42331 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   33224	     38981 ns/op	   99028 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   25801	     45797 ns/op	   99704 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   16761	     70963 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   12447	     92712 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   14145	     96264 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   12030	    100762 ns/op	   99695 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   16479	     75174 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   13494	     84509 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14664	     83778 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   10000	    115619 ns/op	  100018 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   31170	     33967 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   33756	     36630 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   37737	     31589 ns/op	   99044 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   27618	     45273 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   34155	     35655 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   35365	     36091 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   30835	     33476 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   30105	     48683 ns/op	  100027 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   18001	     66474 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   13447	     89218 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   16291	     74778 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   15872	     77073 ns/op	   99697 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   34725	     34537 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   32370	     38971 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   31801	     32340 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   31562	     45452 ns/op	   99705 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   15650	     68586 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    122407 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   11191	     94586 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   11758	    105982 ns/op	   99698 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   14469	     82093 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   12676	    102623 ns/op	   98761 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   13660	    100043 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	    8827	    120076 ns/op	  100018 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   28238	     38395 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   29953	     41044 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   34282	     39509 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   26743	     45066 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   27367	     40865 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   28816	     36189 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   34767	     37726 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26010	     47083 ns/op	  100027 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   16388	     70219 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   12559	     98189 ns/op	   98680 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   10000	    114013 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    105282 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27669	     41828 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   28460	     44816 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   36664	     32811 ns/op	   99029 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   27390	     41544 ns/op	   99706 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   18589	     61807 ns/op	   98511 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   14175	     89697 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   16296	     72652 ns/op	   99020 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   15132	     75799 ns/op	   99694 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   18517	     65508 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   15591	     77114 ns/op	   98756 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   14529	     81882 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   12586	    126170 ns/op	  100021 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   26174	     43602 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   23000	     49734 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   30478	     56384 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   18979	     53813 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   29730	     44126 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   29028	     42717 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   33174	     39619 ns/op	   99188 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   22339	     56334 ns/op	  100024 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15482	     88706 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	    6366	    170849 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	    6753	    168890 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	    6262	    161304 ns/op	   99702 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   27032	     42500 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   25188	     46805 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   24285	     45659 ns/op	   99028 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   22425	     63025 ns/op	   99707 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   14818	     74096 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    106654 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   12748	    109787 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	   10000	    126976 ns/op	   99703 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	   14404	     82545 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	   10000	    109603 ns/op	   98758 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	    9644	    126005 ns/op	   99181 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	   10000	    115040 ns/op	  100017 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   28622	     42582 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   25082	     47850 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   28605	     44818 ns/op	   99045 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   18634	     58225 ns/op	   99721 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   26289	     52587 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   25860	     41907 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   29493	     46460 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   19135	     52771 ns/op	  100026 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   15133	     81553 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    107860 ns/op	   98681 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   10000	    131712 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   10000	    170051 ns/op	   99709 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   21218	     50399 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   16273	     74338 ns/op	   98687 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   19068	     57446 ns/op	   99030 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   19270	     61531 ns/op	   99708 B/op	      29 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/getsyntegrity/go-specs/specs
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+BenchmarkFalseSharing_Chunk1_Baseline        	   14750	     86301 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-2      	   10000	    105802 ns/op	   98683 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-4      	   12420	    103371 ns/op	   99021 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Baseline-8      	    9036	    116408 ns/op	   99702 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded          	    9744	    127398 ns/op	   98552 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-2        	    8798	    127519 ns/op	   98760 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-4        	   10076	    106353 ns/op	   99182 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_Padded-8        	    9667	    136053 ns/op	  100019 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline       	   26520	     44390 ns/op	   98529 B/op	       9 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-2     	   25233	     40590 ns/op	   98702 B/op	      12 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-4     	   28882	     41714 ns/op	   99044 B/op	      18 allocs/op
+BenchmarkFalseSharing_Chunk16_Baseline-8     	   27406	     47607 ns/op	   99720 B/op	      30 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded         	   30436	     39118 ns/op	   98553 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-2       	   31959	     40827 ns/op	   98766 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-4       	   32185	     37947 ns/op	   99189 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_Padded-8       	   26097	     46702 ns/op	  100025 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain      	   17014	     94828 ns/op	   98512 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-2    	   10000	    130670 ns/op	   98678 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-4    	   12279	     95084 ns/op	   99022 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk1_LocalPlain-8    	   12222	     97480 ns/op	   99696 B/op	      29 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain     	   29161	     38781 ns/op	   98513 B/op	       8 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-2   	   25374	     42799 ns/op	   98686 B/op	      11 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-4   	   31071	     41400 ns/op	   99028 B/op	      17 allocs/op
+BenchmarkFalseSharing_Chunk16_LocalPlain-8   	   26377	     48126 ns/op	   99706 B/op	      29 allocs/op
+PASS
