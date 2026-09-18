@@ -393,9 +393,15 @@ func runAfterRecovered(ctx *Context, after []step) (message, output string) {
 // specFinished's specResult. They are never reconstructed anywhere else. Both are zero-value ("")
 // when s(ctx) returns normally, including via runtime.Goexit (a real testing.T.Fatalf/FailNow) —
 // recover() cannot observe that case, so it is indistinguishable here from a spec that never failed.
+//
+// isExpectedAbort sentinels (a controlled backend's FailNow/Fatal/Fatalf) are skipped: the backend
+// already recorded that stop, so reporting it again would turn one assertion failure into two, the
+// second carrying a stack trace into the sentinel itself. Every other engine already guarded this
+// (see execution_plan.go's runProgram, and the block/minimal/bytecode runners); this path was the
+// one that never grew the guard — see execution_engine_contract_test.go and #176.
 func runStepRecovered(ctx *Context, s step, label string) (message, output string) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
 			ctx.recordFailure()
 			message = fmt.Sprintf("%s: %v", label, recovered)
 			output = string(debug.Stack())
