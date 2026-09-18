@@ -2,11 +2,12 @@ package specs
 
 import (
 	"math"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/assert"
 )
 
 // contextPool reuses Context instances in the runner to reduce allocations.
@@ -442,10 +443,12 @@ func (e *Expectation) reportMatcherFailure(m Matcher) {
 // on failure; must stay un-inlined (see EqualTo's ATTRIBUTION note).
 //
 // Unlike EqualTo/ExpectT.ToEqual (which always use ==), this uses == only for a fast-path set of
-// primitive types (int, string, bool, int64, float64, uint) and falls back to reflect.DeepEqual for
-// everything else — including other primitives like int32/float32/uint64, and any struct, slice, or
-// map. That makes this the right choice when you need value-based equality for non-primitive types;
-// see "Equality semantics" in docs/DSL.md for why this differs from EqualTo/ExpectT.
+// primitive types (int, string, bool, int64, float64, uint) and otherwise defers to
+// assert.ValuesEqual: errors.Is(actual, expected) when both values are errors, and
+// reflect.DeepEqual for everything else — including other primitives like int32/float32/uint64, and
+// any struct, slice, or map. That makes this the right choice when you need value-based equality for
+// non-primitive types, or error-identity equality for errors; see "Equality semantics" in
+// docs/DSL.md for why this differs from EqualTo/ExpectT.
 func (e *Expectation) ToEqual(expected any) {
 	if e == nil {
 		return
@@ -502,7 +505,10 @@ func (e *Expectation) ToEqual(expected any) {
 		handled = false
 	}
 	if !handled {
-		equal = reflect.DeepEqual(e.actual, expected)
+		// assert.ValuesEqual rather than reflect.DeepEqual directly, so this path and the Equal
+		// matcher answer the same question about the same two values — including the oriented
+		// errors.Is semantics for errors. See issue #183.
+		equal = assert.ValuesEqual(expected, e.actual)
 	}
 	if equal {
 		if e.ctx.coverage != nil {
@@ -513,7 +519,9 @@ func (e *Expectation) ToEqual(expected any) {
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	e.ctx.failf("expected %v to equal %v", e.actual, expected)
+	// failf, never backend.Fatalf directly: it writes the authoritative failureRecord before
+	// reporting, which is the ordering #175 was about. See failure.go.
+	e.ctx.failf("%s", assert.EqualFailureMessage(expected, e.actual))
 }
 
 // coverageEdgeHash returns a deterministic edge ID from caller location and comparison outcome (branch sampling).
