@@ -117,7 +117,8 @@ never reach.
 ## Interpretation
 
 At exactly 2 workers, the two 24-byte backends are 48 bytes total and land on **one** 64-byte line,
-guaranteed. Isolating them is worth a reproducible ~7-8%, with a validated control.
+guaranteed. Isolating them is worth a reproducible -8.62% (chunk1) to -13.30% (chunk16), per the
+final re-confirmation on raw5, with a validated control.
 
 At 4 and 8 workers the effect is not detectable: contention on the shared `next *uint32` counter
 dominates, and it is a *true* sharing cost that padding the backends cannot address.
