@@ -132,11 +132,15 @@ func TestWriteConfigErrorRejectsARelativeReportingDirectory(t *testing.T) {
 }
 
 func TestWriteConfigErrorRefusesASymlinkedTempPath(t *testing.T) {
-	// Contract v1.2.8 §10 rule 1 requires O_NOFOLLOW on every open of run.json, config-error.json,
-	// shard temp files and shard final names. The other three sites had a symlink test; this one
-	// did not, which the inventory reconciliation found — the protection was real (WriteConfigError
-	// publishes through the same writeAndPublish/openFileNoFollow path) but nothing would have
-	// noticed it being dropped from this site alone.
+	// This pins the observable behaviour: a temp path pre-occupied by a symlink is rejected without
+	// touching the symlink's target. It does NOT specifically pin O_NOFOLLOW — the test also passes
+	// with O_NOFOLLOW removed, because O_CREATE|O_EXCL alone already fails when the path exists.
+	// The only test that distinguishes O_NOFOLLOW's own effect is the read-side
+	// TestVerifyRunOwnershipRefusesToFollowASymlinkedMarker in safety_test.go, mutation-checked
+	// there. This test exists because the other three writeAndPublish/openFileNoFollow sites had a
+	// symlink test and config-error.json did not, which the inventory reconciliation found — the
+	// protection here was real, but nothing would have noticed it being dropped from this site
+	// alone (see E1 in docs/145-runtime-claims-inventory.md).
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows needs a privilege ordinary CI accounts do not hold")
 	}
