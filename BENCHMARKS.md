@@ -8,11 +8,10 @@ This document explains how benchmarks are structured in go-specs.
 
 Benchmarks measure **subsystems independently**.
 
-The framework has three primary cost centers:
+The framework has two primary cost centers:
 
 1. Assertions
 2. Runner execution
-3. Path exploration
 
 ---
 
@@ -143,7 +142,6 @@ Observational, not contractual — see above. Typical figures:
 | ---------------- | --------- |
 | Assertion        | 80–150    |
 | Runner           | 10–40 µs  |
-| Path exploration | 50–200 µs |
 
 ---
 

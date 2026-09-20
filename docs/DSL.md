@@ -272,7 +272,7 @@ pushed, without needing the unexported registry type:
 | Helper | Kind | Outside `Analyze` |
 |---|---|---|
 | `CurrentSuite`, `CurrentArena` | read-only | returns `nil` |
-| `AppendBeforeHook`, `AppendAfterHook`, `SetPathGen` | mutating | **panics** |
+| `AppendBeforeHook`, `AppendAfterHook` | mutating | **panics** |
 
 The split is deliberate. "No suite is being built" is a legitimate answer to a question, so the
 accessors return `nil`. A mutating helper has nowhere to write, so returning quietly would discard

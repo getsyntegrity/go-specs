@@ -1,5 +1,13 @@
 # Legacy architecture parity evidence
 
+> **Historical record.** This document captures a point-in-time comparison against
+> `main` as it stood for issue #127. It predates the removal of the path-generation/
+> property-exploration subsystem in [#204](https://github.com/getsyntegrity/go-specs/issues/204)
+> (`Paths`, `PathBuilder`, `PathGenerator`, `PathVar`, `IntRangeVar`, and related
+> exploration machinery), which the table below still lists as present — that
+> capability is no longer part of go-specs. See [CHANGELOG.md](../CHANGELOG.md) for
+> the current migration note. Nothing else here is affected.
+
 Recorded as part of [#127](https://github.com/getsyntegrity/go-specs/issues/127) (PR-B):
 evidence that `develop`'s flat `specs` package fully replaces the public surface
 `main`'s old `specs/{compiler,dsl,runner,property}` split exposed via its

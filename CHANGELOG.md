@@ -8,6 +8,32 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Removed
 
+- **Breaking (targeted for v0.2.0).** Removed the entire path-generation / property-exploration
+  subsystem from `specs`. This deletes the following exported API surface, with no replacement
+  provided in-package:
+  - `Spec.Paths(...)` and the `PathBuilder` type it returned, along with every builder method
+    (`Values`, `IntRange`, `Bool`, and the rest of the dimension-declaration API).
+  - `PathValues` and its accessors (`Int`, `Bool`, `Value`, `Hash`, etc.), `PathGenerator`,
+    `PathVar`, `PathFilter`.
+  - The candidate strategies `Sample(n)`, `Seed(n)`, `Explore(n)`, `ExploreCoverage(n)`,
+    `ExploreSmart(n)`, and `Spec.RandomSeed`, which existed only to seed them.
+  - `Coverage` (the path-exploration coverage bitmap) and its methods (`HasNewCoverage`, etc.),
+    `CoverageExplorer`, `SmartExplorer`, `Corpus`, `Mutator` (`NewMutator`, `MutateInt`, ...), and
+    `Shrinker`.
+  - The package-level `SetPathGen` helper and the `OpSetPath` bytecode opcode.
+  - `Context`'s path/coverage-recording state and methods (removed ahead of this entry).
+
+  This is a deliberate, approved breaking removal (issue
+  [#204](https://github.com/getsyntegrity/go-specs/issues/204)), not a deprecation: every symbol
+  above is gone, not hidden or aliased. go-specs remains a BDD/spec-style testing framework; it no
+  longer ships combinatorial path exploration, coverage-guided fuzzing, or shrinking. For that kind
+  of input-space exploration, use Go's built-in `go test -fuzz`, or a dedicated property-testing
+  library such as [`rapid`](https://github.com/flyingmutant/rapid) or
+  [`gopter`](https://github.com/leanovate/gopter) alongside go-specs — `Describe`/`It` bodies compose
+  fine with any of them. `report.Coverage` (the unrelated Go-test-coverage reporting feature added
+  for issue #141) and `ExecutionPlan.PathScopes`/the `Describe`/`When`/`It` breadcrumb-path naming
+  used in `SpecStartEvent.Path` are unaffected by this removal — those are separate features that
+  happen to share the words "path" and "coverage".
 - **Breaking.** Removed the exported legacy pointer-based declaration tree from `specs`: the `Node`
   struct, `PrintTree(*Node, int, io.Writer)` and `Walk(*Node, func(*Node))`. The registry has built
   into `NodeArena` — a flat, index-based arena — since the arena migration, and nothing in the module
@@ -31,11 +57,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   therefore nil for the entire life of every spec the runners execute, `randomInt64` had no
   production caller, and the `TestContextRNGDeterminism` test that appeared to guarantee its
   determinism was vacuous: its spec body never ran, so it compared two untouched zero-filled slices
-  and would have passed against any implementation. `Spec.RandomSeed` is unaffected and remains the
-  single seam for seeded behaviour — it seeds `Paths()` generation (`Sample` draws and the
-  `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams), which it always did; its doc comment
-  claimed it also seeded the context RNG, which was never true. A spec body that needs randomness
-  brings its own generator and seeds it explicitly. ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+  and would have passed against any implementation. `Spec.RandomSeed` is unaffected by *this* removal
+  and remained, at the time, the single seam for seeded behaviour — it seeded `Paths()` generation
+  (`Sample` draws and the `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams); its doc
+  comment claimed it also seeded the context RNG, which was never true. A spec body that needs
+  randomness brings its own generator and seeds it explicitly. `Spec.RandomSeed` itself, along with
+  `Paths()` and the rest of the path-generation subsystem it seeded, was later removed in the same
+  unreleased window — see the "path-generation / property-exploration subsystem" entry above (issue
+  [#204](https://github.com/getsyntegrity/go-specs/issues/204)).
+  ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
 - Removed the unexported `newSpec` constructor, which that deleted test was the only caller of
   anywhere in the module. It returned a `Spec` carrying neither a compiler nor a registry nor an
   arena, so `Describe` on the result had nothing to build into and silently did nothing — which is

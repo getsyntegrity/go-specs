@@ -6,7 +6,7 @@
 
 ## Project status
 
-go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, `Mutator`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
+go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
 
 ## Description
 
@@ -18,7 +18,6 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
 - **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, etc.), and snapshot testing
-- **Combinatorial testing** — Path builder for deterministic exploration of parameter spaces
 - **Lightweight mocking** — Spies and argument matchers without heavy code generation
 
 ## Installation
