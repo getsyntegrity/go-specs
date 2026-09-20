@@ -7,7 +7,7 @@ import "strings"
 // may be reworded freely (contract v1.2.7 §5).
 type ConfigErrorReason string
 
-// The closed set from contract v1.2.7 §5. Anything not in this list is not a configuration error.
+// The closed set from contract v1.2.8 §5. Anything not in this list is not a configuration error.
 const (
 	ReasonMissingRunID     ConfigErrorReason = "missing-run-id"
 	ReasonMissingRunToken  ConfigErrorReason = "missing-run-token"
@@ -17,10 +17,12 @@ const (
 	ReasonMarkerMissing    ConfigErrorReason = "marker-missing"
 	ReasonMarkerMismatch   ConfigErrorReason = "marker-mismatch"
 	ReasonMarkerUnreadable ConfigErrorReason = "marker-unreadable"
-	// ReasonInvalidReportDir extends contract v1.2.7 §5's set. §5 defines the reason vocabulary as
-	// closed, and this value is not in it, because the contract does not anticipate that a
-	// relative GO_SPECS_REPORT_DIR resolves per-package under `go test`. Flagged for the contract
-	// rather than folded into a neighbouring reason, which would misreport the cause.
+	// ReasonInvalidReportDir reports a relative GO_SPECS_REPORT_DIR reaching a producer. `go test`
+	// runs each test binary with its own package source directory as the working directory, so a
+	// relative value resolves to a different absolute path per package and to a directory the
+	// preflight never created; contract v1.2.8 §5 requires producers to reject it rather than
+	// resolve it. It is its own reason rather than folded into a neighbouring one, which would
+	// misreport the cause as a missing or unreadable marker.
 	ReasonInvalidReportDir ConfigErrorReason = "invalid-report-dir"
 )
 
