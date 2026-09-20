@@ -43,6 +43,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   entry points build their `Spec` directly. Removing it deletes the seam that let a test look like it
   exercised the framework while executing none of it. Internal only, so no public API change.
   ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+- **Breaking.** Removed `specs.RegisterSnapshotMatcher` and the `specs.SnapshotMatcher` type. The
+  handler it stored was never consulted: `Context.Snapshot` has always compared against the
+  built-in file-based snapshot store (`snapshots.Evaluate`) directly, so a registered matcher
+  silently had no effect on any assertion. The API's own internal callers,
+  `currentSnapshotMatcher` and `enforceSnapshotMatcher`, were themselves marked `//nolint:unused` —
+  confirming nothing in the module ever read the value back. It was never documented outside its
+  own doc comment, so there is no supported migration path; if you were calling it, remove the
+  call, since it was doing nothing. ([#199](https://github.com/getsyntegrity/go-specs/issues/199))
 
 ### Added
 
