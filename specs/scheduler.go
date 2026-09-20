@@ -210,7 +210,6 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 		idx := int(i)
 		backend.specIndex = idx
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
 		runWorkerSpec(specs[idx].Fn, ctx, results, idx)
 		ctx.Reset(nil)
 	}

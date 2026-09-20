@@ -9,7 +9,6 @@ type bytecodeCompiler struct {
 	nameStack   []string
 	beforeStack [][]func(*Context)
 	afterStack  [][]func(*Context)
-	pathGen     *PathGenerator
 	// scratch for flattening hooks and building program
 	beforeFlat []func(*Context)
 	afterFlat  []func(*Context)
@@ -39,7 +38,6 @@ func newBytecodeCompiler() *bytecodeCompiler {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
-	c.pathGen = nil
 	return c
 }
 
@@ -48,7 +46,6 @@ func (c *bytecodeCompiler) reset() {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
-	c.pathGen = nil
 	bytecodeCompilerPool.Put(c)
 }
 
@@ -96,11 +93,6 @@ func (c *bytecodeCompiler) AppendAfter(fn func(*Context)) {
 	c.afterStack[i] = append(c.afterStack[i], fn)
 }
 
-// SetPathGen sets the path generator for the next EmitIt (e.g. from Paths().It()).
-func (c *bytecodeCompiler) SetPathGen(gen *PathGenerator) {
-	c.pathGen = gen
-}
-
 // fullName returns the spec's breadcrumb (e.g. "Describe/When/It"). It feeds both SpecStartEvent.Path
 // and — via specSubtestName — the testing.T.Run identity, so it uses the shared joinSubtestPath
 // mapping.
@@ -121,13 +113,10 @@ func (c *bytecodeCompiler) flattenHooks() {
 	}
 }
 
-// EmitIt appends one spec program with specialized opcodes: OpSetPath (if path spec), OpBeforeHook, OpBody, OpAfterHook.
+// EmitIt appends one spec program with specialized opcodes: OpBeforeHook, OpBody, OpAfterHook.
 func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	c.flattenHooks()
 	c.program = c.program[:0]
-	if c.pathGen != nil {
-		c.program = append(c.program, Instruction{Code: OpSetPath, Fn: nil})
-	}
 	for _, h := range c.beforeFlat {
 		if h != nil {
 			c.program = append(c.program, Instruction{Code: OpBeforeHook, Fn: h})
@@ -148,12 +137,10 @@ func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	c.plan.ProgramLen = append(c.plan.ProgramLen, len(c.program))
 	c.plan.Names = append(c.plan.Names, name)
 	c.plan.FullNames = append(c.plan.FullNames, c.fullName(name))
-	c.plan.PathGens = append(c.plan.PathGens, c.pathGen)
 	// Record the enclosing scopes themselves: fullName's join is not injective, so a name containing
 	// "/" cannot be recovered from the breadcrumb afterwards. Only the scopes are stored — the plan
 	// already holds name in Names — and nameStack is passed as-is, never pushed to and popped from.
 	appendSpecPath(c.plan, c.nameStack)
-	c.pathGen = nil
 }
 
 // Plan returns the built ExecutionPlan. Caller owns it after TakePlan; compiler is reset.

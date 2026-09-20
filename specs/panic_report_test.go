@@ -25,7 +25,7 @@ func panicRecoveryEngines() []panicRecoveryEngine {
 	return []panicRecoveryEngine{
 		{"Runner", func(ctx *Context, fn func(*Context)) { runStepRecovered(ctx, fn, "spec") }},
 		{"ExecutionPlan", func(ctx *Context, fn func(*Context)) {
-			runProgram([]Instruction{{Code: OpBody, Fn: fn}}, ctx, nil)
+			runProgram([]Instruction{{Code: OpBody, Fn: fn}}, ctx)
 		}},
 		{"ExecutionPlanAfterHook", func(ctx *Context, fn func(*Context)) {
 			runAfterInstructionRecovered(ctx, Instruction{Code: OpAfterHook, Fn: fn})

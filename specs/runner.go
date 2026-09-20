@@ -120,7 +120,6 @@ func (r *Runner) Run(tb testing.TB) {
 	defer putTestBackend(backend)
 	ctx, release := acquireContext(backend)
 	defer release()
-	ctx.SetPathValues(PathValues{})
 	if r.FailFast {
 		ctx.SetFailFast(true)
 	}

@@ -142,15 +142,6 @@ func (r *registry) appendAfterHook(fn func(*Context)) {
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
 }
 
-// setPathGen writes to r.arena.Nodes[id] without a bounds check: every index the stack holds was
-// appended to r.arena.Nodes by enterNode under the same lock, so the stack can never name a node the
-// arena does not have.
-func (r *registry) setPathGen(gen *PathGenerator) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.arena.Nodes[r.currentNodeIDLocked()].PathGen = gen
-}
-
 func pushRegistry(r *registry) func() {
 	gid := goroutineID()
 	activeRegistries.mu.Lock()
@@ -191,7 +182,7 @@ func ensureRegistry() func() {
 
 // The Analyze extension surface
 //
-// Analyze, CurrentSuite, CurrentArena, AppendBeforeHook, AppendAfterHook and SetPathGen are a
+// Analyze, CurrentSuite, CurrentArena, AppendBeforeHook and AppendAfterHook are a
 // deliberate, supported extension API, not legacy residue: they let a custom DSL build a SuiteTree
 // against the registry without going through Describe. Analyze establishes the build context;
 // everything else reads or mutates the registry Analyze pushed for the calling goroutine.
@@ -242,12 +233,6 @@ func AppendAfterHook(fn func(*Context)) {
 	requireRegistry("AppendAfterHook").appendAfterHook(fn)
 }
 
-// SetPathGen sets the PathGenerator on the current node. Used by path specs.
-// Panics when called outside Analyze: see "The Analyze extension surface" above.
-func SetPathGen(gen *PathGenerator) {
-	requireRegistry("SetPathGen").setPathGen(gen)
-}
-
 // Analyze builds a suite tree by running fn with a fresh registry pushed for the calling goroutine.
 // Safe to call concurrently from multiple goroutines (e.g. from several t.Parallel() tests): each
 // call gets its own registry, scoped to the goroutine that called Analyze, so concurrent calls never
@@ -263,7 +248,7 @@ func Analyze(fn func()) *SuiteTree {
 }
 
 // CurrentSuite returns a SuiteTree view over the registry active on the calling goroutine, or nil
-// when none is active. With CurrentArena, AppendBeforeHook, AppendAfterHook and SetPathGen it forms
+// when none is active. With CurrentArena, AppendBeforeHook and AppendAfterHook it forms
 // the supported extension surface for code that builds into the registry Analyze or Describe pushed
 // — an external DSL or a generator — without needing the unexported registry type.
 func CurrentSuite() *SuiteTree {

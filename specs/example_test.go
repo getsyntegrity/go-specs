@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/assert"
@@ -29,15 +28,4 @@ func ExampleContext_Expect() {
 			ctx.Expect(len("hello") > 0).To(assert.BeTrue())
 		})
 	})
-}
-
-// ExampleMutator_MutateInt is genuinely executed and Output-verified: Mutator needs no
-// *testing.T, and its RNG is deterministic for a given seed.
-func ExampleMutator_MutateInt() {
-	m := NewMutator(1)
-	fmt.Println(m.MutateInt(10, 0, 100))
-	fmt.Println(m.MutateInt(10, 0, 100))
-	// Output:
-	// 6
-	// 8
 }

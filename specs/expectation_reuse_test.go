@@ -251,3 +251,25 @@ func TestPassingAssertionsAllocateNothingOnTheFastPath(t *testing.T) {
 		}
 	}
 }
+
+// assertPanicsWith checks that fn panics with a string message containing every wantSubstrings
+// entry. Shared by the expectation-reuse regressions above and by matcher_assertion_test.go.
+func assertPanicsWith(t *testing.T, fn func(), wantSubstrings ...string) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected a string panic message, got %T: %v", r, r)
+		}
+		for _, want := range wantSubstrings {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("panic message %q missing expected substring %q", msg, want)
+			}
+		}
+	}()
+	fn()
+}
