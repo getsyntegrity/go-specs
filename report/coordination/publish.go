@@ -41,6 +41,12 @@ func tempName(finalName string) string {
 	return fmt.Sprintf("%s.tmp-%d", finalName, os.Getpid())
 }
 
+// openForWrite is the injection seam for the temp file's create/open call. tempName only proves
+// the temp name is bare (no directory component of its own); this seam is what lets a test
+// observe the actual path writeAndPublish opens, at the real write boundary, without depending on
+// a real cross-filesystem mount to provoke EXDEV.
+var openForWrite = openFileNoFollow
+
 // writeAndPublish serializes body into a temp file inside dir and publishes it at finalName with
 // an atomic create-no-replace operation.
 //
@@ -51,7 +57,7 @@ func writeAndPublish(dir, finalName string, body []byte, ops publishOps) error {
 	tmpPath := filepath.Join(dir, tempName(finalName))
 	finalPath := filepath.Join(dir, finalName)
 
-	f, err := openFileNoFollow(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	f, err := openForWrite(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
 	if err != nil {
 		return fmt.Errorf("go-specs report: create %s: %w", tmpPath, err)
 	}
