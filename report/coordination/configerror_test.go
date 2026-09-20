@@ -130,3 +130,47 @@ func TestWriteConfigErrorRejectsARelativeReportingDirectory(t *testing.T) {
 		t.Fatalf("got %v, want a *ConfigError with reason %q", err, ReasonInvalidReportDir)
 	}
 }
+
+func TestWriteConfigErrorRefusesASymlinkedTempPath(t *testing.T) {
+	// This pins the observable behaviour: a temp path pre-occupied by a symlink is rejected without
+	// touching the symlink's target. It does NOT specifically pin O_NOFOLLOW — the test also passes
+	// with O_NOFOLLOW removed, because O_CREATE|O_EXCL alone already fails when the path exists.
+	// The only test that distinguishes O_NOFOLLOW's own effect is the read-side
+	// TestVerifyRunOwnershipRefusesToFollowASymlinkedMarker in safety_test.go, mutation-checked
+	// there. This test exists because the other three writeAndPublish/openFileNoFollow sites had a
+	// symlink test and config-error.json did not, which the inventory reconciliation found — the
+	// protection here was real, but nothing would have noticed it being dropped from this site
+	// alone (see E1 in docs/145-runtime-claims-inventory.md).
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink on Windows needs a privilege ordinary CI accounts do not hold")
+	}
+	base := secureTempDir(t)
+	elsewhere := secureTempDir(t)
+
+	dir := runDir(base, "run-1")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(elsewhere, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, tempName(configErrorFileName))
+	if err := os.Symlink(victim, tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigError(base, "run-1", "pkg/a", ReasonMissingRunToken, "x"); err == nil {
+		t.Fatal("WriteConfigError wrote through a symlinked temp path")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("the symlink target was modified: %q", got)
+	}
+}

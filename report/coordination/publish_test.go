@@ -61,6 +61,41 @@ func TestTempFileLivesInTheDestinationDirectoryAndCarriesThePID(t *testing.T) {
 	}
 }
 
+func TestWriteAndPublishOpensTheTempFileInsideTheDestinationDirectory(t *testing.T) {
+	// Claims A3 and A6 at the real write boundary. TestTempFileLivesInTheDestinationDirectoryAnd-
+	// CarriesThePID only proves tempName returns a bare name with no directory component of its
+	// own; it never calls writeAndPublish and so never observes what directory that bare name
+	// actually gets joined into at the open call. This test does: it intercepts the path
+	// writeAndPublish passes to its open seam and asserts it sits inside dir, the same directory
+	// as the final destination — which is what keeps the publish atomic (link fails EXDEV across a
+	// filesystem boundary). Provoking a real EXDEV needs two mounts, which is not portable in CI,
+	// so the property is pinned structurally instead.
+	dir := secureTempDir(t)
+
+	original := openForWrite
+	t.Cleanup(func() { openForWrite = original })
+	var observed string
+	openForWrite = func(path string, flag int, perm fs.FileMode) (*os.File, error) {
+		observed = path
+		return original(path, flag, perm)
+	}
+
+	if err := writeAndPublish(dir, "a--b.shard.json", []byte("x"), realPublishOps()); err != nil {
+		t.Fatalf("writeAndPublish: %v", err)
+	}
+
+	if observed == "" {
+		t.Fatal("writeAndPublish never called the open seam")
+	}
+	wantDir := filepath.Clean(dir)
+	if gotDir := filepath.Dir(observed); gotDir != wantDir {
+		t.Fatalf("writeAndPublish opened the temp file in %q, want it inside %q", gotDir, wantDir)
+	}
+	if observed != filepath.Join(dir, tempName("a--b.shard.json")) {
+		t.Fatalf("opened path = %q, want dir joined with tempName's bare result", observed)
+	}
+}
+
 func TestPublishRefusesAnExistingDestinationAndLeavesItIntact(t *testing.T) {
 	dir := secureTempDir(t)
 	final := filepath.Join(dir, "a--b.shard.json")
