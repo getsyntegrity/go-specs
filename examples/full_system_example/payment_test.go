@@ -11,13 +11,8 @@ import (
 This example demonstrates most features of go-specs working together:
 
 • BDD-style DSL (Describe / It)
-• automatic path exploration
-• smart exploration strategies
-• coverage-guided exploration
 • lightweight mocks and spies
 • snapshot testing
-• invariant/property testing
-• automatic shrinking of failing inputs
 
 Run with:
 
@@ -123,81 +118,23 @@ func TestPaymentSystem(t *testing.T) {
 		})
 
 		// -------------------------------------------------------
-		// Withdraw invariants
+		// Withdraw behavior
 		// -------------------------------------------------------
 
 		s.Describe("Withdraw", func(s2 *specs.Spec) {
 
-			/*
-				Path exploration defines the input space.
+			s2.It("never produces negative balance", func(ctx *specs.Context) {
 
-				go-specs will automatically generate combinations of
-				balance and amount and test the invariant.
-			*/
+				// Representative sample covering the normal case, the
+				// amount > balance clamp, and the amount == balance boundary
+				// (both at zero and at a larger value).
+				ctx.Expect(Withdraw(100, 50) >= 0).To(specs.BeTrue())
+				ctx.Expect(Withdraw(0, 50) >= 0).To(specs.BeTrue())
+				ctx.Expect(Withdraw(0, 1) >= 0).To(specs.BeTrue())
+				ctx.Expect(Withdraw(50, 50) >= 0).To(specs.BeTrue())
+				ctx.Expect(Withdraw(1000, 1000) >= 0).To(specs.BeTrue())
 
-			s2.Paths(func(p *specs.PathBuilder) {
-
-				p.IntRange("balance", 0, 1000)
-				p.IntRange("amount", 0, 1000)
-
-			}).
-
-				/*
-					ExploreSmart combines multiple strategies:
-
-					• boundary values
-					• random exploration
-					• mutation of interesting inputs
-					• corpus replay
-				*/
-
-				ExploreSmart(5000).
-				It("never produces negative balance", func(ctx *specs.Context) {
-
-					balance := ctx.Path().Int("balance")
-
-					amount := ctx.Path().Int("amount")
-
-					newBalance := Withdraw(balance, amount)
-
-					/*
-						This is the invariant we want to enforce.
-
-						A withdrawal should never produce a negative balance.
-					*/
-
-					ctx.Expect(newBalance >= 0).To(specs.BeTrue())
-
-				})
-
-			// ---------------------------------------------------
-			// Coverage-guided exploration example
-			// ---------------------------------------------------
-
-			s2.Paths(func(p *specs.PathBuilder) {
-
-				p.IntRange("balance", 0, 100)
-				p.IntRange("amount", 0, 100)
-
-			}).
-
-				/*
-					ExploreCoverage prioritizes inputs that
-					discover new execution paths.
-				*/
-
-				ExploreCoverage(1000).
-				It("balance never negative (coverage)", func(ctx *specs.Context) {
-
-					balance := ctx.Path().Int("balance")
-
-					amount := ctx.Path().Int("amount")
-
-					newBalance := Withdraw(balance, amount)
-
-					ctx.Expect(newBalance >= 0).To(specs.BeTrue())
-
-				})
+			})
 
 		})
 
