@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -59,10 +58,7 @@ type Context struct {
 	// it on the failure path only, and a plain field load there keeps the passing fast path's code
 	// size — and therefore its speed — unchanged. See the assertion failure branches for why the
 	// Helper() call it feeds cannot be delegated to a wrapper.
-	tb         testing.TB
-	pathValues PathValues
-	// coverage is set by the runner during coverage-guided exploration; assertions record edges here.
-	coverage *Coverage
+	tb testing.TB
 	// failure is the authoritative record of whether this spec has failed — the single source
 	// report.SpecResultEvent.Failed, SuiteEndEvent.FailedSpecs and Runner FailFast all derive from.
 	// It is written only through recordFailure/failf and read only through hasFailed; see failure.go
@@ -106,10 +102,8 @@ func (c *Context) Reset(backend testBackend) {
 		return
 	}
 	c.backend = backend
-	c.pathValues = PathValues{}
 	c.T = nil
 	c.tb = nil
-	c.coverage = nil
 	c.resetFailure()
 	c.failFast = false
 	c.execObserver = nil
@@ -136,31 +130,6 @@ func (c *Context) SetFailFast(v bool) {
 	if c != nil {
 		c.failFast = v
 	}
-}
-
-// SetPathValues sets the current path combination (used by path runners).
-func (c *Context) SetPathValues(pv PathValues) {
-	if c == nil {
-		return
-	}
-	pv.assignTo(&c.pathValues)
-}
-
-// Path returns the current path values for this run.
-func (c *Context) Path() PathValues {
-	if c == nil {
-		return PathValues{}
-	}
-	return c.pathValues
-}
-
-// RecordCoverage records an execution-path edge for coverage-guided exploration.
-// Called by assertions (To, ToEqual) with a cheap hash of branch + outcome; no-op if coverage is nil.
-func (c *Context) RecordCoverage(edge uint64) {
-	if c == nil || c.coverage == nil {
-		return
-	}
-	c.coverage.Hit(edge)
 }
 
 // Expect returns an expectation for the given actual value. The returned Expectation is spent by
@@ -238,9 +207,6 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		return
 	}
 	if actual == expected {
-		if c.coverage != nil {
-			c.RecordCoverage(coverageEdgeHash(2, actual, expected))
-		}
 		return
 	}
 	if c.tb != nil {
@@ -303,9 +269,6 @@ func (x expectT[T]) ToEqual(expected T) {
 		reportNotEqual(s.ctx, "expected %v to equal %v", s.actual, expected)
 		return
 	}
-	if s.ctx.coverage != nil {
-		s.ctx.RecordCoverage(coverageEdgeHash(2, s.actual, expected))
-	}
 }
 
 // reportNotEqual hands an equality failure to Context.failf, the one path that records and reports
@@ -357,9 +320,6 @@ func (x expectT[T]) To(m Matcher) {
 	}
 	boxed := any(s.actual)
 	if m.Match(boxed) {
-		if s.ctx.coverage != nil {
-			s.ctx.RecordCoverage(coverageEdgeHash(2, boxed, nil))
-		}
 		return
 	}
 	// reportMatcherFailure funnels into Context.failf, which is what makes a typed matcher failure
@@ -464,9 +424,6 @@ func (e *Expectation) To(m Matcher) {
 		return
 	}
 	if m.Match(e.actual) {
-		if e.ctx.coverage != nil {
-			e.ctx.RecordCoverage(coverageEdgeHash(2, e.actual, nil))
-		}
 		return
 	}
 	if e.ctx.tb != nil {
@@ -568,9 +525,6 @@ func (e *Expectation) ToEqual(expected any) {
 		equal = assert.ValuesEqual(expected, e.actual)
 	}
 	if equal {
-		if e.ctx.coverage != nil {
-			e.ctx.RecordCoverage(coverageEdgeHash(2, e.actual, expected))
-		}
 		return
 	}
 	if e.ctx.tb != nil {
@@ -579,63 +533,6 @@ func (e *Expectation) ToEqual(expected any) {
 	// failf, never backend.Fatalf directly: it writes the authoritative failureRecord before
 	// reporting, which is the ordering #175 was about. See failure.go.
 	e.ctx.failf("%s", assert.EqualFailureMessage(expected, e.actual))
-}
-
-// coverageEdgeHash returns a deterministic edge ID from caller location and comparison outcome (branch sampling).
-// Used for coverage-guided exploration; no allocations.
-func coverageEdgeHash(skip int, actual, expected any) uint64 {
-	_, file, line, ok := runtime.Caller(skip)
-	if !ok {
-		return 0
-	}
-	const prime = 1099511628211
-	h := uint64(14695981039346656037)
-	for i := 0; i < len(file); i++ {
-		h ^= uint64(file[i])
-		h *= prime
-	}
-	h ^= uint64(line)
-	h *= prime
-	h ^= valueHash(actual)
-	h *= prime
-	h ^= valueHash(expected)
-	h *= prime
-	return h
-}
-
-func valueHash(v any) uint64 {
-	if v == nil {
-		return 0
-	}
-	switch x := v.(type) {
-	case int:
-		return uint64(x)
-	case int64:
-		return uint64(x)
-	case int32:
-		return uint64(x)
-	case uint:
-		return uint64(x)
-	case uint64:
-		return x
-	case uint32:
-		return uint64(x)
-	case bool:
-		if x {
-			return 1
-		}
-		return 0
-	case string:
-		h := uint64(len(x))
-		for i := 0; i < len(x) && i < 8; i++ {
-			h = h*31 + uint64(x[i])
-		}
-		return h
-	case float64:
-		return math.Float64bits(x)
-	default:
-		return 0xabad1dea
-	}
 }
 
 // runAfterHooks runs after-each fixtures in reverse order (LIFO).

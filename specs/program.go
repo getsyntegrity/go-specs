@@ -205,7 +205,6 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		if len(steps) == 0 {
 			return
 		}
-		pathValues := ctx.Path()
 		obs := ctx.execObserver
 		results := make([]failureRecord, len(steps))
 		var wg sync.WaitGroup
@@ -217,7 +216,6 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 				defer wg.Done()
 				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
 				child, release := acquireContext(backend)
-				child.SetPathValues(pathValues)
 				var started report.SpecStartEvent
 				if obs != nil {
 					var scopes []string

@@ -110,14 +110,13 @@ func TestAppendHooksAttachToCurrentNode(t *testing.T) {
 // The mutating extension helpers have nowhere to write with no active registry. Discarding the
 // argument would let a suite that registered nothing report green, so they fail closed (issue #151).
 // The panic names the helper, because the call site is the only place that can fix the mistake.
-func TestAppendHooksAndSetPathGenPanicWithoutRegistry(t *testing.T) {
+func TestAppendHooksPanicWithoutRegistry(t *testing.T) {
 	cases := []struct {
 		helper string
 		call   func()
 	}{
 		{"AppendBeforeHook", func() { AppendBeforeHook(func(ctx *Context) {}) }},
 		{"AppendAfterHook", func() { AppendAfterHook(func(ctx *Context) {}) }},
-		{"SetPathGen", func() { SetPathGen(&PathGenerator{}) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.helper, func(t *testing.T) {
@@ -181,7 +180,6 @@ func TestRegistryWritersPanicOnEmptyNodeStack(t *testing.T) {
 		"enterNode":        func(r *registry) { r.enterNode(ItNode, "adds correctly", "", 0, nil) },
 		"appendBeforeHook": func(r *registry) { r.appendBeforeHook(func(ctx *Context) {}) },
 		"appendAfterHook":  func(r *registry) { r.appendAfterHook(func(ctx *Context) {}) },
-		"setPathGen":       func(r *registry) { r.setPathGen(&PathGenerator{}) },
 	}
 	for name, write := range writers {
 		t.Run(name, func(t *testing.T) {
@@ -212,15 +210,5 @@ func TestRegistryStackKeepsRootAfterNestedExits(t *testing.T) {
 	r.appendBeforeHook(func(ctx *Context) {})
 	if got := len(r.arena.BeforeHooks[0]); got != 1 {
 		t.Fatalf("expected the hook to land on the root node, got %d", got)
-	}
-}
-
-func TestSetPathGenSetsGeneratorOnCurrentNode(t *testing.T) {
-	gen := &PathGenerator{}
-	suite := Analyze(func() {
-		SetPathGen(gen)
-	})
-	if suite.Arena.Nodes[0].PathGen != gen {
-		t.Fatal("SetPathGen did not set the generator on the current node")
 	}
 }

@@ -38,7 +38,6 @@ func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, r
 		}
 		// One Reset per chunk; reuse context for all specs in the chunk.
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
 		for i := start; i < end; i++ {
 			idx := int(i)
 			backend.specIndex = idx

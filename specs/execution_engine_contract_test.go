@@ -44,7 +44,7 @@ func sequentialEngines() []sequentialEngine {
 			name: "ExecutionPlan",
 			run: func(ctx *Context, fns []func(*Context)) {
 				for _, fn := range fns {
-					runProgram([]Instruction{{Code: OpBody, Fn: fn}}, ctx, nil)
+					runProgram([]Instruction{{Code: OpBody, Fn: fn}}, ctx)
 				}
 			},
 		},

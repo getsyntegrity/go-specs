@@ -95,89 +95,6 @@ func TestDescribeWithReporterMarksFailedFlatSpec(t *testing.T) {
 	}
 }
 
-// TestDescribeWithReporterEmitsEventsPerCartesianCandidate proves Paths() reports every executed
-// candidate as its own spec execution — not just a single event for the whole generated spec.
-// Hiding intermediate candidates would misrepresent how many executions actually happened.
-func TestDescribeWithReporterEmitsEventsPerCartesianCandidate(t *testing.T) {
-	rep := &recordingReporter{}
-	DescribeWithReporter(t, "CartesianSuite", rep, func(s *Spec) {
-		s.Paths(func(pb *PathBuilder) {
-			pb.Values("tier", []any{"basic", "pro"})
-		}).It("includes tier", func(ctx *Context) {})
-	})
-
-	if len(rep.specStarted) != 2 {
-		t.Fatalf("expected 2 SpecStarted events (one per combo), got %d: %+v", len(rep.specStarted), rep.specStarted)
-	}
-	if len(rep.specFinished) != 2 {
-		t.Fatalf("expected 2 SpecFinished events (one per combo), got %d: %+v", len(rep.specFinished), rep.specFinished)
-	}
-	// Each candidate reports its own identity (#103): the framework's unsanitized formatted values
-	// plus the 1-based executed ordinal that links the event to its `go test -v` subtest. Before
-	// this, every candidate reported the bare spec name and the events were indistinguishable.
-	wantNames := []string{"includes tier [tier=basic] #1", "includes tier [tier=pro] #2"}
-	for idx, e := range rep.specFinished {
-		if e.Failed {
-			t.Fatalf("expected all combos to pass, got %+v", e)
-		}
-		if e.Name != wantNames[idx] {
-			t.Fatalf("expected event name %q, got %q", wantNames[idx], e.Name)
-		}
-	}
-	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].TotalSpecs != 2 || rep.suiteFinished[0].FailedSpecs != 0 {
-		t.Fatalf("expected TotalSpecs=2 FailedSpecs=0, got %+v", rep.suiteFinished)
-	}
-}
-
-// TestDescribeWithReporterEmitsEventsPerSampleCandidate proves Sample() reports one
-// SpecStarted/SpecFinished pair per sample drawn, matching Explore/Sample's "every attempt is a
-// real execution" semantics.
-func TestDescribeWithReporterEmitsEventsPerSampleCandidate(t *testing.T) {
-	const samples = 4
-	rep := &recordingReporter{}
-	DescribeWithReporter(t, "SampleSuite", rep, func(s *Spec) {
-		builder := s.Paths(func(pb *PathBuilder) { pb.Bool("vip") })
-		builder.Sample(samples).Seed(7).It("sample case", func(ctx *Context) {})
-	})
-
-	if len(rep.specStarted) != samples {
-		t.Fatalf("expected %d SpecStarted events, got %d: %+v", samples, len(rep.specStarted), rep.specStarted)
-	}
-	if len(rep.specFinished) != samples {
-		t.Fatalf("expected %d SpecFinished events, got %d: %+v", samples, len(rep.specFinished), rep.specFinished)
-	}
-	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].TotalSpecs != samples {
-		t.Fatalf("expected TotalSpecs=%d, got %+v", samples, rep.suiteFinished)
-	}
-}
-
-// TestDescribeWithReporterStopsAtFirstFailingCandidate proves that when a generated candidate
-// fails, the reporter sees exactly that many SpecStarted/SpecFinished pairs — matching
-// proposalController's existing "stop at first failure" behavior instead of silently continuing
-// past it or reporting candidates that never ran.
-func TestDescribeWithReporterStopsAtFirstFailingCandidate(t *testing.T) {
-	rep := &recordingReporter{}
-	DescribeWithReporter(t, "FailingSampleSuite", rep, func(s *Spec) {
-		builder := s.Paths(func(pb *PathBuilder) { pb.Bool("vip") })
-		builder.Sample(5).Seed(7).It("always fails", func(ctx *Context) { ctx.recordFailure() })
-	})
-
-	if len(rep.specStarted) != len(rep.specFinished) {
-		t.Fatalf("expected matched SpecStarted/SpecFinished counts, got %d started, %d finished",
-			len(rep.specStarted), len(rep.specFinished))
-	}
-	if len(rep.specFinished) == 0 {
-		t.Fatal("expected at least one SpecFinished event")
-	}
-	last := rep.specFinished[len(rep.specFinished)-1]
-	if !last.Failed {
-		t.Fatalf("expected the last reported candidate to be the failing one, got %+v", last)
-	}
-	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].FailedSpecs != 1 {
-		t.Fatalf("expected exactly one FailedSpecs, got %+v", rep.suiteFinished)
-	}
-}
-
 // TestDescribeWithReporterRecordsSpecAndSuiteDuration proves SpecFinished.Duration and
 // SuiteFinished.Duration measure real elapsed time, not a placeholder zero value: a spec that
 // deliberately sleeps reports a Duration at least as long as the sleep, and the enclosing suite's
@@ -239,7 +156,7 @@ func TestRunProgramReportsPanicMessageAndOutput(t *testing.T) {
 	}
 
 	started := reportSpecStarted(rep, "panics", nil)
-	message, output := runProgram(program, ctx, nil)
+	message, output := runProgram(program, ctx)
 	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output})
 
 	if len(rep.specFinished) != 1 {
@@ -272,7 +189,7 @@ func TestRunProgramAfterHookOnlyPanicStillReportsMessage(t *testing.T) {
 		{Code: OpAfterHook, Fn: func(*Context) { panic("after boom") }},
 	}
 
-	message, output := runProgram(program, ctx, nil)
+	message, output := runProgram(program, ctx)
 
 	if !ctx.hasFailed() {
 		t.Fatal("expected ctx.hasFailed() to be set after an after-hook panic")

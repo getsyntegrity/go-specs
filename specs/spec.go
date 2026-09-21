@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -23,8 +22,6 @@ type Spec struct {
 	backend  testBackend
 	reporter report.EventReporter
 	name     string // top-level Describe/DescribeFlat name, used as SuiteStartEvent/SuiteEndEvent.Name
-	seed     int64
-	hasSeed  bool
 
 	// compiler/registry are the exact build target this Spec (and any Spec it constructs for a
 	// nested Describe/When) writes into. Set once by the top-level entry point (Describe,
@@ -75,10 +72,6 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
 func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	describeWithCompilerContext(tb, nil, name, rep, fn)
-}
-
-func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec)) []proposalControllerResult {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
 	var backend testBackend
@@ -92,9 +85,8 @@ func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name str
 	s.plan = c.TakePlan()
 	if tb != nil {
 		s.Compile()
-		return s.suite.run(tb, runCtx)
+		s.suite.Run(tb)
 	}
-	return nil
 }
 
 // BuildSuite builds the spec tree and compiles it once; returns the CompiledSuite without running.
@@ -281,11 +273,11 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
+		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
 		return
 	}
 	s.requireBuildTarget("Describe")
-	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
@@ -302,14 +294,14 @@ func (s *Spec) When(name string, fn interface{}) {
 		defer c.PopScope()
 		switch f := fn.(type) {
 		case func(*Spec):
-			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
+			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
 		case func():
 			f()
 		}
 		return
 	}
 	s.requireBuildTarget("When")
-	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
 	runFn := func() {
 		switch f := fn.(type) {
 		case func(*Spec):
@@ -363,33 +355,6 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	}
 	s.requireBuildTarget("AfterEach")
 	s.registry.appendAfterHook(fn)
-}
-
-// RandomSeed sets the seed for Paths() generation in this spec subtree: Sample's draws and the
-// Explore/ExploreCoverage/ExploreSmart explorers' candidate streams. It is the only randomness
-// go-specs owns — a Context carries no RNG of its own, so a spec body that needs randomness must
-// bring its own generator and seed it explicitly.
-func (s *Spec) RandomSeed(seed int64) {
-	if s != nil {
-		s.seed = seed
-		s.hasSeed = true
-	}
-}
-
-func (s *Spec) runPathWithContext(name string, gen *PathGenerator, _ interface{}, fn func(*Context)) {
-	if s == nil || fn == nil {
-		return
-	}
-	if c := s.compiler; c != nil {
-		c.SetPathGen(gen)
-		c.EmitIt(name, fn)
-		return
-	}
-	s.requireBuildTarget("Paths")
-	file, line := callerLocation(2)
-	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
-	s.registry.setPathGen(gen)
-	pop()
 }
 
 // parseItArgs extracts the optional last func(*Context) from args. Returns (nil, fn).

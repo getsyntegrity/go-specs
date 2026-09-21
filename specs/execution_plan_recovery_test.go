@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -18,10 +17,9 @@ func TestExecutionPlanRecoversPanicAndContinues(t *testing.T) {
 		},
 		ProgramStart: []int{0, 1},
 		ProgramLen:   []int{1, 1},
-		PathGens:     []*PathGenerator{nil, nil},
 	}
 	backend := &controlledBackend{}
-	runPlanSpecsInOrder(context.Background(), backend, nil, plan)
+	runPlanSpecsInOrder(backend, nil, plan)
 
 	if !ranSpec2 {
 		t.Fatal("expected spec2 to run after spec1 panicked, but it didn't — the panic aborted the whole plan")
@@ -44,7 +42,7 @@ func TestRunProgramAfterHookSurvivesBodyPanic(t *testing.T) {
 		{Code: OpBody, Fn: func(*Context) { panic("boom") }},
 		{Code: OpAfterHook, Fn: func(*Context) { afterRan = true }},
 	}
-	runProgram(program, ctx, nil)
+	runProgram(program, ctx)
 
 	if !afterRan {
 		t.Fatal("expected the after hook to run despite the body panic")
@@ -69,7 +67,7 @@ func TestRunProgramDoesNotDoubleReportExpectedAbort(t *testing.T) {
 		{Code: OpBody, Fn: func(c *Context) { c.backend.FailNow() }},
 		{Code: OpAfterHook, Fn: func(*Context) { afterRan = true }},
 	}
-	runProgram(program, ctx, nil)
+	runProgram(program, ctx)
 
 	if !backend.failNow {
 		t.Fatal("expected the backend to have recorded FailNow")
@@ -93,7 +91,7 @@ func TestRunProgramAfterHookPanicDoesNotStopSiblingAfterHooks(t *testing.T) {
 		{Code: OpAfterHook, Fn: func(*Context) { panic("after boom") }},
 		{Code: OpAfterHook, Fn: func(*Context) { secondAfterRan = true }},
 	}
-	runProgram(program, ctx, nil)
+	runProgram(program, ctx)
 
 	if !secondAfterRan {
 		t.Fatal("expected the second after hook to run despite the first one panicking")

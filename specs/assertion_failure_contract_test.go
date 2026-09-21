@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"context"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -209,7 +208,7 @@ func TestSpecResultEventFailedComesFromTheSameRecordAsTheSuiteCount(t *testing.T
 
 	rep := &recordingReporter{}
 	counter := &specCounter{EventReporter: rep}
-	runPlanSpecsInOrder(context.Background(), &planBackend{}, counter, plan)
+	runPlanSpecsInOrder(&planBackend{}, counter, plan)
 
 	var failedEvents []report.SpecResultEvent
 	for _, e := range rep.specFinished {

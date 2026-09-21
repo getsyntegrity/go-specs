@@ -5,8 +5,7 @@ package specs
 type OpCode uint8
 
 const (
-	OpSetPath    OpCode = iota // ctx.SetPathValues(path); path is passed at run time for path specs
-	OpBeforeHook               // before-each hook (compiler/ExecutionPlan)
+	OpBeforeHook OpCode = iota // before-each hook (compiler/ExecutionPlan)
 	OpBody                     // spec body
 	OpAfterHook                // after-each hook
 	OpRunSpec                  // bytecode: run spec body
@@ -15,7 +14,6 @@ const (
 )
 
 // Instruction is a single bytecode step. Fn is invoked for OpBeforeHook, OpBody, OpAfterHook.
-// For OpSetPath, the runner uses the path argument passed to runProgram; Fn may be nil.
 type Instruction struct {
 	Code OpCode
 	Fn   func(*Context)

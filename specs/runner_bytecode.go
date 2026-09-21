@@ -36,7 +36,6 @@ func (r *BytecodeRunner) Run(tb testing.TB) {
 	defer putTestBackend(backend)
 	ctx, release := acquireContext(backend)
 	defer release()
-	ctx.SetPathValues(PathValues{})
 
 	runBytecodeSequential(ctx, r.program.Code, r.program.SpecStarts)
 }
@@ -124,7 +123,6 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 		end := starts[si+1]
 		backend.specIndex = si
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
 		runBytecodeWorkerSpec(code, start, end, ctx, results, si)
 		ctx.Reset(nil)
 	}

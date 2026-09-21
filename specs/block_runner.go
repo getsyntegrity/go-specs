@@ -68,7 +68,6 @@ func (r *BlockRunner) Run(tb testing.TB) {
 	defer putTestBackend(backend)
 	ctx, release := acquireContext(backend)
 	defer release()
-	ctx.SetPathValues(PathValues{})
 
 	runBlocks(ctx, r.fns, r.blocks)
 }

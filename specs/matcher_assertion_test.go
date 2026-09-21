@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"context"
 	"fmt"
 	"testing"
 )
@@ -58,18 +57,6 @@ func TestExpectToMarksTheContextFailedSoFailFastAndReportersSeeIt(t *testing.T) 
 	}
 }
 
-func TestExpectToRecordsACoverageEdgeWhenTheMatcherPasses(t *testing.T) {
-	ctx, _ := newCapturedContext()
-	before := &Coverage{}
-	ctx.coverage = &Coverage{}
-
-	ctx.Expect(42).To(Equal(42))
-
-	if !ctx.coverage.HasNewCoverage(before) {
-		t.Fatal("expected the passing matcher path to record a coverage edge")
-	}
-}
-
 // The guards are what keep a misuse from panicking mid-suite; each one spends the Expectation and
 // returns without reporting.
 func TestExpectToIgnoresANilMatcher(t *testing.T) {
@@ -123,18 +110,6 @@ func TestExpectTToMarksTheContextFailedLikeTheUntypedPath(t *testing.T) {
 
 	if !ctx.hasFailed() {
 		t.Fatal("expected the context to be marked failed after a typed matcher failure")
-	}
-}
-
-func TestExpectTToRecordsACoverageEdgeWhenTheMatcherPasses(t *testing.T) {
-	ctx, _ := newCapturedContext()
-	before := &Coverage{}
-	ctx.coverage = &Coverage{}
-
-	ExpectT(ctx, true).To(BeTrue())
-
-	if !ctx.coverage.HasNewCoverage(before) {
-		t.Fatal("expected the passing typed matcher path to record a coverage edge")
 	}
 }
 
@@ -320,7 +295,7 @@ func runSpecThroughPlan(t *testing.T, body func(ctx *Context)) (*recordingReport
 
 	rep := &recordingReporter{}
 	counter := &specCounter{EventReporter: rep}
-	runPlanSpecsInOrder(context.Background(), &planBackend{}, counter, plan)
+	runPlanSpecsInOrder(&planBackend{}, counter, plan)
 	return rep, counter
 }
 

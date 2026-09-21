@@ -2,7 +2,6 @@
 package specs
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ type ExecutionPlan struct {
 	ProgramLen   []int
 	Names        []string
 	FullNames    []string
-	PathGens     []*PathGenerator
 	// PathScopes is the shared backing array holding the declared scope names that enclose each
 	// spec, laid out the same way Instructions is: PathScopeStart[i] and PathScopeLen[i] delimit
 	// spec i's window. The spec's own name is not repeated here — Names[i] already holds it, and
@@ -56,7 +54,6 @@ func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
 		ProgramLen:   make([]int, 0, estimatedSpecs),
 		Names:        make([]string, 0, estimatedSpecs),
 		FullNames:    make([]string, 0, estimatedSpecs),
-		PathGens:     make([]*PathGenerator, 0, estimatedSpecs),
 		// PathScopes is sized for distinct scope chains, not for one copy per spec: sibling specs
 		// share a window, so this grows with the shape of the tree rather than with the spec count.
 		PathScopes:     make([]string, 0, 16),
@@ -125,9 +122,6 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 		scratch.beforeFlat = append(scratch.beforeFlat, arena.BeforeHooks[nodeID]...)
 		scratch.afterFlat = append(scratch.afterFlat, arena.AfterHooks[nodeID]...)
 		scratch.program = scratch.program[:0]
-		if node.PathGen != nil {
-			scratch.program = append(scratch.program, Instruction{Code: OpSetPath, Fn: nil})
-		}
 		for _, h := range scratch.beforeFlat {
 			if h != nil {
 				scratch.program = append(scratch.program, Instruction{Code: OpBeforeHook, Fn: h})
@@ -147,7 +141,6 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 		plan.ProgramLen = append(plan.ProgramLen, len(scratch.program))
 		plan.Names = append(plan.Names, name)
 		plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
-		plan.PathGens = append(plan.PathGens, node.PathGen)
 		// scratch.path already has this spec's own name pushed as its last element (an ItNode is
 		// not a SuiteNode, so the push above applies to it too); the scopes are everything before
 		// it. An unnamed spec was never pushed, so for it the whole of scratch.path is scopes.
@@ -189,29 +182,20 @@ type CompiledSuite struct {
 	Reporter report.EventReporter
 }
 
-// Run executes all specs in the plan. Uses one context from the pool per spec (or per path iteration).
+// Run executes all specs in the plan. Uses one context from the pool per spec.
 func (s *CompiledSuite) Run(tb testing.TB) {
-	s.run(tb, nil)
-}
-
-func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalControllerResult {
 	if s == nil || s.Plan == nil || tb == nil || len(s.Plan.ProgramStart) == 0 {
-		return nil
-	}
-	if runCtx == nil {
-		var cancel context.CancelFunc
-		runCtx, cancel = executionContext(tb)
-		defer cancel()
+		return
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		return runPlanSpecsInOrder(runCtx, backend, nil, s.Plan)
+		runPlanSpecsInOrder(backend, nil, s.Plan)
+		return
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
-	// Paths() can execute a variable number of candidates per plan index, so the plan alone can't
-	// tell us the count up front.
+	// -run filtering can still make the reported count differ from len(plan.ProgramStart).
 	counter := &specCounter{EventReporter: s.Reporter}
 	name := s.Name
 	if name == "" {
@@ -219,7 +203,7 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	results := runPlanSpecsInOrder(runCtx, backend, counter, s.Plan)
+	runPlanSpecsInOrder(backend, counter, s.Plan)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:          name,
 		Time:          time.Now(),
@@ -228,7 +212,6 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 		FailedSpecs:   counter.failed,
 		FilteredSpecs: counter.filtered,
 	})
-	return results
 }
 
 // specCounter decorates an EventReporter to tally executed/failed/filtered specs for the enclosing
@@ -251,40 +234,21 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	c.EventReporter.SpecFinished(e)
 }
 
-func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
-	ctx := context.Background()
-	if contextual, ok := tb.(interface{ Context() context.Context }); ok && contextual.Context() != nil {
-		ctx = contextual.Context()
-	}
-	if timed, ok := tb.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, ok := timed.Deadline(); ok {
-			return context.WithDeadline(ctx, deadline)
-		}
-	}
-	return context.WithCancel(ctx)
-}
-
 // runPlanSpecsInOrder runs every spec in the plan once, in declaration order. The plan is already
 // flat — its hooks are compiled into each spec's own instruction range — so there is no group
 // nesting to walk here. Each spec still gets its own subtest when the backend wraps a real
 // *testing.T; that decision belongs to runSpecProgram, not to this loop.
-func runPlanSpecsInOrder(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
-	results := make([]proposalControllerResult, 0, len(plan.ProgramStart))
+func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
 	for i := 0; i < len(plan.ProgramStart); i++ {
-		results = append(results, runExecutionContext(runCtx, backend, rep, plan, i))
+		runExecution(backend, rep, plan, i)
 	}
-	return results
 }
 
-func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) proposalControllerResult {
-	return runExecutionContext(context.Background(), backend, rep, plan, i)
-}
-
-func runExecutionContext(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) proposalControllerResult {
+func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) {
 	start := plan.ProgramStart[i]
 	length := plan.ProgramLen[i]
 	if start+length > len(plan.Instructions) {
-		return proposalControllerResult{}
+		return
 	}
 	program := plan.Instructions[start : start+length]
 	name := specEventName(plan, i)
@@ -295,76 +259,11 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	if rep != nil {
 		path = specEventPath(plan, i)
 	}
-	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
-		gen := plan.PathGens[i]
-		seq := gen.sequence()
-		maxAttempts, maxAccepted, maxRejections := gen.bounds()
-		// wantsCoverage is true only for the two strategies that actually consume Coverage
-		// (CoverageExplorer/SmartExplorer's Feedback) — allocating and hitting a 64KB bitmap per
-		// candidate for Cartesian/Sample/plain-Explore, which never look at it, would be pure waste.
-		wantsCoverage := gen.mode == ExplorationGuided && (gen.strategy == strategyCoverage || gen.strategy == strategySmart)
-		// lastCoverage hands the Coverage collected by Execute to AdmitFeedback for the same
-		// candidate. proposalController.Run calls them back-to-back with no concurrency in between
-		// (see its doc comment: "no parallel execution option"), so a closure variable is safe —
-		// keeping Coverage out of proposalCandidate/proposalFeedback keeps the controller itself
-		// generic instead of coupling it to path-generation concerns.
-		var lastCoverage *Coverage
-		// Both per-candidate names are computed only when someone will actually read them, and the
-		// two predicates are hoisted out of the closure so the decision costs nothing per candidate.
-		// namesSubtests is false for a *testing.B or a fake backend, whose Run never opens a real
-		// subtest — there the name would be built and thrown away on the hot path (see
-		// runIsolatedCase). reports is false when the plan runs without a reporter.
-		namesSubtests := backendNamesSubtests(backend)
-		reports := rep != nil
-		specIdentity := ""
-		if namesSubtests {
-			specIdentity = specIdentityName(plan, i)
-		}
-		return newProposalController(proposalControllerConfig{
-			MaxAttempts:   maxAttempts,
-			MaxAccepted:   maxAccepted,
-			MaxRejections: maxRejections,
-			Propose:       seq.next,
-			Execute: func(candidate proposalCandidate) bool {
-				// Every executed candidate is its own spec execution and reports its own
-				// SpecStarted/SpecFinished — not just the last accepted one. Hiding rejected-
-				// then-retried or intermediate Explore candidates would misrepresent how many
-				// executions actually happened, how long the suite really took, and where a
-				// failure occurred.
-				//
-				// Each execution is identified by this candidate, not by a shared literal: the
-				// reporter gets the framework's own formatted values plus the executed ordinal,
-				// and the subtest gets the -run-safe form. See candidate_identity.go for the
-				// contract both names satisfy.
-				reportName := name
-				if reports {
-					reportName = generatedCaseReportName(gen, name, candidate)
-				}
-				started := reportSpecStarted(rep, reportName, path)
-				var cov *Coverage
-				if wantsCoverage {
-					cov = &Coverage{}
-				}
-				caseName := ""
-				if namesSubtests {
-					caseName = generatedCaseName(gen, specIdentity, candidate)
-				}
-				result := runIsolatedCase(backend, caseName, program, candidate.Values, cov)
-				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
-				lastCoverage = cov
-				return !result.Failed
-			},
-			AdmitFeedback: func(feedback proposalFeedback) {
-				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed, lastCoverage)
-			},
-		}).Run(runCtx)
-	}
 	ctx, release := acquireContext(backend)
 	defer release()
 	started := reportSpecStarted(rep, name, path)
 	message, output, ran := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})
-	return proposalControllerResult{}
 }
 
 // runSpecProgram runs program for one ExecutionPlan spec against ctx, isolated in its own subtest
@@ -390,15 +289,13 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
-		message, output = runProgram(program, ctx, nil)
+		message, output = runProgram(program, ctx)
 		return message, output, true
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
-		message, output = runProgram(program, ctx, nil)
+		message, output = runProgram(program, ctx)
 		return message, output, true
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
@@ -417,8 +314,7 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
-		ctx.SetPathValues(PathValues{})
-		message, output = runProgram(program, ctx, nil)
+		message, output = runProgram(program, ctx)
 	})
 	if parked {
 		// The body called the unsupported ctx.T.Parallel(). ctx is still Reset to that subtest's
@@ -548,10 +444,7 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, r
 // first-write-wins convention parallelStep/parallelBackend already use. Both stay "" when the spec
 // didn't panic at all, including when it failed via runtime.Goexit (a real testing.T.Fatalf/FailNow)
 // — recover() cannot observe that case; see specResult's doc comment.
-func runProgram(program []Instruction, ctx *Context, path *PathValues) (message, output string) {
-	if path != nil {
-		ctx.SetPathValues(*path)
-	}
+func runProgram(program []Instruction, ctx *Context) (message, output string) {
 	var after []Instruction
 	for _, inst := range program {
 		if inst.Code == OpAfterHook && inst.Fn != nil {
@@ -598,112 +491,3 @@ func isExpectedAbort(recovered any) bool {
 // isolatedCaseAbort lets a controlled backend stop one isolated case without
 // terminating the parent test.
 type isolatedCaseAbort struct{}
-
-type isolatedCaseResult struct {
-	Failed       bool
-	Panic        any
-	Path         PathValues
-	ContextReset bool
-}
-
-// backendNamesSubtests reports whether backend will actually open a named Go subtest, i.e. whether
-// a generated candidate's subtest name is going to be read by anyone. Only a runnableBackend over a
-// real *testing.T does; a *testing.B or a fake backend runs the case inline and discards the name
-// (see runnableBackend.Run and runIsolatedCase). Callers use this to skip building the name at all
-// on those paths, which is what keeps the benchmark backends' allocation profile unchanged.
-func backendNamesSubtests(backend testBackend) bool {
-	real, ok := backend.(*runnableBackend)
-	if !ok {
-		return false
-	}
-	_, isT := real.tb.(*testing.T)
-	return isT
-}
-
-// runIsolatedCase executes real generated cases in a subtest so Fatal and FailNow
-// terminate only that case while preserving the parent test's failure semantics. cov, when
-// non-nil, is wired into the Context so assertions executed by program record real coverage
-// into it (see Context.RecordCoverage) — the caller owns the pointer and reads it back directly,
-// nothing needs to be copied out before the Context is returned to the pool.
-//
-// name identifies this one candidate (generatedCaseName; "" when backendNamesSubtests said nobody
-// would read it). It used to be the literal "generated" for every candidate of every spec, which
-// left `go test -v` showing an undifferentiated "generated#01" run and made a generated case
-// unselectable with -run (#103). As with the sequential path, the name is presentation only: it is
-// never read back from t.Name(), and reported identity comes from the plan and the generator.
-func runIsolatedCase(backend testBackend, name string, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
-	if real, ok := backend.(*runnableBackend); ok {
-		t, isT := real.tb.(*testing.T)
-		if !isT {
-			real.Run(name, func(tb testing.TB) {
-				caseBackend := asTestBackend(tb)
-				defer putTestBackend(caseBackend)
-				defer func() { result.Failed = result.Failed || tb.Failed() }()
-				result = runIsolatedCaseDirect(caseBackend, program, path, cov)
-			})
-			return result
-		}
-		// Generated cases open real subtests too, so ctx.T.Parallel() can park one here exactly as it
-		// can in a hand-written spec body (#172). This case's Context is acquired inside
-		// runIsolatedCaseDirect and released by a defer that a parked goroutine never reaches, so it
-		// is already abandoned rather than recycled; what is missing without this guard is the
-		// failure itself — result would stay zero and the case would report as passed.
-		_, parked := runSubtestGuardingParallel(t, name, func(subT *testing.T) {
-			caseBackend := asTestBackend(subT)
-			defer putTestBackend(caseBackend)
-			defer func() { result.Failed = result.Failed || subT.Failed() }()
-			result = runIsolatedCaseDirect(caseBackend, program, path, cov)
-		})
-		if parked {
-			failUnsupportedSpecBodyParallel(t, nil, name)
-		}
-		return result
-	}
-	return runIsolatedCaseDirect(backend, program, path, cov)
-}
-
-func runIsolatedCaseDirect(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
-	ctx, release := acquireContext(backend)
-	ctx.coverage = cov
-	ctx.SetPathValues(path)
-	result.Path = ctx.Path().clone()
-
-	var after []Instruction
-	for _, inst := range program {
-		if inst.Code == OpAfterHook && inst.Fn != nil {
-			after = append(after, inst)
-		}
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if _, aborted := recovered.(isolatedCaseAbort); !aborted {
-				result.Panic = recovered
-			}
-			result.Failed = true
-		}
-		for _, inst := range after {
-			func() {
-				defer func() {
-					if recovered := recover(); recovered != nil && result.Panic == nil {
-						result.Panic = recovered
-						result.Failed = true
-					}
-				}()
-				inst.Fn(ctx)
-			}()
-		}
-		result.Failed = result.Failed || ctx.hasFailed()
-		release()
-		result.ContextReset = true
-	}()
-
-	for _, inst := range program {
-		if inst.Code == OpAfterHook {
-			continue
-		}
-		if inst.Fn != nil {
-			inst.Fn(ctx)
-		}
-	}
-	return result
-}

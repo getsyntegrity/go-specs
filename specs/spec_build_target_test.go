@@ -19,7 +19,6 @@ func TestZeroValueSpecPanicsOnEveryRegistration(t *testing.T) {
 		{"When", func(s *Spec) { s.When("adding numbers", func(*Spec) {}) }},
 		{"BeforeEach", func(s *Spec) { s.BeforeEach(func(ctx *Context) {}) }},
 		{"AfterEach", func(s *Spec) { s.AfterEach(func(ctx *Context) {}) }},
-		{"Paths", func(s *Spec) { s.runPathWithContext("explores", &PathGenerator{}, nil, func(ctx *Context) {}) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
