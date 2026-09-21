@@ -8,6 +8,35 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Removed
 
+- **Breaking (targeted for v0.2.0).** Removed the entire path-generation / property-exploration
+  subsystem from `specs`. This deletes the following exported API surface, with no replacement
+  provided in-package:
+  - `Spec.Paths(...)` and the `PathBuilder` type it returned, along with every builder method
+    (`Values`, `IntRange`, `Bool`, and the rest of the dimension-declaration API).
+  - `PathValues` and its accessors (`Int`, `Bool`, `Value`, `Hash`, etc.), `PathGenerator`,
+    `PathVar`, `PathFilter`.
+  - The candidate strategies `Sample(n)`, `Seed(n)`, `Explore(n)`, `ExploreCoverage(n)`,
+    `ExploreSmart(n)`, and `Spec.RandomSeed`, which existed only to seed them.
+  - `Coverage` (the path-exploration coverage bitmap) and its methods (`HasNewCoverage`, etc.),
+    `CoverageExplorer`, `SmartExplorer`, `Corpus`, `Mutator` (`NewMutator`, `MutateInt`, ...), and
+    `Shrinker`.
+  - The package-level `SetPathGen` helper and the `OpSetPath` bytecode opcode.
+  - `Context`'s path/coverage-recording state and methods (removed ahead of this entry).
+
+  This is a deliberate, approved breaking removal (issue
+  [#204](https://github.com/getsyntegrity/go-specs/issues/204)), not a deprecation: every symbol
+  above is gone, not hidden or aliased. go-specs remains a BDD/spec-style testing framework; it no
+  longer ships combinatorial path exploration, coverage-guided fuzzing, or shrinking. For that kind
+  of input-space exploration, use a dedicated property-testing library such as
+  [`rapid`](https://github.com/flyingmutant/rapid) or [`gopter`](https://github.com/leanovate/gopter)
+  — both are called as regular Go functions and compose fine inside a `Describe`/`It` body. Go's
+  built-in `go test -fuzz` does not compose the same way: a fuzz target is a top-level `FuzzXxx`
+  function that `go test -fuzz` drives on its own, not something invocable from inside a spec body,
+  so it runs alongside go-specs tests as a separate top-level target rather than from within one.
+  `report.Coverage` (the unrelated Go-test-coverage reporting feature added
+  for issue #141) and `ExecutionPlan.PathScopes`/the `Describe`/`When`/`It` breadcrumb-path naming
+  used in `SpecStartEvent.Path` are unaffected by this removal — those are separate features that
+  happen to share the words "path" and "coverage".
 - **Breaking.** Removed the exported legacy pointer-based declaration tree from `specs`: the `Node`
   struct, `PrintTree(*Node, int, io.Writer)` and `Walk(*Node, func(*Node))`. The registry has built
   into `NodeArena` — a flat, index-based arena — since the arena migration, and nothing in the module
@@ -31,11 +60,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   therefore nil for the entire life of every spec the runners execute, `randomInt64` had no
   production caller, and the `TestContextRNGDeterminism` test that appeared to guarantee its
   determinism was vacuous: its spec body never ran, so it compared two untouched zero-filled slices
-  and would have passed against any implementation. `Spec.RandomSeed` is unaffected and remains the
-  single seam for seeded behaviour — it seeds `Paths()` generation (`Sample` draws and the
-  `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams), which it always did; its doc comment
-  claimed it also seeded the context RNG, which was never true. A spec body that needs randomness
-  brings its own generator and seeds it explicitly. ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+  and would have passed against any implementation. `Spec.RandomSeed` is unaffected by *this* removal
+  and remained, at the time, the single seam for seeded behaviour — it seeded `Paths()` generation
+  (`Sample` draws and the `Explore`/`ExploreCoverage`/`ExploreSmart` candidate streams); its doc
+  comment claimed it also seeded the context RNG, which was never true. A spec body that needs
+  randomness brings its own generator and seeds it explicitly. `Spec.RandomSeed` itself, along with
+  `Paths()` and the rest of the path-generation subsystem it seeded, was later removed in the same
+  unreleased window — see the "path-generation / property-exploration subsystem" entry above (issue
+  [#204](https://github.com/getsyntegrity/go-specs/issues/204)).
+  ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
 - Removed the unexported `newSpec` constructor, which that deleted test was the only caller of
   anywhere in the module. It returned a `Spec` carrying neither a compiler nor a registry nor an
   arena, so `Describe` on the result had nothing to build into and silently did nothing — which is
@@ -432,7 +465,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
-- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. See [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md#generated-candidate-identity). ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
+- Generated `Paths()` candidates now run under a subtest name that identifies them — `<spec breadcrumb>/case-<n>[-seed<s>][-<values>]` — instead of the shared literal `generated`, which Go disambiguated as `generated#01`. `go test -v` failure output names the candidate and the value that failed, and a Cartesian or `Sample` candidate can be re-run on its own with `go test -run` by pasting the name back in; the candidate part of the name carries no regexp metacharacter other than `.`. Selecting a single `Explore`/`ExploreCoverage`/`ExploreSmart` candidate with `-run` is not supported, because the explorer needs the feedback of the candidates `-run` skips — the values embedded in the name mean a diverging candidate does not match the pattern rather than silently running under it. Names are bounded (16 runes per value, 64 per values block, plus a `~<hash>` suffix when truncated); values that would render a pointer address, or that a bounded reflective walk could not fully rule out as one (depth/element budget exhausted, or a map — whose entry order is randomized per process — holding an unstable value), collapse to a stable kind word, and a value type redacts itself from test names by implementing `fmt.Stringer`. This candidate-naming scheme documented the since-removed path-generation subsystem (see the "Removed" entry above); `docs/EXECUTION_MODEL.md` no longer carries the section this historically linked to. ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
 - Reporter events for generated candidates now carry the candidate's own name — `includes tier [tier=pro] #2` — instead of the bare spec name repeated per candidate, so each executed candidate is distinguishable in report output and the ordinal links it to its `go test -v` subtest. ([#103](https://github.com/getsyntegrity/go-specs/issues/103))
 - Sequential specs now run as a subtest named by their full `Describe`/`When`/`It` breadcrumb
   instead of the leaf `It` name alone, in both sequential execution models (`Describe`/`Spec` and

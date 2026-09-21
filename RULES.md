@@ -16,5 +16,4 @@ specs.When(...)
 specs.It(...)
 ctx.Expect(...).ToEqual(...)
 ctx.Expect(...).ToBeNil(...)
-specs.Paths(...)
 ```
