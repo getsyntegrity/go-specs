@@ -3,7 +3,7 @@
 > **Historical record.** This document captures a point-in-time comparison against
 > `main` as it stood for issue #127. It predates the removal of the path-generation/
 > property-exploration subsystem in [#204](https://github.com/getsyntegrity/go-specs/issues/204)
-> (`Paths`, `PathBuilder`, `PathGenerator`, `PathVar`, `IntRangeVar`, and related
+> (`Paths`, `PathBuilder`, `PathGenerator`, `PathVar`, `PathBuilder.IntRange`, and related
 > exploration machinery), which the table below still lists as present — that
 > capability is no longer part of go-specs. See [CHANGELOG.md](../CHANGELOG.md) for
 > the current migration note. Nothing else here is affected.

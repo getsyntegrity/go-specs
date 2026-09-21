@@ -300,5 +300,5 @@ default:
 
 Property-based/combinatorial exploration (`Paths`, `PathBuilder`, `Explore*`, generated-candidate
 subtests) is removed as a breaking change targeted for v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md)
-for the migration note, which covers the tradeoffs between `go test -fuzz`, `rapid`, and `gopter` as
-replacements.
+for the migration note, which recommends `rapid` or `gopter` as replacements and explains why the
+built-in `go test -fuzz` does not compose the same way.
