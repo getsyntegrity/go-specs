@@ -296,6 +296,9 @@ default:
 }
 ```
 
+## Property-based exploration removed
+
 Property-based/combinatorial exploration (`Paths`, `PathBuilder`, `Explore*`, generated-candidate
-subtests) was removed in v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md) for the migration note, which
-covers the tradeoffs between `go test -fuzz`, `rapid`, and `gopter` as replacements.
+subtests) is removed as a breaking change targeted for v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md)
+for the migration note, which covers the tradeoffs between `go test -fuzz`, `rapid`, and `gopter` as
+replacements.
