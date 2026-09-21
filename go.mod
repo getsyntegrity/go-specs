@@ -3,7 +3,7 @@ module github.com/getsyntegrity/go-specs
 go 1.25.14
 
 require (
-	github.com/onsi/gomega v1.43.0
+	github.com/onsi/gomega v1.43.1
 	github.com/stretchr/testify v1.12.1
 )
 
