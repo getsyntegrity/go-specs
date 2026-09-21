@@ -297,6 +297,5 @@ default:
 ```
 
 Property-based/combinatorial exploration (`Paths`, `PathBuilder`, `Explore*`, generated-candidate
-subtests) was removed in v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md) for the migration note. For
-input-space exploration or shrinking, use `go test -fuzz`, [`rapid`](https://github.com/flyingmutant/rapid),
-or [`gopter`](https://github.com/leanovate/gopter) alongside go-specs.
+subtests) was removed in v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md) for the migration note, which
+covers the tradeoffs between `go test -fuzz`, `rapid`, and `gopter` as replacements.

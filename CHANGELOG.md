@@ -27,10 +27,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   [#204](https://github.com/getsyntegrity/go-specs/issues/204)), not a deprecation: every symbol
   above is gone, not hidden or aliased. go-specs remains a BDD/spec-style testing framework; it no
   longer ships combinatorial path exploration, coverage-guided fuzzing, or shrinking. For that kind
-  of input-space exploration, use Go's built-in `go test -fuzz`, or a dedicated property-testing
-  library such as [`rapid`](https://github.com/flyingmutant/rapid) or
-  [`gopter`](https://github.com/leanovate/gopter) alongside go-specs — `Describe`/`It` bodies compose
-  fine with any of them. `report.Coverage` (the unrelated Go-test-coverage reporting feature added
+  of input-space exploration, use a dedicated property-testing library such as
+  [`rapid`](https://github.com/flyingmutant/rapid) or [`gopter`](https://github.com/leanovate/gopter)
+  — both are called as regular Go functions and compose fine inside a `Describe`/`It` body. Go's
+  built-in `go test -fuzz` does not compose the same way: a fuzz target is a top-level `FuzzXxx`
+  function that `go test -fuzz` drives on its own, not something invocable from inside a spec body,
+  so it runs alongside go-specs tests as a separate top-level target rather than from within one.
+  `report.Coverage` (the unrelated Go-test-coverage reporting feature added
   for issue #141) and `ExecutionPlan.PathScopes`/the `Describe`/`When`/`It` breadcrumb-path naming
   used in `SpecStartEvent.Path` are unaffected by this removal — those are separate features that
   happen to share the words "path" and "coverage".
