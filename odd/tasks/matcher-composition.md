@@ -163,3 +163,42 @@ check-go-version OK, `make fmt-check` no drift, `go build ./...` clean, `go vet 
 `go test -count=1 ./...` every package ok, `make bench-smoke` PASS. The six new regression tests pass.
 Independent parent re-reproduction after the fix: no panic in any combinator, and `Any` sibling call
 count unchanged at 0 during `FailureMessage`.
+
+## Review round 2 (PR #225, second P2 reopened)
+
+The reviewer rejected memoization (correctly) but also rejected the contract-documentation fix, and
+was right to. The evidence: `MatchErrorAs` ships in this package and deliberately has a side effect —
+`errors.As(actual, target)` populates `target`. Reproduced before agreeing: inside
+`All(MatchErrorAs(&target), Equal("something else"))` failing on the second entry, the counter went
+**1 → 2**. A "matchers must be free of side effects" contract that a shipped matcher violates on
+purpose, added retroactively to a public interface that already had implementers, is not a fix.
+
+**Implemented design (the reviewer's):** `assert.Evaluator` (optional interface) and
+`assert.Evaluate(m Matcher, actual any) (matched bool, failure string)`. The combinators implement
+`Evaluate` with one pass and per-invocation locals — no fields, no memoization, no shared state, so a
+composite stays immutable and parallel-safe. Nesting recurses through the same seam. `Not` asks its
+sub only for `Match`, since a failing sub means `Not` succeeds and the sub's message would be built
+for nobody. `Match` and `FailureMessage` are untouched, still separately callable, and their wording
+is pinned byte-for-byte against `Evaluate`'s.
+
+**Performance, measured, not assumed.** The first implementation routed both `To` methods through
+`assert.Evaluate` and cost ~30% on `BenchmarkMatcher_GoSpecs`, the flagship benchmark. The delegated
+writer attributed it entirely to the reflect-based typed-nil check; that was only part of it. A/B on
+the same machine, back to back:
+
+| Variant | ns/op | allocs |
+| --- | --- | --- |
+| Baseline (`HEAD`, before this change) | 10.17–10.65 | 0 |
+| Through `assert.Evaluate`, with reflect nil check | 12.88–14.71 | 0 |
+| Through `assert.Evaluate`, without reflect nil check | 11.62–12.97 | 0 |
+| `Evaluator` branch inline in `To` (shipped) | 10.40–10.71 | 0 |
+
+So ~1.2ns was reflect and ~1.8ns was the extra call plus assertion. The shipped variant keeps
+`m.Match` on the hot path and is within noise of baseline. Allocations stayed at 0 in every variant —
+that part is contractual.
+
+**Known limitation, stated rather than buried:** because `To` no longer routes through
+`assert.Evaluate`, a **typed** nil handed directly to `To` still panics, exactly as on every release
+before this one. Inside a composite both nil forms are caught, and `assert.Evaluate` catches both for
+direct callers. Closing that last gap costs the reflect check on every assertion (~12%); worth a
+separate issue and a separate decision, not a silent tax here.
