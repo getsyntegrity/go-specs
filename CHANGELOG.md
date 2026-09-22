@@ -94,7 +94,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   not an exclusion list. `fn` may be `nil`, since a pending spec often has no body yet. Every report
   keeps pending separate from skipped: new `report.StatusPending`, `SpecResultEvent.Pending`,
   `SuiteEndEvent.PendingSpecs` and `Totals.Pending`; JSON gains `status: "pending"` and a `pending`
-  totals field (`SchemaVersion` stays `"1"`, since both are additive); JUnit XML has no pending
+  totals field, and `report.SchemaVersion` becomes `"2"` because `"pending"` is a new value in the closed `status` vocabulary that a v1 consumer switching exhaustively over it would misread (`ShardSchemaVersion` stays `"1"`); JUnit XML has no pending
   state, so a pending case renders `<skipped message="pending"/>` and counts toward the `skipped`
   attribute, exactly like `Filtered`; plain text and HTML gain a pending count, and HTML a
   `status-pending` style. Like `Skip`/`Focus`, `Pending` exists only on the Builder/`ItWith` engine,

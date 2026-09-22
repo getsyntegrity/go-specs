@@ -3,9 +3,14 @@ package report
 import "time"
 
 // SchemaVersion is the current version of NormalizedReport's JSON shape (render_json.go).
-// A consumer must ignore unknown fields and may key behavior off this value; it changes only
-// when a field's meaning changes incompatibly, never for an additive field.
-const SchemaVersion = "1"
+// A consumer must ignore unknown fields and may key behavior off this value; it changes when a
+// field's meaning changes incompatibly — which includes a new value in a closed vocabulary such
+// as Status, since a consumer switching exhaustively over it would misread the document — but
+// never for a new field.
+//
+// History: "1" — initial shape. "2" — adds StatusPending ("pending") to the status vocabulary and
+// the pending totals field (issue #208).
+const SchemaVersion = "2"
 
 // Status is a case's normalized outcome. It is derived from SpecResultEvent (see
 // classifyStatus in collector.go) and is the single vocabulary every renderer maps from —
