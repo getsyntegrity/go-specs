@@ -56,6 +56,12 @@ func (m *equalMatcher) FailureMessage(actual any) string {
 	return EqualFailureMessage(m.expected, actual)
 }
 
+// Description implements Describer so composites (Not, All, Any) can name this matcher in their own
+// failure messages without quoting a FailureMessage that may describe a comparison that succeeded.
+func (m *equalMatcher) Description() string {
+	return fmt.Sprintf("equal to %v", m.expected)
+}
+
 // EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. It is
 // exported so the DSL's inlined comparison paths report identically to the matcher — a divergence
 // between the two wordings is exactly as confusing as a divergence between the two comparisons.
@@ -100,6 +106,11 @@ func (m *notEqualMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected %v not to equal %v", actual, m.expected)
 }
 
+// Description implements Describer; see equalMatcher.Description.
+func (m *notEqualMatcher) Description() string {
+	return fmt.Sprintf("not equal to %v", m.expected)
+}
+
 // BeNil returns a matcher that expects actual to be nil.
 func BeNil() Matcher {
 	return &beNilMatcher{}
@@ -113,6 +124,11 @@ func (m *beNilMatcher) Match(actual any) bool {
 
 func (m *beNilMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected nil, got %v (%T)", actual, actual)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *beNilMatcher) Description() string {
+	return "nil"
 }
 
 // BeTrue returns a matcher that expects actual to be the bool true.
@@ -131,6 +147,11 @@ func (m *beTrueMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected true, got %v (%T)", actual, actual)
 }
 
+// Description implements Describer; see equalMatcher.Description.
+func (m *beTrueMatcher) Description() string {
+	return "true"
+}
+
 // BeFalse returns a matcher that expects actual to be the bool false.
 func BeFalse() Matcher {
 	return &beFalseMatcher{}
@@ -145,6 +166,11 @@ func (m *beFalseMatcher) Match(actual any) bool {
 
 func (m *beFalseMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected false, got %v (%T)", actual, actual)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *beFalseMatcher) Description() string {
+	return "false"
 }
 
 // Contain returns a matcher that expects actual (string or slice) to contain expected.
@@ -210,6 +236,11 @@ func (m *containExpectedMatcher) Match(actual any) bool {
 
 func (m *containExpectedMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *containExpectedMatcher) Description() string {
+	return fmt.Sprintf("containing %v", m.expected)
 }
 
 // ValuesEqual reports whether actual satisfies expected (for use by other packages).

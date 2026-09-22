@@ -83,6 +83,11 @@ func (m *matchErrorMatcher) FailureMessage(actual any) string {
 	return errorMismatchMessage(m.target, actualErr)
 }
 
+// Description implements Describer; see equalMatcher.Description in matcher.go.
+func (m *matchErrorMatcher) Description() string {
+	return fmt.Sprintf("an error matching %s", describeError(m.target))
+}
+
 // MatchErrorAs returns a matcher that expects actual to be an error assignable to target via
 // errors.As. target must be a non-nil pointer to a type implementing error, or to an interface —
 // the same contract errors.As requires. On a match, target is populated.
@@ -120,6 +125,12 @@ func (m *matchErrorAsMatcher) FailureMessage(actual any) string {
 	}
 	return fmt.Sprintf("expected %s to unwrap to %T — errors.As(actual, target) is false",
 		describeError(actualErr), m.target)
+}
+
+// Description implements Describer; see equalMatcher.Description in matcher.go. It reuses %T on
+// m.target directly, the same rendering FailureMessage above already uses for the same field.
+func (m *matchErrorAsMatcher) Description() string {
+	return fmt.Sprintf("an error assignable to %T", m.target)
 }
 
 // isErrorAsTarget mirrors errors.As's own target validity rules, so the matcher can reject an
