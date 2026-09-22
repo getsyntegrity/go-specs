@@ -87,6 +87,23 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `specs.Not(m)`, `specs.All(ms...)` and `specs.Any(ms...)` (re-exported from `assert`), which let a
+  call site combine existing matchers logically instead of hand-writing a new matcher type for every
+  combination — the same thing `NotEqual` already is: `Equal` negated by hand, in its own type, with
+  its own message. `All`/`Any` build their failure message from each failing sub-matcher's own
+  `FailureMessage`, indexed by position, so a composite failure still names exactly which entries are
+  responsible instead of reporting "combined matcher failed" — #149/#200 established that a matcher's
+  message is the product, and a composite is no exception. `Not` cannot reuse that trick: when `Not`
+  fails, its sub-matcher *succeeded*, so quoting `sub.FailureMessage` would print a message describing
+  a comparison that did not fail. `Not` instead names its sub-matcher through the new `assert.Describer`
+  interface (`Description() string`), an optional interface every built-in matcher now implements
+  (`Equal(43)` → `"equal to 43"`, `BeNil()` → `"nil"`, and so on) so nesting reads as English at every
+  depth; a matcher that does not implement it falls back to `%T` rather than leaking an unexported type
+  name such as `*assert.equalMatcher`. Nil/empty semantics are pinned explicitly and never panic:
+  `All()` is vacuously `true` (the AND identity), `Any()` is `false` (the OR identity), and a nil entry
+  anywhere always fails the whole composite by position — including inside `Any`, where it is never
+  masked by a sibling that happens to match. See [docs/DSL.md](docs/DSL.md), "Matcher composition:
+  `Not`, `All`, `Any`". ([#209](https://github.com/getsyntegrity/go-specs/issues/209))
 - `report/coordination`, the producer side of multi-package reporting: every package process in one
   `go test ./...` invocation publishes a single isolated shard, which a later finalize step merges.
   A package opts in with one call in `TestMain` — `coordination.ShardWriterFromEnv(importPath)` —

@@ -77,17 +77,17 @@ standing rule), runner `go test ./...` — never `-race` locally, never the work
 
 ## Tasks
 
-- [ ] **T1** — Pin the semantics with failing tests: `assert/composite_matchers_test.go` covering
+- [x] **T1** — Pin the semantics with failing tests: `assert/composite_matchers_test.go` covering
   `Match` truth tables, every message branch (which sub-matcher failed, indices, nesting), and the
   nil/empty table above. Check: `go test ./assert/...` fails to compile / fails RED for the right
   reason. Route: delegated (writer).
-- [ ] **T2** — Implement `Not`, `All`, `Any` and the `Describer` fallback in
+- [x] **T2** — Implement `Not`, `All`, `Any` and the `Describer` fallback in
   `assert/composite_matchers.go`; add `Description()` to the existing matchers. Check:
   `go test ./assert/...` green. Route: delegated (same writer).
-- [ ] **T3** — Re-export `Not`, `All`, `Any` from `specs/matcher.go` with a DSL-level test proving
+- [x] **T3** — Re-export `Not`, `All`, `Any` from `specs/matcher.go` with a DSL-level test proving
   a composite failure reaches the reporter intact. Check: `go test ./...` green. Route: delegated
   (same writer).
-- [ ] **T4** — Document: matcher-composition section in `docs/DSL.md`, README matcher list,
+- [x] **T4** — Document: matcher-composition section in `docs/DSL.md`, README matcher list,
   `CHANGELOG.md` Unreleased/Added entry. Check: doc examples compile as written. Route: delegated
   (docs writer).
 
@@ -100,3 +100,30 @@ branches have focused tests; nil/empty semantics explicitly defined.
 
 - Branch `feat/209-matcher-composition`, worktree
   `.claude/worktrees/issue-209-matcher-composition`, based on `develop` at `2af992d`.
+- **T1–T3 done**, commit `84b6f34` (`feat(assert): add Not, All and Any matcher combinators (#209)`).
+  Observed: `go build ./...` clean, `go vet ./assert/... ./specs/...` clean, `gofmt -l` empty,
+  `go test -count=1 ./assert/... ./specs/...` → `ok assert 0.005s`, `ok specs 1.034s`,
+  `go test ./...` → every package `ok`.
+- One parent correction on top of the writer's output: `anyMatcher.Match` evaluated every entry on
+  every call so it could detect a later nil. Split into a nil scan followed by a short-circuiting
+  match loop — same semantics, and the common nil-free case stops at the first hit again.
+- Settled message formats (pinned by tests):
+  - `All: #1: "expected 2 to equal 1"; #2: "expected true, got 2 (int)"` — only failing entries listed.
+  - `Any: #1: "expected 3 to equal 1"; #2: "expected 3 to equal 2"`.
+  - `expected 5 not to be equal to 43` — `Not` names its sub-matcher via `Description()`.
+  - `Not: sub-matcher at position 1 is nil`; `All: #2: nil matcher (never matches)`;
+    `Any: no matchers were given, so nothing could match`; and, when a nil masks a sibling,
+    `Any: #1: would have matched (equal to 1), but a nil entry forces this Any to fail; #2: nil matcher (never matches)`.
+- **T4 done.** Added a "Matcher composition: `Not`, `All`, `Any`" section to `docs/DSL.md` (under
+  `## Expect and EqualTo`, right after "Errors compare by identity, and the comparison is oriented"):
+  runnable examples of `Not`/`All`/`Any`, the indexed `All`/`Any` failure-message format, why `Not`
+  names its sub-matcher via `Description()` instead of quoting a `FailureMessage` that would describe
+  a comparison that succeeded, the `Describer` interface and its `%T` fallback, and the full nil/empty
+  table with reasoning. Added `Not`/`All`/`Any` to the two places README.md already lists matchers
+  ("Rich assertions" bullet, "assert" package bullet in Architecture overview) without restructuring
+  either section. Added one `### Added` entry under `## [Unreleased]` in `CHANGELOG.md`, in the style
+  of the existing entries, linking issue #209. Every Go snippet was checked against
+  `assert/composite_matchers_test.go`'s pinned wording and against the real `specs`/`assert`
+  signatures, not invented. No `.go` file touched.
+  Observed: `~/sdk/go1.26.6/bin/go build ./...` clean; `~/sdk/go1.26.6/bin/go test ./...` → every
+  package `ok` (no `-race`, no workbench).
