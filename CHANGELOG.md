@@ -87,6 +87,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `Builder.PendingIt(name, fn)` and `specs.Pending(fn) SpecFn` (routed through `ItWith`, mirroring
+  `SkipIt`/`Skip`), a spec state distinct from skipped: a pending spec's body never runs either, but
+  it means "the specification exists, the implementation does not" rather than "intentionally not
+  executed" — the difference a red/green TDD workflow needs to treat a pending list as a to-do list,
+  not an exclusion list. `fn` may be `nil`, since a pending spec often has no body yet. Every report
+  keeps pending separate from skipped: new `report.StatusPending`, `SpecResultEvent.Pending`,
+  `SuiteEndEvent.PendingSpecs` and `Totals.Pending`; JSON gains `status: "pending"` and a `pending`
+  totals field (`SchemaVersion` stays `"1"`, since both are additive); JUnit XML has no pending
+  state, so a pending case renders `<skipped message="pending"/>` and counts toward the `skipped`
+  attribute, exactly like `Filtered`; plain text and HTML gain a pending count, and HTML a
+  `status-pending` style. Like `Skip`/`Focus`, `Pending` exists only on the Builder/`ItWith` engine,
+  not on `Spec`/`Describe` — see [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md). See
+  [docs/DSL.md](docs/DSL.md), "Builder.PendingIt and Pending", and
+  [docs/REPORTING.md](docs/REPORTING.md)'s status vocabulary.
+  ([#208](https://github.com/getsyntegrity/go-specs/issues/208))
 - `specs.Not(m)`, `specs.All(ms...)` and `specs.Any(ms...)` (re-exported from `assert`), which let a
   call site combine existing matchers logically instead of hand-writing a new matcher type for every
   combination — the same thing `NotEqual` already is: `Equal` negated by hand, in its own type, with

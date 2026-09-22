@@ -121,6 +121,24 @@ b.ItWith("only this one runs", specs.Focus(func(ctx *specs.Context) { /* ... */ 
 
 `ItWith` routes a `Skip`-wrapped `fn` to `SkipIt` (the spec's name is preserved and reported as skipped, but its body never compiles into a step) and a `Focus`-wrapped `fn` to `FIt` (if any spec in the suite is focused, only focused specs are compiled). `It` previously accepted a `SpecFn` too, dispatching on its dynamic type at runtime; that dispatch is removed. Migrate `b.It("x", specs.Skip(fn))` / `b.It("x", specs.Focus(fn))` to `b.ItWith("x", specs.Skip(fn))` / `b.ItWith("x", specs.Focus(fn))`.
 
+## Builder.PendingIt and Pending: specs that exist but aren't implemented yet
+
+`SkipIt`/`Skip` say "intentionally not executed" — an environment gap, a temporary exclusion. `PendingIt` and `Pending(fn)` say something different: "the specification exists, the implementation does not." Both never run the spec's body, but every report keeps the two apart, so a pending list reads as a to-do list rather than an exclusion list ([#208](https://github.com/getsyntegrity/go-specs/issues/208)).
+
+```go
+b := specs.NewBuilder()
+b.PendingIt("rejects a withdrawal larger than the balance", nil) // no implementation yet
+b.ItWith("charges a late fee", specs.Pending(func(ctx *specs.Context) {
+    // sketch of the assertion, not wired up yet
+}))
+```
+
+`PendingIt`'s `fn` may be `nil` — a pending spec often has no body at all yet — and even when given a body, that body never runs; the identity is preserved so the compiled `Program` can still report it. `ItWith("name", specs.Pending(fn))` behaves exactly like `PendingIt("name", fn)`, mirroring how `specs.Skip`/`specs.Focus` route through `ItWith`.
+
+When any spec in the suite is focused (`FIt`/`Focus`), a pending spec is dropped by the same filter that drops skipped and plain specs — a suite mid-TDD with both a focused spec and a pending one does not still report the pending spec. `RunShard`/`RunShardWithReporter` carry a group's pending specs to whichever shard that group lands on, exactly like skipped specs.
+
+`Pending` is only on the Builder/`ItWith` path today, alongside `Skip`/`Focus` — see `docs/EXECUTION_ENGINES.md` for why `Spec`/`Describe` has none of the three.
+
 ## Expect and EqualTo
 
 Assertions use the context. Two main styles:
