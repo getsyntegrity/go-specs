@@ -91,6 +91,10 @@ standing rule), runner `go test ./...` — never `-race` locally, never the work
   `CHANGELOG.md` Unreleased/Added entry. Check: doc examples compile as written. Route: delegated
   (docs writer).
 
+- [x] **T5** — Review fallout from PR #225: typed-nil panic guard and the re-evaluation diagnostics.
+  Check: regression tests RED first, then `go test -count=1 ./...` green. Route: delegated (writer),
+  parent reproduced both defects first and verified both fixes independently.
+
 ## Acceptance criteria (from #209)
 
 Generic negation, all/AND, any/OR combinators; messages identify the failing sub-matcher(s); message
@@ -127,3 +131,35 @@ branches have focused tests; nil/empty semantics explicitly defined.
   signatures, not invented. No `.go` file touched.
   Observed: `~/sdk/go1.26.6/bin/go build ./...` clean; `~/sdk/go1.26.6/bin/go test ./...` → every
   package `ok` (no `-race`, no workbench).
+
+## Review round 1 (PR #225, changes requested)
+
+Two defects were reported and **both reproduced before any fix**, in a throwaway package:
+
+1. **Typed nil panicked.** A declared-but-unassigned pointer matcher (`var m *customMatcher`) is not
+   `== nil` once inside the `Matcher` interface, so all three combinators called into a nil receiver:
+   `runtime error: invalid memory address or nil pointer dereference` for `Not`, `All` and `Any`.
+   That contradicted the documented guarantee that no nil case panics. The repo already had
+   `assert.IsNilValue` (`assert/matcher.go:268`) doing exactly this reflect-based check for `BeNil`;
+   the fix is `isNilMatcher(m) = m == nil || IsNilValue(m)`, applied at every nil comparison in the
+   file. Missing it the first time was carelessness, not an exotic edge case.
+2. **`FailureMessage` re-ran sub-matchers.** `Expectation.To` calls `Match` and then, on failure,
+   `FailureMessage`, so composites evaluate entries twice. Observed against a matcher returning false
+   then true: `All.FailureMessage` emitted `All: no sub-matcher explains the failure` — the
+   "unreachable" placeholder, reachable — and `Any.FailureMessage` ran a sibling that `Match` never
+   reached (calls 0 → 1) because of the nil scan.
+
+Fixes: `Any` with a nil entry now evaluates nothing and only describes its siblings; `All`/`Any` name
+an observed non-determinism instead of a placeholder that reads like a framework bug; the `Matcher`
+interface now documents that implementations must be deterministic and side-effect-free.
+
+**Rejected alternative: memoizing per-entry results in the composite.** It removes the second pass,
+but makes a composite stateful — one shared across parallel specs could build its message from
+another goroutine's `actual`. Trading a rare misleading message for a data race, in a repo whose CI
+runs the race detector, is a bad trade.
+
+Post-fix verification (after rebasing onto `develop` at `7ceeb68`, which carries #224):
+check-go-version OK, `make fmt-check` no drift, `go build ./...` clean, `go vet ./...` clean,
+`go test -count=1 ./...` every package ok, `make bench-smoke` PASS. The six new regression tests pass.
+Independent parent re-reproduction after the fix: no panic in any combinator, and `Any` sibling call
+count unchanged at 0 during `FailureMessage`.
