@@ -290,9 +290,25 @@ type Describer interface{ Description() string }
 
 Every built-in matcher implements it — `Equal(43)` describes itself as `"equal to 43"`, `BeNil()` as `"nil"`, `BeTrue()` as `"true"`, and so on — and so do `Not`, `All` and `Any` themselves, which is what makes nesting above read as English instead of `%T` soup. A third-party matcher that does not implement `Describer` falls back to its Go type name via `%T` (e.g. `*yourpkg.customMatcher`) rather than printing nothing. The rejected alternative was printing `%T` unconditionally for every matcher, built-in included, which leaks unexported type names such as `*assert.equalMatcher` into user-facing failure output — `Description()` exists so the built-ins never have to leak that.
 
-#### A matcher must be deterministic and side-effect-free
+#### Single-pass evaluation: `assert.Evaluate` and `assert.Evaluator`
 
-`ctx.Expect(actual).To(m)` calls `m.Match(actual)` once to decide the result, and — only on failure — calls `m.FailureMessage(actual)` separately to build the message. `All` and `Any` re-run each sub-matcher's `Match` inside that second call, to work out which entries are still responsible for the failure, so a composite may end up calling a sub-matcher's `Match` twice for one assertion. A `Matcher` implementation must therefore be deterministic and free of side effects: one that answers differently the second time can make `All`/`Any` report a different verdict, or a misleading message, than the one `Match` actually decided on. If a sub-matcher ever does answer differently on its second call, `All`/`Any` name that explicitly rather than emit a placeholder — see the nil/empty table below.
+`ctx.Expect(actual).To(m)` and `ExpectT(ctx, actual).To(m)` evaluate `m` **exactly once** per assertion: once to decide the result, and, only on failure, once more to build the failure message. `assert.Evaluate(m, actual)` is the exported spelling of that rule, for a composite driving its own children and for anyone calling a matcher outside the DSL.
+
+The two `To` methods apply the rule inline rather than calling `assert.Evaluate` themselves: they prefer `m`'s `Evaluator` implementation when it has one, and otherwise call `Match` and — only when it reports false — `FailureMessage`. The behaviour is identical; the reason for the duplication is that `ExpectT(ctx, x).To(m)` is a zero-allocation path with a benchmark and an allocation contract, and routing every ordinary matcher through an extra function call cost about 2ns per assertion for no behavioural gain. One difference is worth knowing: `assert.Evaluate` reports a nil matcher — typed or untyped — as a failure, while `To` keeps its long-standing early return for an untyped nil `m` and, like every release before this one, does not guard a **typed** nil handed straight to it. Inside a composite, both forms are caught.
+
+```go
+// Evaluator is an optional interface a Matcher may implement to produce its verdict and its failure
+// message in a single pass over its inputs.
+type Evaluator interface {
+	Evaluate(actual any) (matched bool, failure string)
+}
+
+func Evaluate(m Matcher, actual any) (matched bool, failure string)
+```
+
+`Not`, `All` and `Any` all implement `Evaluator`, so a composite evaluates each of its own sub-matchers exactly once per assertion too — however deeply it nests. This matters because a matcher may deliberately carry a side effect: `MatchErrorAs`, in this very package, calls `errors.As(actual, target)`, which populates `target` as part of matching. An earlier version of this framework asked `Match` to decide the result and, on failure, called `FailureMessage` separately, with `All`/`Any` re-running each sub-matcher's `Match` inside that second call to work out which entries were still responsible — which meant a failing composite evaluated every sub-matcher **twice**, and populated `target` twice for one failing assertion (issue [#225](https://github.com/getsyntegrity/go-specs/issues/225)). `assert.Evaluate` is the fix: it is the one seam the DSL drives a matcher through, and it guarantees exactly one evaluation.
+
+`Match` and `FailureMessage` are unchanged and remain separately callable — they are still part of the `Matcher` interface, and third-party code may call either directly. A hand-rolled matcher does not need to implement `Evaluator` to be evaluated correctly through `assert.Evaluate`: the default path for a matcher that does not implement it already calls `Match` once and, only on failure, `FailureMessage` once — one evaluation already. Implementing `Evaluator` is only useful for a composite (or a matcher wrapping other matchers) that would otherwise need to decide and explain in two separate passes.
 
 #### Nil and empty semantics
 

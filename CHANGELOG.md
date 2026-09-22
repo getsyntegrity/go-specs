@@ -106,11 +106,25 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   declared-but-unassigned pointer matcher passed as a `Matcher` (e.g. `var m *customMatcher;
   assert.Not(m)`), which an `== nil` check alone misses and which would otherwise panic the first
   time the composite called into it. `FailureMessage` may re-run a sub-matcher's `Match` a second
-  time (once to decide the result, again to build the message), so `Matcher` implementations must be
-  deterministic and free of side effects; `All`/`Any` name a sub-matcher that answers differently on
-  its second call explicitly rather than reporting a misleading placeholder, and `Any` never
-  re-evaluates a sibling that a nil entry already doomed. See [docs/DSL.md](docs/DSL.md), "Matcher
-  composition: `Not`, `All`, `Any`". ([#209](https://github.com/getsyntegrity/go-specs/issues/209))
+  time (once to decide the result, again to build the message) when called directly by third-party
+  code, and `All`/`Any` name a sub-matcher that answers differently on its second call explicitly
+  rather than reporting a misleading placeholder; `Any` never re-evaluates a sibling that a nil entry
+  already doomed. The DSL itself no longer drives a matcher through that doubling pair: `To` now
+  evaluates `m` exactly once per assertion, applying the rule the new
+  `assert.Evaluate(m, actual) (matched bool, failure string)` exports (the two `To` methods spell it
+  out inline rather than calling it, so the zero-allocation typed path keeps calling `Match` directly
+  — measured at about 2ns per assertion, for no behavioural difference), and `Not`/`All`/`Any` all implement the new optional
+  `assert.Evaluator` interface (`Evaluate(actual any) (bool, string)`) so a composite evaluates each of
+  its own sub-matchers exactly once too, however deeply it nests. This closes a real defect
+  ([#225](https://github.com/getsyntegrity/go-specs/issues/225)): `MatchErrorAs`, shipped in this same
+  package, calls `errors.As(actual, target)` as a deliberate side effect of matching, and the old
+  doubling path populated `target` twice for one failing composite assertion. `Match` and
+  `FailureMessage` are unchanged and stay separately callable — both remain part of the public
+  `Matcher` interface — and a matcher does not need to implement `Evaluator` to be evaluated correctly
+  through `assert.Evaluate`: the default path for one that does not already calls `Match` once and,
+  only on failure, `FailureMessage` once. See [docs/DSL.md](docs/DSL.md), "Matcher composition: `Not`,
+  `All`, `Any`". ([#209](https://github.com/getsyntegrity/go-specs/issues/209),
+  [#225](https://github.com/getsyntegrity/go-specs/issues/225))
 - `report/coordination`, the producer side of multi-package reporting: every package process in one
   `go test ./...` invocation publishes a single isolated shard, which a later finalize step merges.
   A package opts in with one call in `TestMain` — `coordination.ShardWriterFromEnv(importPath)` —

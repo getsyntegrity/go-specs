@@ -11,11 +11,25 @@ func EqualComparable[T comparable](a, b T) bool {
 	return a == b
 }
 
-// Matcher is the interface for assertion matchers used with Expect(...).To(m). A composite matcher
-// (Not, All, Any; see assert/composite_matchers.go) may call Match more than once for a single
-// assertion — once to decide the result, and again, only on failure, to build FailureMessage — so a
-// Matcher implementation must be deterministic and free of side effects, or it may report a
-// different verdict, or a misleading message, the second time it is asked.
+// Matcher is the interface for assertion matchers used with Expect(...).To(m). The DSL evaluates a
+// matcher exactly once per assertion: once to decide the result, and, only on failure, once more to
+// build the failure message — the same shape Match/FailureMessage always had. Evaluate (see
+// assert/evaluate.go) is that rule exported for direct callers; the two To methods in specs apply it
+// inline so the zero-allocation typed path keeps calling Match without an extra hop, which costs
+// nothing in behaviour and about 2ns per assertion if routed through the function instead.
+// A composite (Not, All, Any; see assert/composite_matchers.go) implements Evaluate's
+// optional Evaluator interface so it, too, evaluates each of its own sub-matchers exactly once per
+// assertion, however deeply it nests, rather than once to decide and again, on its own failure, to
+// build its message.
+//
+// That guarantee matters because a matcher may deliberately carry a side effect: MatchErrorAs, in
+// this very package, calls errors.As(actual, target), which populates target as part of matching.
+// Evaluating a matcher twice for one assertion — which the old Match-then-FailureMessage composite
+// path did — would populate it twice; the single-pass Evaluate seam is what keeps that to once. Match
+// and FailureMessage stay separately callable exactly as before, since both remain part of this
+// interface and third-party code may call either directly; a Matcher implementation does not need to
+// implement Evaluator to be evaluated correctly through Evaluate — the default path already calls
+// Match once and, only on failure, FailureMessage once, which is one evaluation already.
 type Matcher interface {
 	Match(actual any) bool
 	FailureMessage(actual any) string

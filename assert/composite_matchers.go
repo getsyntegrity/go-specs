@@ -11,16 +11,25 @@ import (
 // the product, so a composite that reports "combined matcher failed" is not an acceptable answer —
 // each combinator below names the sub-matcher(s) actually responsible.
 //
-// FailureMessage may re-run sub-matchers: Match decides the boolean result once, and — only after a
-// failure — FailureMessage is called separately to build the message, which for All/Any means
-// evaluating the entries again to see which are still responsible (see the Matcher doc comment in
-// matcher.go). Memoizing each entry's result inside the composite, so it only ever runs once, was
-// rejected: it would make a composite value stateful, so a composite shared across parallel specs
-// could build its message from another goroutine's actual, and it would add mutable state to a value
-// that is otherwise immutable and safe to share. The cost instead falls on Matcher implementations,
-// which the interface now documents as required to be deterministic and free of side effects. The one
-// place this file avoids the re-run entirely is Any's nil-entry branch below: a nil sibling already
-// dooms the composite, so evaluating the others would buy no diagnostic value.
+// Match and FailureMessage below are unchanged from before, and still re-run sub-matchers exactly as
+// they always have: Match decides the boolean result once, and — only after a failure — a separate
+// call to FailureMessage evaluates the entries again to see which are still responsible. They stay
+// that way because both are part of the public Matcher interface and third-party code may call
+// either directly. What changed (#225) is that the DSL (specs/context.go) no longer drives a
+// composite through that pair at all: it calls assert.Evaluate, and each combinator below also
+// implements the optional Evaluator interface (assert/evaluate.go) to answer in a single pass
+// instead, keeping every intermediate result in local variables of that one invocation — no fields,
+// no memoization, no mutable state on the matcher value, so a composite stays immutable and safe to
+// share across parallel specs. That single pass is not just an optimization: MatchErrorAs's
+// errors.As(actual, target) call populates target as a side effect of matching, and the old
+// Match-then-FailureMessage doubling populated it twice for one failing assertion inside a composite
+// — a contract-breaking bug a doc comment cannot fix, since MatchErrorAs is a shipped matcher with a
+// deliberate side effect. A prior fix attempt tried documenting "matchers must be deterministic and
+// side-effect-free" on the Matcher interface instead; that was wrong, because it asked MatchErrorAs
+// to stop existing rather than fixing the composite that called it twice. Any's Evaluate below keeps
+// the one place the old code already avoided a re-run: once a nil sibling has already doomed the
+// composite, the others are only described, never evaluated — running them would buy no diagnostic
+// value and could trigger a side effect for nothing.
 
 // Describer is an optional interface a Matcher may implement to name itself in composite failures.
 // Not needs this because, when it fails, its sub-matcher *succeeded* — calling sub.FailureMessage
@@ -92,6 +101,24 @@ func (n *notMatcher) Description() string {
 	return "not " + describeMatcher(n.sub)
 }
 
+// Evaluate implements Evaluator: it calls n.sub.Match exactly once, and — deliberately — never
+// n.sub.FailureMessage. When the sub fails, Not succeeds and there is nothing wrong to describe.
+// When the sub matches, Not fails, but quoting sub.FailureMessage would print a message about a
+// comparison that succeeded (see the Description-based wording in FailureMessage above); building
+// that message would also cost a call this result never uses, on a sub-matcher that may have a side
+// effect. n.sub is deliberately routed through Match directly rather than through the package-level
+// Evaluate: either way is exactly one call into the sub, but going through Evaluate here would risk
+// building a failure string that is then thrown away.
+func (n *notMatcher) Evaluate(actual any) (bool, string) {
+	if isNilMatcher(n.sub) {
+		return false, "Not: sub-matcher at position 1 is nil"
+	}
+	if n.sub.Match(actual) {
+		return false, fmt.Sprintf("expected %v not to be %s", actual, describeMatcher(n.sub))
+	}
+	return true, ""
+}
+
 // --- All -------------------------------------------------------------------------------------------
 
 // All returns a matcher that succeeds when every one of ms matches (logical AND). A nil entry never
@@ -150,6 +177,35 @@ func (a *allMatcher) FailureMessage(actual any) string {
 
 func (a *allMatcher) Description() string {
 	return "all of [" + strings.Join(describeEntries(a.ms), ", ") + "]"
+}
+
+// Evaluate implements Evaluator: one pass over a.ms, calling the package-level Evaluate for each
+// entry so a nested composite is evaluated single-pass too, all the way down. Every entry is
+// consulted exactly once — unlike Match, this does not stop at the first failure, because the point
+// of Evaluate here is the same one FailureMessage's second pass used to serve: naming every entry
+// responsible, not just the first. Formatting matches FailureMessage's wording exactly: a nil entry
+// prints unquoted ("#N: nil matcher (never matches)"), everything else is quoted ("#N: %q").
+func (a *allMatcher) Evaluate(actual any) (bool, string) {
+	if len(a.ms) == 0 {
+		return true, ""
+	}
+	var parts []string
+	for i, m := range a.ms {
+		matched, failure := Evaluate(m, actual)
+		if matched {
+			continue
+		}
+		idx := i + 1
+		if isNilMatcher(m) {
+			parts = append(parts, fmt.Sprintf("#%d: %s", idx, failure))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("#%d: %q", idx, failure))
+	}
+	if len(parts) == 0 {
+		return true, ""
+	}
+	return false, "All: " + strings.Join(parts, "; ")
 }
 
 // --- Any -------------------------------------------------------------------------------------------
@@ -237,6 +293,49 @@ func (a *anyMatcher) FailureMessage(actual any) string {
 
 func (a *anyMatcher) Description() string {
 	return "any of [" + strings.Join(describeEntries(a.ms), ", ") + "]"
+}
+
+// Evaluate implements Evaluator. Empty and nil-entry handling mirror FailureMessage exactly (see its
+// comments above): with a nil entry, nothing is evaluated at all — Match's own nil scan short-circuits
+// before the match loop, so a sibling here was never asked either, and this reports the same
+// "not evaluated" wording rather than running it just to build a message. Without a nil entry, this
+// walks a.ms once through the package-level Evaluate (so a nested composite stays single-pass too),
+// returning as soon as one entry matches — Any needs no more than the first — otherwise collecting
+// every entry's failure, quoted, exactly like FailureMessage's non-nil branch.
+func (a *anyMatcher) Evaluate(actual any) (bool, string) {
+	if len(a.ms) == 0 {
+		return false, "Any: no matchers were given, so nothing could match"
+	}
+	nilAt := -1
+	for i, m := range a.ms {
+		if isNilMatcher(m) {
+			nilAt = i
+			break
+		}
+	}
+	if nilAt >= 0 {
+		parts := make([]string, 0, len(a.ms))
+		for i, m := range a.ms {
+			idx := i + 1
+			if isNilMatcher(m) {
+				parts = append(parts, fmt.Sprintf("#%d: nil matcher (never matches)", idx))
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("#%d: %s — not evaluated, the nil entry at #%d forces this Any to fail",
+				idx, describeMatcher(m), nilAt+1))
+		}
+		return false, "Any: " + strings.Join(parts, "; ")
+	}
+
+	parts := make([]string, 0, len(a.ms))
+	for i, m := range a.ms {
+		matched, failure := Evaluate(m, actual)
+		if matched {
+			return true, ""
+		}
+		parts = append(parts, fmt.Sprintf("#%d: %q", i+1, failure))
+	}
+	return false, "Any: " + strings.Join(parts, "; ")
 }
 
 // describeEntries renders each of ms for a composite's own Description(). describeMatcher already

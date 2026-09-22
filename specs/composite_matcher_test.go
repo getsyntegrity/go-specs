@@ -46,3 +46,59 @@ func TestCompositeMatcherFailureReachesTheCompiledPlanReporter(t *testing.T) {
 		t.Errorf("expected SuiteEndEvent.FailedSpecs=1, got %d", counter.failed)
 	}
 }
+
+// composite225AsCountingTarget/composite225AsCountingSource reproduce, through the real DSL entry
+// points (ctx.Expect(...).To and ExpectT(...).To — not assert.Evaluate directly, which
+// assert/evaluate_test.go already covers), the #225 regression: PR #225's review reopened the
+// defect that All/Any evaluated every sub-matcher twice for one failing assertion (once for
+// Match, again inside FailureMessage), which populates a matcher with a deliberate side effect —
+// MatchErrorAs's errors.As(actual, target) — twice instead of once.
+type composite225AsCountingTarget struct{ msg string }
+
+func (t *composite225AsCountingTarget) Error() string { return t.msg }
+
+type composite225AsCountingSource struct{ calls *int }
+
+func (e *composite225AsCountingSource) Error() string { return "composite225 source error" }
+
+func (e *composite225AsCountingSource) As(target any) bool {
+	*e.calls++
+	tp, ok := target.(**composite225AsCountingTarget)
+	if !ok {
+		return false
+	}
+	*tp = &composite225AsCountingTarget{msg: "converted"}
+	return true
+}
+
+func TestExpectToEvaluatesMatchErrorAsExactlyOnceInsideAll(t *testing.T) {
+	ctx, b := newCapturedContext()
+	calls := 0
+	src := &composite225AsCountingSource{calls: &calls}
+	var target *composite225AsCountingTarget
+
+	ctx.Expect(any(src)).To(All(MatchErrorAs(&target), Equal("something else")))
+
+	if !b.failed {
+		t.Fatal("expected the backend to record a failure")
+	}
+	if calls != 1 {
+		t.Fatalf("MatchErrorAs's As method was called %d times through ctx.Expect(...).To(All(...)), want exactly 1", calls)
+	}
+}
+
+func TestExpectTToEvaluatesMatchErrorAsExactlyOnceInsideAll(t *testing.T) {
+	ctx, b := newCapturedContext()
+	calls := 0
+	src := &composite225AsCountingSource{calls: &calls}
+	var target *composite225AsCountingTarget
+
+	ExpectT[any](ctx, src).To(All(MatchErrorAs(&target), Equal("something else")))
+
+	if !b.failed {
+		t.Fatal("expected the backend to record a failure")
+	}
+	if calls != 1 {
+		t.Fatalf("MatchErrorAs's As method was called %d times through ExpectT(...).To(All(...)), want exactly 1", calls)
+	}
+}
