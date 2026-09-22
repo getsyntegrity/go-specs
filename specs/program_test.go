@@ -217,7 +217,7 @@ func TestProgram_SkipRemoval(t *testing.T) {
 func TestProgram_SkipWithHelper(t *testing.T) {
 	var order []string
 	b := NewBuilder()
-	b.It("wrapped skip", Skip(func(*Context) { order = append(order, "skipped") }))
+	b.ItWith("wrapped skip", Skip(func(*Context) { order = append(order, "skipped") }))
 	b.It("runs", func(*Context) { order = append(order, "runs") })
 	prog := b.Build()
 	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
@@ -495,7 +495,7 @@ func TestFocusWrapper(t *testing.T) {
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })
-	b.It("B", Focus(func(*Context) { order = append(order, "B") }))
+	b.ItWith("B", Focus(func(*Context) { order = append(order, "B") }))
 	b.It("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
 	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {

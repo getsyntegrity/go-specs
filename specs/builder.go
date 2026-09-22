@@ -175,24 +175,9 @@ func (b *Builder) AfterEach(fn func(*Context)) {
 
 // It compiles one spec: prepend all BeforeEach (outer to inner), append the spec, append all AfterEach (inner to outer).
 // Order is deterministic; emitted at build time via pending.
-// fn may be func(*Context) or SpecFn (e.g. It("name", Skip(fn)) or It("name", Focus(fn))).
-func (b *Builder) It(name string, fn interface{}) {
+// For a SpecFn produced by Skip or Focus, use ItWith instead.
+func (b *Builder) It(name string, fn func(*Context)) {
 	if fn == nil {
-		return
-	}
-	if s, ok := fn.(SpecFn); ok {
-		if s.Skip {
-			b.SkipIt(name, s.Fn)
-			return
-		}
-		if s.Focus {
-			b.FIt(name, s.Fn)
-			return
-		}
-		fn = s.Fn
-	}
-	f, ok := fn.(func(*Context))
-	if !ok || f == nil {
 		return
 	}
 	b.ensureScope()
@@ -202,10 +187,25 @@ func (b *Builder) It(name string, fn interface{}) {
 		fullName:   b.fullName(name),
 		scopeNames: slices.Clone(b.scopeNames),
 		before:     b.emitBefore(),
-		spec:       step(f),
+		spec:       step(fn),
 		after:      b.emitAfter(),
 		hookKey:    b.hookKey(),
 	})
+}
+
+// ItWith compiles one spec from a SpecFn, routing to the registration Skip/Focus asked for:
+// Skip(fn) behaves like SkipIt(name, fn), Focus(fn) behaves like FIt(name, fn), and a plain SpecFn
+// (constructed directly, with neither flag set) behaves like It(name, fn.Fn).
+func (b *Builder) ItWith(name string, fn SpecFn) {
+	if fn.Skip {
+		b.SkipIt(name, fn.Fn)
+		return
+	}
+	if fn.Focus {
+		b.FIt(name, fn.Fn)
+		return
+	}
+	b.It(name, fn.Fn)
 }
 
 // SkipIt registers a spec that is skipped at compile time: fn is never compiled into any step (it
