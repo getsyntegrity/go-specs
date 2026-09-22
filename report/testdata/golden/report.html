@@ -16,6 +16,7 @@
   .status-failed { background: #fde8e8; color: #b3261e; }
   .status-error { background: #fde8e8; color: #b3261e; }
   .status-skipped, .status-filtered { background: #f0f0f0; color: #555; }
+  .status-pending { background: #eaf1fb; color: #2b5797; }
   .diagnostics { white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: #444; margin: 0.2rem 0 0.6rem 0; }
   .coverage-bar { display: inline-block; width: 80px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; vertical-align: middle; margin-right: 0.4rem; }
   .coverage-fill { display: block; height: 8px; background: #1a7f37; }
@@ -30,6 +31,7 @@
   <span>Error: <strong>1</strong></span>
   <span>Skipped: <strong>1</strong></span>
   <span>Filtered: <strong>1</strong></span>
+  <span>Pending: <strong>0</strong></span>
   <span>Duration: <strong>0.019s</strong></span>
 </div>
 
@@ -42,6 +44,7 @@
   <span>error=1</span>
   <span>skipped=1</span>
   <span>filtered=0</span>
+  <span>pending=0</span>
   <span>duration=0.015s</span>
 </div>
 <table>
@@ -85,6 +88,7 @@ main.crash()
   <span>error=0</span>
   <span>skipped=0</span>
   <span>filtered=1</span>
+  <span>pending=0</span>
   <span>duration=0.004s</span>
 </div>
 <table>

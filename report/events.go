@@ -13,10 +13,11 @@ type SuiteEndEvent struct {
 	Name          string
 	Time          time.Time
 	Duration      time.Duration // elapsed time between this suite's SuiteStartEvent and this event
-	TotalSpecs    int           // passed + failed + skipped + filtered
+	TotalSpecs    int           // passed + failed + skipped + filtered + pending
 	FailedSpecs   int
 	SkippedSpecs  int
 	FilteredSpecs int // specs excluded by external test selection (e.g. `go test -run`) before their body ran
+	PendingSpecs  int // compile-time PendingIt/Pending specs: declared but not implemented, body never ran
 }
 
 // SpecStartEvent captures the start of an individual spec (It/Then).
@@ -47,7 +48,12 @@ type SpecResultEvent struct {
 	// Skipped is a decision the suite itself made (XIt/Skip), Filtered is a decision made outside it.
 	// A spec is never both Skipped and Filtered.
 	Filtered bool
-	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped or Filtered
+	// Pending is true for a compile-time PendingIt/Pending spec: the specification exists but its
+	// implementation does not. Body never ran, Duration is always 0, and Failed is always false —
+	// same shape as Skipped — but the cause differs: Skipped is "intentionally not executed",
+	// Pending is "not implemented yet". A spec is never more than one of Skipped/Filtered/Pending.
+	Pending  bool
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped, Filtered or Pending
 	Message  string        // short failure summary; empty when not Failed, and also empty for an
 	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the
 	// goroutine right there, before the message this event would carry is ever built (see

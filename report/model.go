@@ -18,6 +18,10 @@ const (
 	StatusError    Status = "error"   // recovered panic or other infrastructure failure
 	StatusSkipped  Status = "skipped" // compile-time XIt/Skip; body never ran
 	StatusFiltered Status = "filtered"
+	// StatusPending is a compile-time PendingIt/Pending spec: the specification exists but its
+	// implementation does not, distinct from Skipped (intentionally not executed). Body never ran,
+	// exactly like Skipped and Filtered; see events.go's SpecResultEvent.Pending.
+	StatusPending Status = "pending"
 )
 
 // Case is one normalized spec result: an executed It, or a generated candidate.
@@ -38,7 +42,7 @@ type Case struct {
 	Output   string // full output/stack trace, when the source event carried one
 }
 
-// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered.
+// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
 type Totals struct {
 	Total    int
 	Passed   int
@@ -46,6 +50,7 @@ type Totals struct {
 	Error    int
 	Skipped  int
 	Filtered int
+	Pending  int
 }
 
 func (t *Totals) add(s Status) {
@@ -61,6 +66,8 @@ func (t *Totals) add(s Status) {
 		t.Skipped++
 	case StatusFiltered:
 		t.Filtered++
+	case StatusPending:
+		t.Pending++
 	}
 }
 

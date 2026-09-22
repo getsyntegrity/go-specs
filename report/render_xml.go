@@ -62,13 +62,15 @@ type junitSkipped struct {
 // RenderXML writes r as JUnit-compatible XML: one <testsuites> containing one <testsuite> per
 // Suite, each carrying the module's coverage as deterministic <properties> (see
 // coverageProperties) and one <testcase> per Case, mapped per the table in issue #141 —
-// Failed -> <failure>, Error -> <error>, Skipped/Filtered -> <skipped>.
+// Failed -> <failure>, Error -> <error>, Skipped/Filtered -> <skipped>. Pending has no JUnit
+// equivalent, so it renders as <skipped message="pending"/> and folds into the same skipped
+// attribute, exactly as Filtered does — see renderJUnitCase and issue #208.
 func RenderXML(w io.Writer, r NormalizedReport) error {
 	doc := junitTestSuites{
 		Tests:    r.Execution.Total,
 		Failures: r.Execution.Failed,
 		Errors:   r.Execution.Error,
-		Skipped:  r.Execution.Skipped + r.Execution.Filtered,
+		Skipped:  r.Execution.Skipped + r.Execution.Filtered + r.Execution.Pending,
 		Time:     formatSeconds(r.Duration),
 	}
 	props := coverageProperties(r.Coverage)
@@ -78,7 +80,7 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 			Tests:      s.Totals.Total,
 			Failures:   s.Totals.Failed,
 			Errors:     s.Totals.Error,
-			Skipped:    s.Totals.Skipped + s.Totals.Filtered,
+			Skipped:    s.Totals.Skipped + s.Totals.Filtered + s.Totals.Pending,
 			Time:       formatSeconds(s.Duration),
 			Properties: props,
 		}
@@ -111,6 +113,8 @@ func renderJUnitCase(suiteName string, c Case) junitTestCase {
 		tc.Skipped = &junitSkipped{}
 	case StatusFiltered:
 		tc.Skipped = &junitSkipped{Message: "filtered"}
+	case StatusPending:
+		tc.Skipped = &junitSkipped{Message: "pending"}
 	}
 	return tc
 }

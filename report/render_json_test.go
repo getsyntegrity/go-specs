@@ -65,6 +65,41 @@ func TestRenderJSONNilPathRendersAsEmptyArray(t *testing.T) {
 	}
 }
 
+// TestRenderJSONPendingStatus proves a pending case renders status:"pending" and is counted in
+// the totals' pending field, distinct from skipped and filtered.
+func TestRenderJSONPendingStatus(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 1, Pending: 1},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 1, Pending: 1},
+			Cases:  []Case{{Name: "not implemented yet", Status: StatusPending}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, r); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+
+	var doc jsonReport
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if doc.Execution.Pending != 1 {
+		t.Fatalf("execution.pending = %d, want 1", doc.Execution.Pending)
+	}
+	if len(doc.Suites) != 1 || len(doc.Suites[0].Cases) != 1 {
+		t.Fatalf("got %+v, want one suite with one case", doc.Suites)
+	}
+	if doc.Suites[0].Cases[0].Status != "pending" {
+		t.Fatalf("case status = %q, want %q", doc.Suites[0].Cases[0].Status, "pending")
+	}
+	if doc.Suites[0].Totals.Pending != 1 {
+		t.Fatalf("suite totals.pending = %d, want 1", doc.Suites[0].Totals.Pending)
+	}
+}
+
 // TestRenderJSONUnknownFieldsIgnorable proves a consumer decoding into a struct with only a
 // subset of fields does not fail — the forward-compatibility promise the issue requires.
 func TestRenderJSONUnknownFieldsIgnorable(t *testing.T) {

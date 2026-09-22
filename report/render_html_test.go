@@ -48,6 +48,31 @@ func TestRenderHTMLEscapesUnsafeContent(t *testing.T) {
 	}
 }
 
+// TestRenderHTMLShowsPendingStatus proves a pending case gets its own status-pending CSS class and
+// its count surfaces in the summary totals.
+func TestRenderHTMLShowsPendingStatus(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 1, Pending: 1},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 1, Pending: 1},
+			Cases:  []Case{{Name: "not implemented yet", Status: StatusPending}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "status-pending") {
+		t.Fatalf("expected a status-pending CSS class, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Pending: <strong>1</strong>") {
+		t.Fatalf("expected the summary to show Pending: 1, got:\n%s", out)
+	}
+}
+
 func TestRenderHTMLShowsSummaryAndCoverage(t *testing.T) {
 	var buf bytes.Buffer
 	if err := RenderHTML(&buf, sampleReport()); err != nil {

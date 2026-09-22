@@ -36,7 +36,7 @@ func (r *Reporter) SuiteFinished(e SuiteEndEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.w != nil {
-		_, _ = fmt.Fprintf(r.w, "SuiteFinished %s duration=%s skipped=%d\n", e.Name, e.Duration, e.SkippedSpecs)
+		_, _ = fmt.Fprintf(r.w, "SuiteFinished %s duration=%s skipped=%d pending=%d\n", e.Name, e.Duration, e.SkippedSpecs, e.PendingSpecs)
 	}
 	r.path = nil
 }
@@ -55,7 +55,7 @@ func (r *Reporter) SpecFinished(e SpecResultEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.w != nil {
-		_, _ = fmt.Fprintf(r.w, "SpecFinished %s %v failed=%v skipped=%v duration=%s\n", e.Name, e.Path, e.Failed, e.Skipped, e.Duration)
+		_, _ = fmt.Fprintf(r.w, "SpecFinished %s %v failed=%v skipped=%v pending=%v duration=%s\n", e.Name, e.Path, e.Failed, e.Skipped, e.Pending, e.Duration)
 	}
 }
 

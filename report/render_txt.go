@@ -17,9 +17,9 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	bw := &errWriter{w: w}
 
 	bw.printf("go-specs report\n")
-	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d\n",
+	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d  Pending: %d\n",
 		r.Execution.Total, r.Execution.Passed, r.Execution.Failed, r.Execution.Error,
-		r.Execution.Skipped, r.Execution.Filtered)
+		r.Execution.Skipped, r.Execution.Filtered, r.Execution.Pending)
 	bw.printf("Duration: %ss\n", formatSeconds(r.Duration))
 
 	for _, s := range r.Suites {
@@ -27,9 +27,9 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 		for _, c := range s.Cases {
 			renderTXTCase(bw, c)
 		}
-		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d\n",
+		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d pending=%d\n",
 			s.Totals.Total, s.Totals.Passed, s.Totals.Failed, s.Totals.Error,
-			s.Totals.Skipped, s.Totals.Filtered)
+			s.Totals.Skipped, s.Totals.Filtered, s.Totals.Pending)
 	}
 
 	if len(r.Coverage.Packages) > 0 {
@@ -55,7 +55,7 @@ func renderTXTCase(bw *errWriter, c Case) {
 	case StatusError:
 		bw.printf("  ERROR %s (%ss)\n", c.Name, formatSeconds(c.Duration))
 	default:
-		return // passed/skipped/filtered cases are covered by the suite totals line only
+		return // passed/skipped/filtered/pending cases are covered by the suite totals line only
 	}
 	if c.Message != "" {
 		bw.printf("        message: %s\n", c.Message)

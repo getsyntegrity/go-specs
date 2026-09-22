@@ -106,6 +106,42 @@ func TestRenderXMLNestedScopesDisambiguateIdentity(t *testing.T) {
 	}
 }
 
+// TestRenderXMLPendingRendersAsSkippedWithMessage proves a pending case renders as
+// <skipped message="pending"/> (JUnit has no pending state) and is counted in the skipped
+// attribute at both the <testsuites> and <testsuite> level, exactly as Filtered is today.
+func TestRenderXMLPendingRendersAsSkippedWithMessage(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 1, Pending: 1},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 1, Pending: 1},
+			Cases:  []Case{{Name: "not implemented yet", Status: StatusPending}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, r); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if doc.Skipped != 1 {
+		t.Fatalf("testsuites skipped attr = %d, want 1", doc.Skipped)
+	}
+	if len(doc.Suites) != 1 || doc.Suites[0].Skipped != 1 {
+		t.Fatalf("testsuite skipped attr = %+v, want 1", doc.Suites)
+	}
+	cases := doc.Suites[0].TestCases
+	if len(cases) != 1 || cases[0].Skipped == nil {
+		t.Fatalf("expected one <skipped> testcase, got %+v", cases)
+	}
+	if cases[0].Skipped.Message != "pending" {
+		t.Fatalf("skipped message = %q, want %q", cases[0].Skipped.Message, "pending")
+	}
+}
+
 func TestRenderXMLEscapesUnsafeContent(t *testing.T) {
 	r := NormalizedReport{
 		SchemaVersion: SchemaVersion,
