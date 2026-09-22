@@ -22,7 +22,7 @@ type scope struct {
 	afterEach  []step
 }
 
-// specKind describes how a spec was registered (normal, skip, focus, parallel).
+// specKind describes how a spec was registered (normal, skip, focus, parallel, pending).
 type specKind int
 
 const (
@@ -30,6 +30,10 @@ const (
 	kindSkip
 	kindFocus
 	kindParallel
+	// kindPending marks a PendingIt/Pending spec: never compiled into a step, like kindSkip, but
+	// buffered and attached to a group separately (see finalize's bufferedPending) so it reports
+	// as pending, not skipped.
+	kindPending
 )
 
 // specItem is one registered spec (or skip). Before/after enable coalescing; hookKey identifies the scope set.
@@ -193,9 +197,10 @@ func (b *Builder) It(name string, fn func(*Context)) {
 	})
 }
 
-// ItWith compiles one spec from a SpecFn, routing to the registration Skip/Focus asked for:
-// Skip(fn) behaves like SkipIt(name, fn), Focus(fn) behaves like FIt(name, fn), and a plain SpecFn
-// (constructed directly, with neither flag set) behaves like It(name, fn.Fn).
+// ItWith compiles one spec from a SpecFn, routing to the registration Skip/Focus/Pending asked
+// for: Skip(fn) behaves like SkipIt(name, fn), Focus(fn) behaves like FIt(name, fn), Pending(fn)
+// behaves like PendingIt(name, fn), and a plain SpecFn (constructed directly, with no flag set)
+// behaves like It(name, fn.Fn).
 func (b *Builder) ItWith(name string, fn SpecFn) {
 	if fn.Skip {
 		b.SkipIt(name, fn.Fn)
@@ -203,6 +208,10 @@ func (b *Builder) ItWith(name string, fn SpecFn) {
 	}
 	if fn.Focus {
 		b.FIt(name, fn.Fn)
+		return
+	}
+	if fn.Pending {
+		b.PendingIt(name, fn.Fn)
 		return
 	}
 	b.It(name, fn.Fn)
@@ -214,6 +223,15 @@ func (b *Builder) ItWith(name string, fn SpecFn) {
 func (b *Builder) SkipIt(name string, fn func(*Context)) {
 	b.ensureScope()
 	b.pending = append(b.pending, specItem{kind: kindSkip, name: name, scopeNames: slices.Clone(b.scopeNames)})
+}
+
+// PendingIt registers a spec that is pending at compile time: fn is never compiled into any step
+// (it never runs, so — like SkipIt — it doesn't need to be a valid func, and may be nil; see
+// Pending), but name is preserved so the compiled Program can still report the spec's identity as
+// pending, distinct from skipped. See finalize.
+func (b *Builder) PendingIt(name string, fn func(*Context)) {
+	b.ensureScope()
+	b.pending = append(b.pending, specItem{kind: kindPending, name: name, scopeNames: slices.Clone(b.scopeNames)})
 }
 
 // FIt registers a focused spec. If any spec is focused, only focused specs are compiled into the program.
@@ -272,17 +290,19 @@ func (b *Builder) hookKey() string {
 }
 
 // finalize builds program.Groups from pending: focus filter, coalesce same-hook specs, group
-// parallel, and attach skip names to whichever group they end up nearest to.
+// parallel, and attach skip/pending names to whichever group they end up nearest to.
 //
-// A kindSkip item never becomes a step (it has no before/after/spec — SkipIt never captures them),
-// so it can't form its own execution unit the way a real spec does. Instead its name is buffered in
-// pendingSkips and attached to the next group finalize creates or appends to (normal/focus/parallel
-// alike), then the buffer is cleared. This deliberately does NOT give skip its own group: doing so
+// A kindSkip or kindPending item never becomes a step (it has no before/after/spec — SkipIt/
+// PendingIt never capture them), so it can't form its own execution unit the way a real spec does.
+// Instead its name is buffered (pendingSkips for kindSkip, bufferedPending for kindPending) and
+// attached to the next group finalize creates or appends to (normal/focus/parallel alike), then the
+// buffer is cleared. This deliberately does NOT give skip or pending their own group: doing so
 // would insert a group boundary between two coalesced same-hookKey specs (e.g. It("a"), SkipIt("b"),
 // It("c") in the same Describe), which would make their shared before/after run twice instead of
 // once — see TestProgram_SkipRemoval / TestSkipRemovesSpecs, which pin the coalesced-group-count
-// invariant this must not break. Any pendingSkips left over once every item is processed (trailing
-// skips, or an all-skip Describe) become their own skip-only group at the end.
+// invariant this must not break. Any pendingSkips/bufferedPending left over once every item is
+// processed (a trailing skip/pending, or an all-skip/all-pending Describe) become their own group
+// at the end.
 func (b *Builder) finalize() {
 	items := b.pending
 	if b.hasFocus {
@@ -298,11 +318,18 @@ func (b *Builder) finalize() {
 	curIdx := -1
 	var pendingSkips []string
 	var pendingSkipScopeNames [][]string
+	var bufferedPending []string
+	var bufferedPendingScopeNames [][]string
 	for i := 0; i < len(items); i++ {
 		it := items[i]
 		if it.kind == kindSkip {
 			pendingSkips = append(pendingSkips, it.name)
 			pendingSkipScopeNames = append(pendingSkipScopeNames, it.scopeNames)
+			continue
+		}
+		if it.kind == kindPending {
+			bufferedPending = append(bufferedPending, it.name)
+			bufferedPendingScopeNames = append(bufferedPendingScopeNames, it.scopeNames)
 			continue
 		}
 		if it.kind == kindParallel {
@@ -321,9 +348,17 @@ func (b *Builder) finalize() {
 			// which reports each real ItParallel spec itself (via ctx.execObserver) as it runs on
 			// its own goroutine. Runner.Run's sequential per-spec reporting only fires when names
 			// is populated, so it correctly stays out of the way here instead of double-reporting.
-			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames, parScopeNames)}, skipped: pendingSkips, skippedScopeNames: pendingSkipScopeNames})
+			groups = append(groups, group{
+				specs:                 []step{parallelStep(parSteps, parNames, parScopeNames)},
+				skipped:               pendingSkips,
+				skippedScopeNames:     pendingSkipScopeNames,
+				pendingSpecs:          bufferedPending,
+				pendingSpecScopeNames: bufferedPendingScopeNames,
+			})
 			pendingSkips = nil
 			pendingSkipScopeNames = nil
+			bufferedPending = nil
+			bufferedPendingScopeNames = nil
 			i = j - 1
 			continue
 		}
@@ -335,27 +370,40 @@ func (b *Builder) finalize() {
 			groups[curIdx].scopeNames = append(groups[curIdx].scopeNames, it.scopeNames)
 			groups[curIdx].skipped = append(groups[curIdx].skipped, pendingSkips...)
 			groups[curIdx].skippedScopeNames = append(groups[curIdx].skippedScopeNames, pendingSkipScopeNames...)
+			groups[curIdx].pendingSpecs = append(groups[curIdx].pendingSpecs, bufferedPending...)
+			groups[curIdx].pendingSpecScopeNames = append(groups[curIdx].pendingSpecScopeNames, bufferedPendingScopeNames...)
 			pendingSkips = nil
 			pendingSkipScopeNames = nil
+			bufferedPending = nil
+			bufferedPendingScopeNames = nil
 		} else {
 			groups = append(groups, group{
-				before:            it.before,
-				specs:             []step{it.spec},
-				names:             []string{it.name},
-				fullNames:         []string{it.fullName},
-				scopeNames:        [][]string{it.scopeNames},
-				after:             it.after,
-				hookKey:           it.hookKey,
-				skipped:           pendingSkips,
-				skippedScopeNames: pendingSkipScopeNames,
+				before:                it.before,
+				specs:                 []step{it.spec},
+				names:                 []string{it.name},
+				fullNames:             []string{it.fullName},
+				scopeNames:            [][]string{it.scopeNames},
+				after:                 it.after,
+				hookKey:               it.hookKey,
+				skipped:               pendingSkips,
+				skippedScopeNames:     pendingSkipScopeNames,
+				pendingSpecs:          bufferedPending,
+				pendingSpecScopeNames: bufferedPendingScopeNames,
 			})
 			pendingSkips = nil
 			pendingSkipScopeNames = nil
+			bufferedPending = nil
+			bufferedPendingScopeNames = nil
 			curIdx = len(groups) - 1
 		}
 	}
-	if len(pendingSkips) > 0 {
-		groups = append(groups, group{skipped: pendingSkips, skippedScopeNames: pendingSkipScopeNames})
+	if len(pendingSkips) > 0 || len(bufferedPending) > 0 {
+		groups = append(groups, group{
+			skipped:               pendingSkips,
+			skippedScopeNames:     pendingSkipScopeNames,
+			pendingSpecs:          bufferedPending,
+			pendingSpecScopeNames: bufferedPendingScopeNames,
+		})
 	}
 	b.program.Groups = groups
 }

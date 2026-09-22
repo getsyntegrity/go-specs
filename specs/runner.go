@@ -47,9 +47,9 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // mutex: a parallel group's goroutines call specStarted/specFinished concurrently, and not every
 // EventReporter implementation can be assumed to be concurrency-safe on its own — the framework
 // serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed/
-// skipped/filtered tally every reported spec (sequential and parallel alike, since both paths share
-// one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
-// passed+failed+skipped+filtered.
+// skipped/filtered/pending tally every reported spec (sequential and parallel alike, since both paths
+// share one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
+// passed+failed+skipped+filtered+pending.
 type reporterObserver struct {
 	mu       sync.Mutex
 	rep      report.EventReporter
@@ -57,6 +57,7 @@ type reporterObserver struct {
 	failed   int
 	skipped  int
 	filtered int
+	pending  int
 }
 
 func (o *reporterObserver) specStarted(name string, path []string) report.SpecStartEvent {
@@ -103,6 +104,20 @@ func (o *reporterObserver) specSkipped(name string, path []string) {
 	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Skipped: true})
 }
 
+// specPending reports a compile-time-pending spec: SpecStarted immediately followed by
+// SpecFinished{Pending: true}, mirroring specSkipped exactly — Duration stays at its zero value
+// (no body ever ran) and Failed/Skipped/Filtered all stay false, since a spec is at most one of
+// Skipped/Filtered/Pending.
+func (o *reporterObserver) specPending(name string, path []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	o.total++
+	o.pending++
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Pending: true})
+}
+
 var _ specExecutionObserver = (*reporterObserver)(nil)
 
 // Run executes all groups in order. Within each group, every spec runs its own before hooks, body,
@@ -146,6 +161,7 @@ func (r *Runner) Run(tb testing.TB) {
 		FailedSpecs:   obs.failed,
 		SkippedSpecs:  obs.skipped,
 		FilteredSpecs: obs.filtered,
+		PendingSpecs:  obs.pending,
 	})
 }
 
@@ -166,16 +182,17 @@ func runGroups(ctx *Context, groups []group) {
 	}
 }
 
-// runGroup reports g's skipped specs, then runs its real specs. g.before/g.after are shared across
-// every spec in the group (see program.go's group doc comment) purely so they don't need to be
-// recompiled per spec — see runSpecWithHooks for the per-spec execution contract itself.
+// runGroup reports g's skipped and pending specs, then runs its real specs. g.before/g.after are
+// shared across every spec in the group (see program.go's group doc comment) purely so they don't
+// need to be recompiled per spec — see runSpecWithHooks for the per-spec execution contract itself.
 //
-// g.skipped is reported first, before any real spec runs: those names carry no before/after of their
-// own (see builder.go's finalize), so their identity as skipped must not depend on whether this
-// group's unrelated before hook — which they were only attached to for compilation reasons —
-// succeeds, fails, or FailFast ends up skipping the rest of this group.
+// g.skipped and g.pendingSpecs are reported first, before any real spec runs: those names carry no
+// before/after of their own (see builder.go's finalize), so their identity must not depend on
+// whether this group's unrelated before hook — which they were only attached to for compilation
+// reasons — succeeds, fails, or FailFast ends up skipping the rest of this group.
 func runGroup(ctx *Context, g *group) {
 	reportSkipped(ctx, g)
+	reportPending(ctx, g)
 	runSpecsRecovered(ctx, g)
 }
 
@@ -190,6 +207,20 @@ func reportSkipped(ctx *Context, g *group) {
 	}
 	for i, name := range g.skipped {
 		obs.specSkipped(name, g.skippedPath(i))
+	}
+}
+
+// reportPending reports each of g.pendingSpecs as its own SpecStarted/SpecFinished{Pending: true}
+// pair, mirroring reportSkipped exactly — a pending spec was never compiled into a step either (see
+// builder.go's finalize), so there is nothing to run for it here, only its identity to report. A
+// nil execObserver means nothing happens at all, same as reportSkipped.
+func reportPending(ctx *Context, g *group) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for i, name := range g.pendingSpecs {
+		obs.specPending(name, g.pendingPath(i))
 	}
 }
 
