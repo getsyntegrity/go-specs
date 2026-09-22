@@ -3,7 +3,7 @@
 // attached, reported as skipped (see builder.go's finalize and runner.go's reportSkipped).
 package specs
 
-// Skip returns a SpecFn that marks the spec as skipped. Use with It: b.It("name", specs.Skip(fn)).
+// Skip returns a SpecFn that marks the spec as skipped. Use with ItWith: b.ItWith("name", specs.Skip(fn)).
 func Skip(fn func(*Context)) SpecFn {
 	return SpecFn{Fn: fn, Skip: true}
 }

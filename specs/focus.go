@@ -2,14 +2,14 @@
 // the runner does not branch on focus.
 package specs
 
-// SpecFn wraps a spec function with options (Focus or Skip). Pass to It: b.It("name", specs.Focus(fn)).
+// SpecFn wraps a spec function with options (Focus or Skip). Pass to ItWith: b.ItWith("name", specs.Focus(fn)).
 type SpecFn struct {
 	Fn    func(*Context)
 	Skip  bool
 	Focus bool
 }
 
-// Focus returns a SpecFn that marks the spec as focused. Use with It: b.It("name", specs.Focus(fn)).
+// Focus returns a SpecFn that marks the spec as focused. Use with ItWith: b.ItWith("name", specs.Focus(fn)).
 // If any spec is focused, only focused specs are compiled into the program.
 func Focus(fn func(*Context)) SpecFn {
 	return SpecFn{Fn: fn, Focus: true}
