@@ -270,6 +270,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   that could only mask a broken invariant by discarding a registration. All four now go through
   `currentNodeIDLocked`, which panics if the invariant is ever violated. Internal only, so no public
   API change. ([#151](https://github.com/getsyntegrity/go-specs/issues/151))
+- **Breaking.** `Spec.When(name string, fn interface{})` is now `Spec.When(name string, fn
+  func(*Spec))`, and the legacy `func()` scope body it also accepted is removed.
+  `Builder.It(name string, fn interface{})` is now `Builder.It(name string, fn func(*Context))`, and
+  the `SpecFn` shape it also accepted — built by `specs.Skip`/`specs.Focus` — moves to a new
+  `Builder.ItWith(name string, fn SpecFn)`, which carries the same Skip/Focus routing `It` used to do
+  at runtime. Both `interface{}` parameters dispatched on the body's dynamic type at runtime and
+  silently dropped anything else: an unsupported `When` body registered its name and never ran its
+  contents, and an unsupported `It` body hit `if !ok { return }` and the spec vanished from the suite
+  with no diagnostic at all. That is the worst possible failure mode for a testing framework — the
+  suite stays green because the test never ran. Both bodies are now checked by the compiler instead.
+  Migrate `s.When("x", func() { ... })` to `s.When("x", func(*specs.Spec) { ... })` (the `*Spec`
+  argument can be ignored if the body does not need it), and `b.It("x", specs.Skip(fn))` /
+  `b.It("x", specs.Focus(fn))` to `b.ItWith("x", specs.Skip(fn))` / `b.ItWith("x", specs.Focus(fn))`.
+  The dead internal helper `parseItArgs`, which nothing called, is also removed; internal only, no
+  public API change. ([#210](https://github.com/getsyntegrity/go-specs/issues/210))
 
 ### Fixed
 

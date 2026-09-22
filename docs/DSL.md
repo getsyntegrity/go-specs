@@ -14,6 +14,20 @@ specs.Describe(t, "math", func(s *specs.Spec) {
 
 Nested `Describe` (when using the Builder API) creates nested scope; hooks from outer blocks run before and after inner specs.
 
+## When
+
+`When` starts a nested block, exactly like a nested `Describe`, for naming the condition a group of specs runs under. It takes a name and a callback that receives the nested `*Spec`.
+
+```go
+s.When("the account is empty", func(w *specs.Spec) {
+    w.It("rejects a withdrawal", func(ctx *specs.Context) {
+        ctx.Expect(withdraw(0, 10)).To(specs.BeFalse())
+    })
+})
+```
+
+`fn` must be `func(*specs.Spec)`. Earlier versions also accepted a legacy `func()` body that ignored the nested `*Spec` and ran against the enclosing scope by closure; that shape is removed, so an unsupported body is now a compile error instead of being registered under `When`'s name and silently never run. Migrate a `func()` body to `func(*specs.Spec)`, adding the parameter and ignoring it if the body does not need it.
+
 ## BeforeEach
 
 `BeforeEach` registers a function that runs before every `It` in the current scope (and nested scopes). Use it for setup that must run before each spec.
@@ -86,6 +100,26 @@ run specs concurrently; those give each spec its own Context and never expose a 
 ```
 
 The parked body's Context is deliberately abandoned rather than recycled, so if that body does resume, its assertions still report against its own subtest instead of disappearing or landing on an unrelated spec.
+
+## Builder.It, Skip and Focus
+
+`Builder.It` is the Builder-API counterpart of `Spec.It`: `func (b *Builder) It(name string, fn func(*Context))`. Use it directly for a plain spec body:
+
+```go
+b := specs.NewBuilder()
+b.It("adds numbers", func(ctx *specs.Context) {
+    ctx.Expect(1 + 1).ToEqual(2)
+})
+```
+
+`specs.Skip(fn)` and `specs.Focus(fn)` wrap a `func(*Context)` into a `SpecFn` that marks it skipped or focused. A `SpecFn` does not go through `It` — pass it to `Builder.ItWith(name string, fn SpecFn)` instead:
+
+```go
+b.ItWith("not ready yet", specs.Skip(func(ctx *specs.Context) { /* ... */ }))
+b.ItWith("only this one runs", specs.Focus(func(ctx *specs.Context) { /* ... */ }))
+```
+
+`ItWith` routes a `Skip`-wrapped `fn` to `SkipIt` (the spec's name is preserved and reported as skipped, but its body never compiles into a step) and a `Focus`-wrapped `fn` to `FIt` (if any spec in the suite is focused, only focused specs are compiled). `It` previously accepted a `SpecFn` too, dispatching on its dynamic type at runtime; that dispatch is removed. Migrate `b.It("x", specs.Skip(fn))` / `b.It("x", specs.Focus(fn))` to `b.ItWith("x", specs.Skip(fn))` / `b.ItWith("x", specs.Focus(fn))`.
 
 ## Expect and EqualTo
 
