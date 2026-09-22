@@ -33,6 +33,39 @@ type describedMatcher struct {
 
 func (d describedMatcher) Description() string { return d.desc }
 
+// derefMatcher has pointer-receiver methods that dereference the receiver. A nil *derefMatcher
+// really panics on Match/FailureMessage if a composite's nil guard misses it — that is what proves
+// the guard catches a *typed* nil (a declared-but-unassigned *derefMatcher passed as a Matcher, a
+// non-nil interface value wrapping a nil pointer), not just an untyped nil interface.
+type derefMatcher struct{ ok bool }
+
+func (d *derefMatcher) Match(any) bool            { return d.ok }
+func (d *derefMatcher) FailureMessage(any) string { return "derefMatcher failed" }
+
+// flippingMatcher answers false the first time Match is called and true on every call after. It
+// stands in for a sub-matcher whose second evaluation (a composite's FailureMessage re-running it
+// to build a message) disagrees with its first (the Match call that decided the composite failed) —
+// the exact non-determinism All/Any's FailureMessage must name rather than paper over.
+type flippingMatcher struct {
+	calls int
+}
+
+func (f *flippingMatcher) Match(any) bool {
+	f.calls++
+	return f.calls > 1
+}
+func (f *flippingMatcher) FailureMessage(any) string { return "flippingMatcher failed" }
+
+// countingMatcher counts its Match calls and describes itself, so a test can prove Any's
+// FailureMessage does not evaluate a sibling when a nil entry already dooms the composite.
+type countingMatcher struct {
+	calls int
+}
+
+func (c *countingMatcher) Match(any) bool            { c.calls++; return true }
+func (c *countingMatcher) FailureMessage(any) string { return "countingMatcher failed" }
+func (c *countingMatcher) Description() string       { return "counting" }
+
 // --- Not -------------------------------------------------------------------------------------
 
 func TestNotMatchTruthTable(t *testing.T) {
@@ -97,6 +130,25 @@ func TestNotDescriptionWithNilSub(t *testing.T) {
 	want := "not (nil matcher)"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A typed nil — a declared-but-unassigned *derefMatcher passed as a Matcher — must be treated
+// exactly like an untyped nil: same Match result, same FailureMessage and Description wording, no
+// panic. derefMatcher's methods dereference the receiver, so a guard that only checks `== nil`
+// (which is false for a non-nil interface wrapping a nil pointer) would panic here.
+func TestNotHandlesTypedNilWithoutPanicking(t *testing.T) {
+	var typedNil *derefMatcher
+	m := Not(typedNil)
+
+	if got := m.Match("actual"); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	if got, want := m.FailureMessage("actual"), "Not: sub-matcher at position 1 is nil"; got != want {
+		t.Fatalf("FailureMessage: got %q, want %q", got, want)
+	}
+	if got, want := m.(Describer).Description(), "not (nil matcher)"; got != want {
+		t.Fatalf("Description: got %q, want %q", got, want)
 	}
 }
 
@@ -179,6 +231,41 @@ func TestAllEmptyDescription(t *testing.T) {
 	}
 }
 
+// A typed nil entry — a declared-but-unassigned *derefMatcher passed as a Matcher — must fail the
+// composite exactly like an untyped nil entry, without panicking: derefMatcher's methods dereference
+// the receiver, so an `== nil` guard alone (false for a non-nil interface wrapping a nil pointer)
+// would panic here.
+func TestAllHandlesTypedNilEntryWithoutPanicking(t *testing.T) {
+	var typedNil *derefMatcher
+	m := All(Equal(1), typedNil)
+
+	if got := m.Match(1); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	if got, want := m.FailureMessage(1), "All: #2: nil matcher (never matches)"; got != want {
+		t.Fatalf("FailureMessage: got %q, want %q", got, want)
+	}
+}
+
+// FailureMessage re-runs every non-nil sub-matcher's Match to decide which are still responsible for
+// the failure (see the Matcher doc comment in matcher.go). Reaching this point means Match reported
+// false but the second pass says every entry now matches — a sub-matcher answered differently on its
+// second call — so the message must name that instead of the old, misleading
+// "All: no sub-matcher explains the failure" placeholder.
+func TestAllFailureMessageNamesNonDeterministicSubMatcherInsteadOfThePlaceholder(t *testing.T) {
+	sub := &flippingMatcher{}
+	m := All(sub)
+
+	if got := m.Match("x"); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	got := m.FailureMessage("x")
+	want := "All: Match reported a failure but every sub-matcher now reports a match — a sub-matcher is not deterministic"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 // --- Any ---------------------------------------------------------------------------------------
 
 func TestAnyMatchTruthTable(t *testing.T) {
@@ -216,12 +303,14 @@ func TestAnyFailureMessageNamesNilEntryPosition(t *testing.T) {
 	}
 }
 
-// A sibling that would have matched must not be reported as an ordinary failure (its FailureMessage
-// describes a comparison that succeeded) nor silently dropped (that would hide why the nil forced
-// this Any to fail); it gets its own branch naming the suppression.
+// A non-nil sibling must not be evaluated at all once a nil entry has already doomed the composite
+// (that would re-run Match for zero diagnostic benefit and risk a matcher with a side effect — see
+// TestAnyFailureMessageDoesNotEvaluateSiblingsWhenANilEntryForcesFailure), and it must not be
+// silently dropped either (that would hide why the nil forced this Any to fail). It gets its own
+// branch naming both facts: what it is, and that it was not evaluated.
 func TestAnyFailureMessageReportsSuppressedMatchWhenNilForcesFailure(t *testing.T) {
 	got := Any(Equal(1), nil).FailureMessage(1)
-	want := "Any: #1: would have matched (equal to 1), but a nil entry forces this Any to fail; #2: nil matcher (never matches)"
+	want := "Any: #1: equal to 1 — not evaluated, the nil entry at #2 forces this Any to fail; #2: nil matcher (never matches)"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -230,6 +319,63 @@ func TestAnyFailureMessageReportsSuppressedMatchWhenNilForcesFailure(t *testing.
 func TestAnyEmptyFailureMessage(t *testing.T) {
 	got := Any().FailureMessage("anything")
 	want := "Any: no matchers were given, so nothing could match"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A typed nil entry — a declared-but-unassigned *derefMatcher passed as a Matcher — must fail the
+// composite exactly like an untyped nil entry, without panicking: derefMatcher's methods dereference
+// the receiver, so an `== nil` guard alone (false for a non-nil interface wrapping a nil pointer)
+// would panic here.
+func TestAnyHandlesTypedNilEntryWithoutPanicking(t *testing.T) {
+	var typedNil *derefMatcher
+	m := Any(typedNil)
+
+	if got := m.Match("anything"); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	if got, want := m.FailureMessage("anything"), "Any: #1: nil matcher (never matches)"; got != want {
+		t.Fatalf("FailureMessage: got %q, want %q", got, want)
+	}
+}
+
+// Once a nil entry has already doomed the composite, FailureMessage must not evaluate a non-nil
+// sibling at all: Match never reached it either (the nil scan short-circuits before the match loop),
+// so evaluating it only in FailureMessage would ask a question Match itself never asked, for a
+// composite that was already going to fail regardless of the answer.
+func TestAnyFailureMessageDoesNotEvaluateSiblingsWhenANilEntryForcesFailure(t *testing.T) {
+	sibling := &countingMatcher{}
+	m := Any(sibling, nil)
+
+	if got := m.Match("x"); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	before := sibling.calls
+
+	got := m.FailureMessage("x")
+	want := "Any: #1: counting — not evaluated, the nil entry at #2 forces this Any to fail; #2: nil matcher (never matches)"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if sibling.calls != before {
+		t.Fatalf("sibling.Match was called during FailureMessage: before=%d, after=%d", before, sibling.calls)
+	}
+}
+
+// FailureMessage re-runs every entry's Match to decide which are still responsible for the failure
+// (see the Matcher doc comment in matcher.go). Reaching this point means Match reported false but
+// the second pass says every entry now matches — a sub-matcher answered differently on its second
+// call — so the message must name that rather than emit an empty "Any: " list.
+func TestAnyFailureMessageNamesNonDeterministicSubMatcherInsteadOfAnEmptyList(t *testing.T) {
+	sub := &flippingMatcher{}
+	m := Any(sub)
+
+	if got := m.Match("x"); got != false {
+		t.Fatalf("Match: got %v, want false", got)
+	}
+	got := m.FailureMessage("x")
+	want := "Any: Match reported a failure but every sub-matcher now reports a match — a sub-matcher is not deterministic"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

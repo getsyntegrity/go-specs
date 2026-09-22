@@ -11,7 +11,11 @@ func EqualComparable[T comparable](a, b T) bool {
 	return a == b
 }
 
-// Matcher is the interface for assertion matchers used with Expect(...).To(m).
+// Matcher is the interface for assertion matchers used with Expect(...).To(m). A composite matcher
+// (Not, All, Any; see assert/composite_matchers.go) may call Match more than once for a single
+// assertion — once to decide the result, and again, only on failure, to build FailureMessage — so a
+// Matcher implementation must be deterministic and free of side effects, or it may report a
+// different verdict, or a misleading message, the second time it is asked.
 type Matcher interface {
 	Match(actual any) bool
 	FailureMessage(actual any) string

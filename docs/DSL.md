@@ -290,17 +290,21 @@ type Describer interface{ Description() string }
 
 Every built-in matcher implements it — `Equal(43)` describes itself as `"equal to 43"`, `BeNil()` as `"nil"`, `BeTrue()` as `"true"`, and so on — and so do `Not`, `All` and `Any` themselves, which is what makes nesting above read as English instead of `%T` soup. A third-party matcher that does not implement `Describer` falls back to its Go type name via `%T` (e.g. `*yourpkg.customMatcher`) rather than printing nothing. The rejected alternative was printing `%T` unconditionally for every matcher, built-in included, which leaks unexported type names such as `*assert.equalMatcher` into user-facing failure output — `Description()` exists so the built-ins never have to leak that.
 
+#### A matcher must be deterministic and side-effect-free
+
+`ctx.Expect(actual).To(m)` calls `m.Match(actual)` once to decide the result, and — only on failure — calls `m.FailureMessage(actual)` separately to build the message. `All` and `Any` re-run each sub-matcher's `Match` inside that second call, to work out which entries are still responsible for the failure, so a composite may end up calling a sub-matcher's `Match` twice for one assertion. A `Matcher` implementation must therefore be deterministic and free of side effects: one that answers differently the second time can make `All`/`Any` report a different verdict, or a misleading message, than the one `Match` actually decided on. If a sub-matcher ever does answer differently on its second call, `All`/`Any` name that explicitly rather than emit a placeholder — see the nil/empty table below.
+
 #### Nil and empty semantics
 
-None of the forms below panic — a testing framework reports a failure, it does not take the suite down. This mirrors the existing `MatchErrorAs` precedent, which turns an unusable target into a failed match with an explanatory message instead of letting `errors.As` panic.
+None of the forms below panic — a testing framework reports a failure, it does not take the suite down. This mirrors the existing `MatchErrorAs` precedent, which turns an unusable target into a failed match with an explanatory message instead of letting `errors.As` panic. This includes a **typed** nil — a declared-but-unassigned pointer matcher passed as a `Matcher`, e.g. `var m *customMatcher; assert.Not(m)` — which is indistinguishable from a real matcher by a plain `== nil` check but is still a caller mistake, not a logical value; every nil check in `assert/composite_matchers.go` catches both forms alike.
 
 | Form | `Match` result | Why |
 | --- | --- | --- |
 | `All()` — no matchers | `true` | The identity of AND: "all of nothing holds" is the only composable answer, the same reason an empty product is 1. |
 | `Any()` — no matchers | `false` | The identity of OR: nothing was offered, so nothing was satisfied. |
-| `Not(nil)` | `false` | A nil sub-matcher is a caller mistake, not a logical value — it can never be asked to match, so `Not` of it never matches either. |
-| `All(..., nil, ...)` | `false` | Same reasoning as `Not(nil)`: a nil entry can never match, so it fails the whole composite exactly like any other failing entry — by position, named in the message (`#2: nil matcher (never matches)`). |
-| `Any(..., nil, ...)` | `false` for the **whole** composite, even if a sibling matches | A nil entry must never be masked by a sibling that happens to match — if it were, the caller's mistake would ship green. `Any(Equal(1), nil).FailureMessage(1)` reports the suppressed match explicitly: `Any: #1: would have matched (equal to 1), but a nil entry forces this Any to fail; #2: nil matcher (never matches)`. |
+| `Not(nil)`, including a typed nil | `false` | A nil sub-matcher is a caller mistake, not a logical value — it can never be asked to match, so `Not` of it never matches either. |
+| `All(..., nil, ...)`, including a typed nil | `false` | Same reasoning as `Not(nil)`: a nil entry can never match, so it fails the whole composite exactly like any other failing entry — by position, named in the message (`#2: nil matcher (never matches)`). |
+| `Any(..., nil, ...)`, including a typed nil | `false` for the **whole** composite, even if a sibling matches | A nil entry must never be masked by a sibling that happens to match — if it were, the caller's mistake would ship green. Because `Match` never evaluates a sibling once any entry is nil (its own nil scan short-circuits first), `FailureMessage` does not evaluate that sibling either — it only describes it. `Any(Equal(1), nil).FailureMessage(1)` reports: `Any: #1: equal to 1 — not evaluated, the nil entry at #2 forces this Any to fail; #2: nil matcher (never matches)`. |
 
 Each nil case names its position (`#1`, `#2`, ...) in the failure message, the same indexing `All`/`Any` already use for ordinary failing entries.
 

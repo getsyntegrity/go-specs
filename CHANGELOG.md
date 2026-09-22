@@ -102,8 +102,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   name such as `*assert.equalMatcher`. Nil/empty semantics are pinned explicitly and never panic:
   `All()` is vacuously `true` (the AND identity), `Any()` is `false` (the OR identity), and a nil entry
   anywhere always fails the whole composite by position — including inside `Any`, where it is never
-  masked by a sibling that happens to match. See [docs/DSL.md](docs/DSL.md), "Matcher composition:
-  `Not`, `All`, `Any`". ([#209](https://github.com/getsyntegrity/go-specs/issues/209))
+  masked by a sibling that happens to match. Nil detection covers a **typed** nil too — a
+  declared-but-unassigned pointer matcher passed as a `Matcher` (e.g. `var m *customMatcher;
+  assert.Not(m)`), which an `== nil` check alone misses and which would otherwise panic the first
+  time the composite called into it. `FailureMessage` may re-run a sub-matcher's `Match` a second
+  time (once to decide the result, again to build the message), so `Matcher` implementations must be
+  deterministic and free of side effects; `All`/`Any` name a sub-matcher that answers differently on
+  its second call explicitly rather than reporting a misleading placeholder, and `Any` never
+  re-evaluates a sibling that a nil entry already doomed. See [docs/DSL.md](docs/DSL.md), "Matcher
+  composition: `Not`, `All`, `Any`". ([#209](https://github.com/getsyntegrity/go-specs/issues/209))
 - `report/coordination`, the producer side of multi-package reporting: every package process in one
   `go test ./...` invocation publishes a single isolated shard, which a later finalize step merges.
   A package opts in with one call in `TestMain` — `coordination.ShardWriterFromEnv(importPath)` —
