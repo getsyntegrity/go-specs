@@ -319,6 +319,26 @@ func (x expectT[T]) To(m Matcher) {
 		return
 	}
 	boxed := any(s.actual)
+	// The single-pass seam (see the Matcher doc comment in assert/matcher.go) is spelled out here
+	// rather than reached through assert.Evaluate, because this is the path BenchmarkMatcher_GoSpecs
+	// measures and the allocation contract pins. Only a composite (Not/All/Any) implements
+	// assert.Evaluator, and only a composite needs the verdict and the message to come out of one
+	// pass — otherwise it would evaluate its children again while building the message, firing a
+	// deliberate side effect such as MatchErrorAs's errors.As(actual, target) twice. An ordinary
+	// matcher already gets exactly one evaluation below: Match decides, and FailureMessage is built
+	// only after Match said no. Routing the ordinary case through assert.Evaluate as well cost ~2ns
+	// per assertion here for no behavioural gain, which this repository does not spend blindly.
+	if ev, ok := m.(assert.Evaluator); ok {
+		matched, failure := ev.Evaluate(boxed)
+		if matched {
+			return
+		}
+		if s.ctx.tb != nil {
+			s.ctx.tb.Helper()
+		}
+		reportMatcherFailure(s.ctx, failure)
+		return
+	}
 	if m.Match(boxed) {
 		return
 	}
@@ -329,7 +349,7 @@ func (x expectT[T]) To(m Matcher) {
 	if s.ctx.tb != nil {
 		s.ctx.tb.Helper()
 	}
-	reportMatcherFailure(s.ctx, m, boxed)
+	reportMatcherFailure(s.ctx, m.FailureMessage(boxed))
 }
 
 // Snapshot serializes value as JSON and compares it to the stored snapshot named name.
@@ -423,20 +443,40 @@ func (e *Expectation) To(m Matcher) {
 	if e.ctx == nil || e.ctx.backend == nil || m == nil {
 		return
 	}
+	// See expectT.To for why the composite branch is spelled out here instead of going through
+	// assert.Evaluate for every matcher.
+	if ev, ok := m.(assert.Evaluator); ok {
+		matched, failure := ev.Evaluate(e.actual)
+		if matched {
+			return
+		}
+		if e.ctx.tb != nil {
+			e.ctx.tb.Helper()
+		}
+		reportMatcherFailure(e.ctx, failure)
+		return
+	}
 	if m.Match(e.actual) {
 		return
 	}
 	if e.ctx.tb != nil {
 		e.ctx.tb.Helper()
 	}
-	reportMatcherFailure(e.ctx, m, e.actual)
+	reportMatcherFailure(e.ctx, m.FailureMessage(e.actual))
 }
 
-// reportMatcherFailure builds the matcher's failure message and hands it to Context.failf, the one
-// path that records and reports it (see failure.go). It is split out of To and marked noinline so
-// the matcher fast path carries only the branch, not the message building and the call — inlining
-// that tail back into To costs ~5% on BenchmarkMatcher_GoSpecs for code that never runs when a
-// matcher passes.
+// reportMatcherFailure hands a matcher's already-built failure message to Context.failf, the one path
+// that records and reports it (see failure.go). It is split out of To and marked noinline so the
+// matcher fast path carries only the branch, not the message building and the call — inlining that
+// tail back into To costs ~5% on BenchmarkMatcher_GoSpecs for code that never runs when a matcher
+// passes.
+//
+// The message is built by assert.Evaluate before this is ever called: To calls
+// assert.Evaluate(m, actual) exactly once and reaches here only with the failure string that call
+// already returned, rather than calling m.FailureMessage(actual) itself. That is what keeps a
+// composite matcher (Not, All, Any) — and anything it wraps, such as MatchErrorAs, whose
+// errors.As(actual, target) call is a deliberate side effect — down to exactly one evaluation per
+// assertion; see assert/evaluate.go and the Matcher doc comment in assert/matcher.go.
 //
 // It marks its own frame as a test helper. The caller must mark itself too: one Helper() call marks
 // only the function that made it, so every frame between the user's assertion and testing has to
@@ -446,11 +486,11 @@ func (e *Expectation) To(m Matcher) {
 // share one frame instead of compiling a copy of this tail into every instantiation of expectT[T].
 //
 //go:noinline
-func reportMatcherFailure(c *Context, m Matcher, actual any) {
+func reportMatcherFailure(c *Context, failure string) {
 	if c.tb != nil {
 		c.tb.Helper()
 	}
-	c.failf("%s", m.FailureMessage(actual))
+	c.failf("%s", failure)
 }
 
 // ToEqual asserts that the actual value equals expected (fast path for benchmarks). Helper() only

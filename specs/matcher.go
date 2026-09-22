@@ -21,3 +21,10 @@ func MatchError(target error) Matcher { return assert.MatchError(target) }
 // MatchErrorAs expects actual to be an error assignable to target via errors.As, populating target
 // on a match. target must be a non-nil pointer to a type implementing error, or to an interface.
 func MatchErrorAs(target any) Matcher { return assert.MatchErrorAs(target) }
+
+// Not, All and Any combine existing matchers logically instead of requiring a new matcher type for
+// every combination (see assert/composite_matchers.go for the nil/empty semantics and how the
+// failure message names the sub-matcher(s) actually responsible).
+func Not(m Matcher) Matcher     { return assert.Not(m) }
+func All(ms ...Matcher) Matcher { return assert.All(ms...) }
+func Any(ms ...Matcher) Matcher { return assert.Any(ms...) }

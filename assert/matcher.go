@@ -11,7 +11,25 @@ func EqualComparable[T comparable](a, b T) bool {
 	return a == b
 }
 
-// Matcher is the interface for assertion matchers used with Expect(...).To(m).
+// Matcher is the interface for assertion matchers used with Expect(...).To(m). The DSL evaluates a
+// matcher exactly once per assertion: once to decide the result, and, only on failure, once more to
+// build the failure message — the same shape Match/FailureMessage always had. Evaluate (see
+// assert/evaluate.go) is that rule exported for direct callers; the two To methods in specs apply it
+// inline so the zero-allocation typed path keeps calling Match without an extra hop, which costs
+// nothing in behaviour and about 2ns per assertion if routed through the function instead.
+// A composite (Not, All, Any; see assert/composite_matchers.go) implements Evaluate's
+// optional Evaluator interface so it, too, evaluates each of its own sub-matchers exactly once per
+// assertion, however deeply it nests, rather than once to decide and again, on its own failure, to
+// build its message.
+//
+// That guarantee matters because a matcher may deliberately carry a side effect: MatchErrorAs, in
+// this very package, calls errors.As(actual, target), which populates target as part of matching.
+// Evaluating a matcher twice for one assertion — which the old Match-then-FailureMessage composite
+// path did — would populate it twice; the single-pass Evaluate seam is what keeps that to once. Match
+// and FailureMessage stay separately callable exactly as before, since both remain part of this
+// interface and third-party code may call either directly; a Matcher implementation does not need to
+// implement Evaluator to be evaluated correctly through Evaluate — the default path already calls
+// Match once and, only on failure, FailureMessage once, which is one evaluation already.
 type Matcher interface {
 	Match(actual any) bool
 	FailureMessage(actual any) string
@@ -54,6 +72,12 @@ func (m *equalMatcher) Match(actual any) bool {
 
 func (m *equalMatcher) FailureMessage(actual any) string {
 	return EqualFailureMessage(m.expected, actual)
+}
+
+// Description implements Describer so composites (Not, All, Any) can name this matcher in their own
+// failure messages without quoting a FailureMessage that may describe a comparison that succeeded.
+func (m *equalMatcher) Description() string {
+	return fmt.Sprintf("equal to %v", m.expected)
 }
 
 // EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. It is
@@ -100,6 +124,11 @@ func (m *notEqualMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected %v not to equal %v", actual, m.expected)
 }
 
+// Description implements Describer; see equalMatcher.Description.
+func (m *notEqualMatcher) Description() string {
+	return fmt.Sprintf("not equal to %v", m.expected)
+}
+
 // BeNil returns a matcher that expects actual to be nil.
 func BeNil() Matcher {
 	return &beNilMatcher{}
@@ -113,6 +142,11 @@ func (m *beNilMatcher) Match(actual any) bool {
 
 func (m *beNilMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected nil, got %v (%T)", actual, actual)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *beNilMatcher) Description() string {
+	return "nil"
 }
 
 // BeTrue returns a matcher that expects actual to be the bool true.
@@ -131,6 +165,11 @@ func (m *beTrueMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected true, got %v (%T)", actual, actual)
 }
 
+// Description implements Describer; see equalMatcher.Description.
+func (m *beTrueMatcher) Description() string {
+	return "true"
+}
+
 // BeFalse returns a matcher that expects actual to be the bool false.
 func BeFalse() Matcher {
 	return &beFalseMatcher{}
@@ -145,6 +184,11 @@ func (m *beFalseMatcher) Match(actual any) bool {
 
 func (m *beFalseMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected false, got %v (%T)", actual, actual)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *beFalseMatcher) Description() string {
+	return "false"
 }
 
 // Contain returns a matcher that expects actual (string or slice) to contain expected.
@@ -210,6 +254,11 @@ func (m *containExpectedMatcher) Match(actual any) bool {
 
 func (m *containExpectedMatcher) FailureMessage(actual any) string {
 	return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
+}
+
+// Description implements Describer; see equalMatcher.Description.
+func (m *containExpectedMatcher) Description() string {
+	return fmt.Sprintf("containing %v", m.expected)
 }
 
 // ValuesEqual reports whether actual satisfies expected (for use by other packages).
