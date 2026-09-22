@@ -284,36 +284,23 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	fn(child)
 }
 
-// When starts a when block. fn may be func(*Spec) or func() for legacy scope.
-func (s *Spec) When(name string, fn interface{}) {
+// When starts a when block. fn receives the nested *Spec to register hooks and specs on.
+func (s *Spec) When(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		switch f := fn.(type) {
-		case func(*Spec):
-			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
-		case func():
-			f()
-		}
+		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
 		return
 	}
 	s.requireBuildTarget("When")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
-	runFn := func() {
-		switch f := fn.(type) {
-		case func(*Spec):
-			f(child)
-		case func():
-			f()
-		}
-	}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
 	defer pop()
-	runFn()
+	fn(child)
 }
 
 // It registers a spec.
@@ -355,15 +342,4 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	}
 	s.requireBuildTarget("AfterEach")
 	s.registry.appendAfterHook(fn)
-}
-
-// parseItArgs extracts the optional last func(*Context) from args. Returns (nil, fn).
-func parseItArgs(args []any) (ops interface{}, fn func(*Context)) {
-	if len(args) == 0 {
-		return nil, nil
-	}
-	if f, ok := args[len(args)-1].(func(*Context)); ok {
-		return nil, f
-	}
-	return nil, nil
 }

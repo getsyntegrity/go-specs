@@ -107,9 +107,9 @@ func TestAfterEachLegacyScope(t *testing.T) {
 	order := make([]string, 0)
 	Describe(t, "LegacyHooks", func(s *Spec) {
 		s.AfterEach(func(_ *Context) { order = append(order, "after:outer") })
-		s.When("legacy", func() {
-			s.AfterEach(func(_ *Context) { order = append(order, "after:inner") })
-			s.It("leaf", func(_ *Context) {
+		s.When("legacy", func(inner *Spec) {
+			inner.AfterEach(func(_ *Context) { order = append(order, "after:inner") })
+			inner.It("leaf", func(_ *Context) {
 				order = append(order, "test")
 			})
 		})

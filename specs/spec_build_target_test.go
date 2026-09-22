@@ -33,18 +33,19 @@ func TestZeroValueSpecPanicsOnEveryRegistration(t *testing.T) {
 	}
 }
 
-// When rejects a legacy func() scope on a target-less Spec for the same reason it rejects
-// func(*Spec): the block would run and every registration inside it would be discarded.
-func TestZeroValueSpecPanicsOnLegacyWhenScope(t *testing.T) {
+// When rejects a func(*Spec) scope on a target-less Spec for the same reason every other
+// registration method does: the block would run and every registration inside it would be
+// discarded.
+func TestZeroValueSpecPanicsOnWhenScope(t *testing.T) {
 	ran := false
 	msg := recoverMessage(t, func() {
-		(&Spec{}).When("adding numbers", func() { ran = true })
+		(&Spec{}).When("adding numbers", func(*Spec) { ran = true })
 	})
 	if !strings.Contains(msg, "Spec.When") {
 		t.Fatalf("expected a panic naming Spec.When; got %q", msg)
 	}
 	if ran {
-		t.Fatal("the legacy scope must not run when there is nowhere to register what it declares")
+		t.Fatal("the when scope must not run when there is nowhere to register what it declares")
 	}
 }
 
