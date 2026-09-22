@@ -1,5 +1,5 @@
 go-specs report
-Total: 6  Passed: 2  Failed: 1  Error: 1  Skipped: 1  Filtered: 1
+Total: 6  Passed: 2  Failed: 1  Error: 1  Skipped: 1  Filtered: 1  Pending: 0
 Duration: 0.019s
 
 Suite: Checkout
@@ -10,10 +10,10 @@ Suite: Checkout
         output: goroutine 1 [running]:
 main.crash()
 	/x/y.go:10 +0x1a
-  Totals: total=4 passed=1 failed=1 error=1 skipped=1 filtered=0
+  Totals: total=4 passed=1 failed=1 error=1 skipped=1 filtered=0 pending=0
 
 Suite: Cart
-  Totals: total=2 passed=1 failed=0 error=0 skipped=0 filtered=1
+  Totals: total=2 passed=1 failed=0 error=0 skipped=0 filtered=1 pending=0
 
 Coverage
 Package                                   Covered  Total  Percent

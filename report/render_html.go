@@ -27,6 +27,7 @@ const htmlTemplate = `<!DOCTYPE html>
   .status-failed { background: #fde8e8; color: #b3261e; }
   .status-error { background: #fde8e8; color: #b3261e; }
   .status-skipped, .status-filtered { background: #f0f0f0; color: #555; }
+  .status-pending { background: #eaf1fb; color: #2b5797; }
   .diagnostics { white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: #444; margin: 0.2rem 0 0.6rem 0; }
   .coverage-bar { display: inline-block; width: 80px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; vertical-align: middle; margin-right: 0.4rem; }
   .coverage-fill { display: block; height: 8px; background: #1a7f37; }
@@ -41,6 +42,7 @@ const htmlTemplate = `<!DOCTYPE html>
   <span>Error: <strong>{{.Execution.Error}}</strong></span>
   <span>Skipped: <strong>{{.Execution.Skipped}}</strong></span>
   <span>Filtered: <strong>{{.Execution.Filtered}}</strong></span>
+  <span>Pending: <strong>{{.Execution.Pending}}</strong></span>
   <span>Duration: <strong>{{.Duration}}s</strong></span>
 </div>
 
@@ -53,6 +55,7 @@ const htmlTemplate = `<!DOCTYPE html>
   <span>error={{.Totals.Error}}</span>
   <span>skipped={{.Totals.Skipped}}</span>
   <span>filtered={{.Totals.Filtered}}</span>
+  <span>pending={{.Totals.Pending}}</span>
   <span>duration={{.Duration}}s</span>
 </div>
 <table>
@@ -98,7 +101,7 @@ const htmlTemplate = `<!DOCTYPE html>
 var htmlTmpl = template.Must(template.New("report").Parse(htmlTemplate))
 
 type htmlTotals struct {
-	Total, Passed, Failed, Error, Skipped, Filtered int
+	Total, Passed, Failed, Error, Skipped, Filtered, Pending int
 }
 
 type htmlCase struct {

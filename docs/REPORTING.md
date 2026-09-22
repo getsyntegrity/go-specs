@@ -76,10 +76,10 @@ Valid formats are `xml`, `html`, `txt`, and `json`.
 
 | Format | Renderer | Notes |
 |---|---|---|
-| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. |
+| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. |
 | HTML | `report.RenderHTML` | Single self-contained file: inline CSS, no external stylesheet/script/font/image reference — safe to open offline or archive as a CI artifact. |
 | Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case with its message and output, then a coverage table. |
-| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "1"`). Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
+| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "2"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208), because a v1 consumer switching exhaustively over `status` would misread a pending case. A new field alone never bumps it. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
 
 Every renderer takes the same `report.NormalizedReport` and an `io.Writer`; `RenderXML` and
 `RenderHTML` escape all case names, messages, and output through `encoding/xml` and
@@ -96,6 +96,7 @@ Every case is normalized to exactly one of:
   the presence of output (a stack trace)
 - **Skipped** — a compile-time `Skip`/`SkipIt` spec; its body never ran
 - **Filtered** — excluded by external test selection (e.g. `go test -run`) before its body ran
+- **Pending** — a compile-time `Pending`/`PendingIt` spec ([#208](https://github.com/getsyntegrity/go-specs/issues/208)); its body never ran either, but the spec is declared and not yet implemented, distinct from a spec that is intentionally excluded (Skipped)
 
 ## Multi-package reporting: `go test ./...` across many packages
 

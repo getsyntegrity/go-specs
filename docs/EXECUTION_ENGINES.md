@@ -61,10 +61,10 @@ as part of this work — a reader currently learns the wrong engine.
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
 | Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
-| **Unique capabilities** | **`Focus`/`Skip`/`FIt`/`SkipIt`, `ItParallel`, `FailFast`, and `RunShard` all exist here and nowhere else.** `Spec` (the `Describe` API) has no focus or skip at all. |
+| **Unique capabilities** | **`Focus`/`Skip`/`Pending`/`FIt`/`SkipIt`/`PendingIt`, `ItParallel`, `FailFast`, and `RunShard` all exist here and nowhere else.** `Spec` (the `Describe` API) has no focus, skip or pending at all. |
 
-This is the load-bearing fact for v1: removing this engine removes focus/skip and parallel specs from the
-library.
+This is the load-bearing fact for v1: removing this engine removes focus/skip/pending and parallel specs
+from the library.
 
 ### 1.3 `MinimalRunner`
 
@@ -128,7 +128,7 @@ of the others.
 | Hook ordering (before outer→inner, after LIFO) | ✅ | ✅ | ❌ | ✅ (flattened at build) | ❌ | ❌ |
 | Per-spec panic recovery | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Failure recording | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (indexed) |
-| Focus / skip filtering | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Focus / skip / pending filtering | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `-run` filtering (`Filtered`) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Subtest identity (`t.Run`) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Reporting (`report.EventReporter`) | ✅ | ✅ | ❌ | ❌ | ❌ | ⚠️ `parallelStep` only |

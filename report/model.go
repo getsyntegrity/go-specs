@@ -3,9 +3,14 @@ package report
 import "time"
 
 // SchemaVersion is the current version of NormalizedReport's JSON shape (render_json.go).
-// A consumer must ignore unknown fields and may key behavior off this value; it changes only
-// when a field's meaning changes incompatibly, never for an additive field.
-const SchemaVersion = "1"
+// A consumer must ignore unknown fields and may key behavior off this value; it changes when a
+// field's meaning changes incompatibly — which includes a new value in a closed vocabulary such
+// as Status, since a consumer switching exhaustively over it would misread the document — but
+// never for a new field.
+//
+// History: "1" — initial shape. "2" — adds StatusPending ("pending") to the status vocabulary and
+// the pending totals field (issue #208).
+const SchemaVersion = "2"
 
 // Status is a case's normalized outcome. It is derived from SpecResultEvent (see
 // classifyStatus in collector.go) and is the single vocabulary every renderer maps from —
@@ -18,6 +23,10 @@ const (
 	StatusError    Status = "error"   // recovered panic or other infrastructure failure
 	StatusSkipped  Status = "skipped" // compile-time XIt/Skip; body never ran
 	StatusFiltered Status = "filtered"
+	// StatusPending is a compile-time PendingIt/Pending spec: the specification exists but its
+	// implementation does not, distinct from Skipped (intentionally not executed). Body never ran,
+	// exactly like Skipped and Filtered; see events.go's SpecResultEvent.Pending.
+	StatusPending Status = "pending"
 )
 
 // Case is one normalized spec result: an executed It, or a generated candidate.
@@ -38,7 +47,7 @@ type Case struct {
 	Output   string // full output/stack trace, when the source event carried one
 }
 
-// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered.
+// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
 type Totals struct {
 	Total    int
 	Passed   int
@@ -46,6 +55,7 @@ type Totals struct {
 	Error    int
 	Skipped  int
 	Filtered int
+	Pending  int
 }
 
 func (t *Totals) add(s Status) {
@@ -61,6 +71,8 @@ func (t *Totals) add(s Status) {
 		t.Skipped++
 	case StatusFiltered:
 		t.Filtered++
+	case StatusPending:
+		t.Pending++
 	}
 }
 

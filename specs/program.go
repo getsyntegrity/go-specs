@@ -35,20 +35,28 @@ type step func(*Context)
 // (SpecStarted+SpecFinished{Skipped:true}, no body run) independently of whether this group's real
 // specs run at all.
 //
+// pendingSpecs is the same mechanism for compile-time-pending specs (PendingIt/Pending, #208):
+// buffered by finalize the same way skipped is, and reported by Runner as
+// SpecStarted+SpecFinished{Pending:true} — distinct from Skipped, since "not implemented yet" is a
+// different fact from "intentionally not executed". pendingSpecScopeNames parallels it, same as
+// skippedScopeNames parallels skipped.
+//
 // scopeNames parallels names, holding each spec's raw (unjoined) enclosing Describe names —
 // outermost first, captured by Builder at registration time (see specItem.scopeNames) — for
 // SpecStartEvent.Path (see specPath). Like names, it is left nil for a parallelStep group.
 // skippedScopeNames is the same, parallel to skipped.
 type group struct {
-	before            []step
-	specs             []step
-	names             []string
-	fullNames         []string
-	scopeNames        [][]string
-	after             []step
-	hookKey           string
-	skipped           []string
-	skippedScopeNames [][]string
+	before                []step
+	specs                 []step
+	names                 []string
+	fullNames             []string
+	scopeNames            [][]string
+	after                 []step
+	hookKey               string
+	skipped               []string
+	skippedScopeNames     [][]string
+	pendingSpecs          []string
+	pendingSpecScopeNames [][]string
 }
 
 // specPath returns g.specs[i]'s SpecStartEvent.Path: its declared enclosing scope names (outermost
@@ -82,6 +90,21 @@ func (g *group) skippedPath(i int) []string {
 	path := make([]string, 0, len(scopes)+1)
 	path = append(path, scopes...)
 	return append(path, g.skipped[i])
+}
+
+// pendingPath is specPath for g.pendingSpecs[i] (a compile-time-pending spec), same shape and same
+// freshly-allocated contract as skippedPath.
+func (g *group) pendingPath(i int) []string {
+	if i < 0 || i >= len(g.pendingSpecs) {
+		return nil
+	}
+	var scopes []string
+	if i < len(g.pendingSpecScopeNames) {
+		scopes = g.pendingSpecScopeNames[i]
+	}
+	path := make([]string, 0, len(scopes)+1)
+	path = append(path, scopes...)
+	return append(path, g.pendingSpecs[i])
 }
 
 // subtestName returns the Go subtest identity for g.specs[i]: its full Describe breadcrumb, falling
@@ -140,6 +163,11 @@ type specExecutionObserver interface {
 	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
 	// concept, so it never needs it.
 	specSkipped(name string, path []string)
+	// specPending reports one compile-time-pending spec (PendingIt/Pending, #208): a single
+	// SpecStarted + SpecFinished{Pending: true} pair, with no body ever run — mirroring
+	// specSkipped, but distinct from it (see runner.go's reportPending). Only Runner.Run's
+	// sequential group execution calls this, same as specSkipped.
+	specPending(name string, path []string)
 }
 
 // Program is a compiled execution program. Groups run in order; within a group, every spec runs its

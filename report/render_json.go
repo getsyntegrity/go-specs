@@ -23,6 +23,7 @@ type jsonTotals struct {
 	Error    int `json:"error"`
 	Skipped  int `json:"skipped"`
 	Filtered int `json:"filtered"`
+	Pending  int `json:"pending"`
 }
 
 type jsonExecution struct {
