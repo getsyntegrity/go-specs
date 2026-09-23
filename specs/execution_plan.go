@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,6 +223,9 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	if s == nil || s.Plan == nil || tb == nil || len(s.Plan.ProgramStart) == 0 {
 		return
 	}
+	if observe := suiteRunObserver.Load(); observe != nil {
+		(*observe)(s)
+	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
 
@@ -249,6 +253,12 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 		SkippedSpecs:  counter.skipped,
 	})
 }
+
+// suiteRunObserver, when set, sees every CompiledSuite right before it runs. It exists only so this
+// package's tests can inspect a suite that an entry point such as Describe builds and runs without
+// ever returning it — group_hook_cost_test.go uses it to prove H10 on every entry point. Unset in
+// production, where it costs one atomic load per suite run and allocates nothing.
+var suiteRunObserver atomic.Pointer[func(*CompiledSuite)]
 
 // specCounter decorates an EventReporter to tally executed/failed/filtered specs for the enclosing
 // suite's SuiteEndEvent, then forwards every event unchanged to the underlying reporter.

@@ -1,6 +1,8 @@
 package specs
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 )
@@ -78,5 +80,51 @@ func TestSuiteWithoutGroupHooksAllocatesNoGroupStorage(t *testing.T) {
 	})
 	if hooked.groups == nil {
 		t.Fatal("a suite that registers a BeforeAll has no group storage")
+	}
+}
+
+// TestDescribeEntryPointsAllocateNoGroupStorageWithoutHooks extends the H10 guard above to the entry
+// points that build and run a suite in one call (Describe, DescribeWithReporter, and Describe inside
+// Analyze), which never hand the CompiledSuite back: suiteRunObserver sees it right before it runs.
+func TestDescribeEntryPointsAllocateNoGroupStorageWithoutHooks(t *testing.T) {
+	seen := map[string]*CompiledSuite{}
+	var mu sync.Mutex
+	observe := func(s *CompiledSuite) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasPrefix(s.Name, "h10 ") {
+			seen[s.Name] = s
+		}
+	}
+	suiteRunObserver.Store(&observe)
+	defer suiteRunObserver.Store(nil)
+
+	plain := func(s *Spec) {
+		s.BeforeEach(func(*Context) {})
+		s.When("nested", func(w *Spec) { w.It("spec", func(*Context) {}) })
+	}
+	hooked := func(s *Spec) {
+		s.BeforeAll(func(*Context) {})
+		s.It("spec", func(*Context) {})
+	}
+	Describe(t, "h10 describe", plain)
+	DescribeWithReporter(t, "h10 reporter", &recordingReporter{}, plain)
+	Analyze(func() { Describe(t, "h10 analyze", plain) })
+	Describe(t, "h10 hooked describe", hooked)
+	Analyze(func() { Describe(t, "h10 hooked analyze", hooked) })
+
+	for _, name := range []string{"h10 describe", "h10 reporter", "h10 analyze"} {
+		s, ok := seen[name]
+		if !ok {
+			t.Fatalf("suite %q never ran", name)
+		}
+		if s.groups != nil {
+			t.Errorf("suite %q without group hooks has group storage %+v, want nil (H10)", name, s.groups)
+		}
+	}
+	for _, name := range []string{"h10 hooked describe", "h10 hooked analyze"} {
+		if s, ok := seen[name]; !ok || s.groups == nil {
+			t.Errorf("suite %q registers a BeforeAll but ran without group storage", name)
+		}
 	}
 }
