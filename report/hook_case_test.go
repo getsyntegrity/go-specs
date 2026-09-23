@@ -6,50 +6,75 @@ import (
 	"encoding/xml"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // hook_case_test.go pins the report-model contract for a synthetic BeforeAll/AfterAll group hook
 // case (issue #207, docs/SUITE_HOOKS_CONTRACT.md H8): a failed group hook is reported as one case,
-// structurally distinguishable from a real spec by SpecStartEvent.Hook / Case.Hook (not merely by
+// structurally distinguishable from a real spec by SpecResultEvent.Hook / Case.Hook (not merely by
 // its bracketed name), rendered by every renderer, and counted in totals like any other case. A
 // suite that never registers a group hook must see Hook stay "" everywhere and its report output
 // stay byte-for-byte identical — that half of the contract is already covered by the existing
 // golden tests (TestRenderTXTGolden, TestRenderJSONGolden, TestRenderXMLGolden), which this file
 // does not duplicate.
 
-// TestSpecResultEventCarriesHook proves SpecResultEvent (which embeds SpecStartEvent) exposes the
-// Hook field a producer sets on the start event, the same way Name/Path already flow through.
+// TestSpecResultEventSizeUnchanged pins the fix for the #207 performance regression: commit
+// 078ccd1 added a "Hook string" field to SpecStartEvent (embedded in SpecResultEvent), growing
+// SpecResultEvent from 112 to 128 bytes on amd64. SpecResultEvent is copied by value once per spec
+// on every engine, so that growth was paid by every suite, including Builder/Runner's
+// BenchmarkSuite_1000 which never emits a hook case at all — a ~15% regression (17.5µs to 20.2µs)
+// that violates H10 ("no cost for suites without BeforeAll/AfterAll", docs/SUITE_HOOKS_CONTRACT.md).
+// The fix moves the hook marker onto SpecResultEvent itself as a HookKind (uint8), sized to fit in
+// padding the existing Failed/Skipped/Filtered/Pending bools already leave before Duration, so
+// SpecResultEvent returns to its original, pre-#207 size.
+func TestSpecResultEventSizeUnchanged(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("size assertion is only meaningful on a 64-bit platform")
+	}
+	const want = 112
+	if got := unsafe.Sizeof(SpecResultEvent{}); got != want {
+		t.Fatalf("unsafe.Sizeof(SpecResultEvent{}) = %d, want %d bytes (issue #207 H10: SpecResultEvent "+
+			"is copied per spec on every engine, so any growth here is a per-spec tax paid even by "+
+			"suites with no BeforeAll/AfterAll)", got, want)
+	}
+}
+
+// TestSpecResultEventCarriesHook proves SpecResultEvent carries its own Hook, independent of the
+// embedded SpecStartEvent (which does not have a Hook field at all — see events.go's HookKind
+// doc): the marker lives only on the result event.
 func TestSpecResultEventCarriesHook(t *testing.T) {
-	start := SpecStartEvent{Name: "[BeforeAll]", Hook: "BeforeAll"}
-	result := SpecResultEvent{SpecStartEvent: start, Failed: true}
-	if result.Hook != "BeforeAll" {
-		t.Fatalf("SpecResultEvent.Hook = %q, want %q", result.Hook, "BeforeAll")
+	start := SpecStartEvent{Name: "[BeforeAll]"}
+	result := SpecResultEvent{SpecStartEvent: start, Failed: true, Hook: HookBeforeAll}
+	if result.Hook != HookBeforeAll {
+		t.Fatalf("SpecResultEvent.Hook = %v, want %v", result.Hook, HookBeforeAll)
 	}
 }
 
 // TestCollectorCopiesHookIntoCase proves the Collector copies SpecResultEvent.Hook onto the Case
-// it builds, verbatim, for both hook kinds and for the ordinary empty value.
+// it builds, as Case.Hook's string form, for both hook kinds and for the ordinary empty value.
 func TestCollectorCopiesHookIntoCase(t *testing.T) {
 	cases := []struct {
 		name string
-		hook string
+		hook HookKind
+		want string
 	}{
-		{"ordinary spec", ""},
-		{"BeforeAll", "BeforeAll"},
-		{"AfterAll", "AfterAll"},
+		{"ordinary spec", HookNone, ""},
+		{"BeforeAll", HookBeforeAll, "BeforeAll"},
+		{"AfterAll", HookAfterAll, "AfterAll"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewCollector()
 			c.SuiteStarted(SuiteStartEvent{Name: "S"})
 			c.SpecFinished(SpecResultEvent{
-				SpecStartEvent: SpecStartEvent{Name: "[" + tc.hook + "]", Hook: tc.hook},
-				Failed:         tc.hook != "",
+				SpecStartEvent: SpecStartEvent{Name: "[" + tc.want + "]"},
+				Failed:         tc.hook != HookNone,
+				Hook:           tc.hook,
 			})
 			c.SuiteFinished(SuiteEndEvent{Name: "S"})
 			r := c.Report()
-			if got := r.Suites[0].Cases[0].Hook; got != tc.hook {
-				t.Fatalf("Case.Hook = %q, want %q", got, tc.hook)
+			if got := r.Suites[0].Cases[0].Hook; got != tc.want {
+				t.Fatalf("Case.Hook = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -61,7 +86,7 @@ func TestCollectorCopiesHookIntoCase(t *testing.T) {
 func TestHookCaseCountsInTotals(t *testing.T) {
 	c := NewCollector()
 	c.SuiteStarted(SuiteStartEvent{Name: "S"})
-	c.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Hook: "BeforeAll"}, Failed: true})
+	c.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]"}, Failed: true, Hook: HookBeforeAll})
 	c.SuiteFinished(SuiteEndEvent{Name: "S"})
 	r := c.Report()
 
@@ -78,9 +103,10 @@ func sampleReportWithFailedBeforeAllHook() NormalizedReport {
 	c := NewCollector()
 	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
 	c.SpecFinished(SpecResultEvent{
-		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when the cart has items"}, Hook: "BeforeAll"},
+		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when the cart has items"}},
 		Failed:         true,
 		Message:        "expected true, got false",
+		Hook:           HookBeforeAll,
 	})
 	c.SuiteFinished(SuiteEndEvent{Name: "Checkout"})
 	return c.Report()

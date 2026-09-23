@@ -174,10 +174,18 @@ subtest, the same isolation a real spec's body already gets (`runSpecProgramIsol
 
 Synthetic hook cases appear in every renderer (TXT, JSON, HTML, JUnit XML) and are counted in
 totals, exactly like a real spec. They are distinguishable from a real spec by a **structural**
-field — `report.SpecStartEvent.Hook` / `report.Case.Hook`, holding `"BeforeAll"` or `"AfterAll"`
-— not merely by the bracketed name. Only a *failed* hook produces a case: a passing `BeforeAll` or
-`AfterAll` emits nothing, so the report shape of an existing suite that registers no group hooks is
-completely unchanged.
+field — `report.SpecResultEvent.Hook`, a compact `report.HookKind` enum (`HookBeforeAll` /
+`HookAfterAll`, zero value `HookNone` for a real spec), copied to `report.Case.Hook` as a plain
+string (`"BeforeAll"`/`"AfterAll"`) by the collector — not merely by the bracketed name. The marker
+lives only on the *result* event: `report.SpecStartEvent` carries no `Hook` field, so a failed
+hook's `SpecStarted` event is never marked and a consumer must attribute at `SpecFinished`. It is a
+`uint8` enum rather than a string on `SpecStartEvent`/`SpecResultEvent` deliberately: `SpecResultEvent`
+is copied by value once per spec on every engine, so a string field there would be a per-spec tax
+paid even by a suite with no group hooks at all, which is exactly what H10 forbids; `HookKind`
+instead fits into padding the existing `Failed`/`Skipped`/`Filtered`/`Pending` bools already leave
+before `Duration`, so `SpecResultEvent`'s size is unchanged. Only a *failed* hook produces a case: a
+passing `BeforeAll` or `AfterAll` emits nothing, so the report shape of an existing suite that
+registers no group hooks is completely unchanged.
 
 ### H9 — Parallel and `FailFast` (normative now, implemented later)
 
@@ -197,6 +205,16 @@ A suite that registers no `BeforeAll`/`AfterAll` anywhere keeps its current allo
 (pinned by `specs/allocation_contract_test.go`) and its current report output, byte for byte. Group
 hook bookkeeping exists only in the compiled plan of a suite that actually uses `BeforeAll`/
 `AfterAll`; a suite that does not pays nothing for a feature it never asked for.
+
+The per-spec event is part of this rule. `report.SpecResultEvent` is built and copied by value for
+every spec on every engine, so any field this feature adds to it is a cost every suite pays, hook
+or no hook. Its size is therefore pinned at 112 bytes on 64-bit platforms by
+`TestSpecResultEventSizeUnchanged` (`report/hook_case_test.go`), and the hook marker is the one-byte
+`report.HookKind`, placed in the padding the event's bool flags already leave. This is not
+theoretical: a first draft of #207 carried the marker as a `string` on `SpecStartEvent`, which grew
+the event from 112 to 128 bytes and slowed `BenchmarkSuite_1000` — a Builder/Runner suite that
+never emits a hook case — from ~17.5 µs/op to ~20.2 µs/op. The compact field restored 112 bytes and
+~17.4–17.6 µs/op.
 
 ## Where a hook's `*Context` comes from
 
