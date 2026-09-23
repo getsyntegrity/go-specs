@@ -71,14 +71,16 @@ func (m *matchErrorMatcher) Match(actual any) bool {
 }
 
 func (m *matchErrorMatcher) FailureMessage(actual any) string {
+	// A nil error arrives here as an untyped nil, which a type assertion to error rejects, so it
+	// has to be checked first or it would be misreported as a non-error actual.
+	if actual == nil {
+		return fmt.Sprintf("expected an error matching %s, got a nil error — errors.Is(actual, expected) is false",
+			describeError(m.target))
+	}
 	actualErr, ok := actual.(error)
 	if !ok {
 		return fmt.Sprintf("expected an error matching %s, got %v (%T) — errors.Is needs an error actual",
 			describeError(m.target), actual, actual)
-	}
-	if actualErr == nil {
-		return fmt.Sprintf("expected an error matching %s, got a nil error — errors.Is(actual, expected) is false",
-			describeError(m.target))
 	}
 	return errorMismatchMessage(m.target, actualErr)
 }
@@ -115,13 +117,14 @@ func (m *matchErrorAsMatcher) FailureMessage(actual any) string {
 		return fmt.Sprintf("MatchErrorAs needs a non-nil pointer to a type implementing error (or to an interface), got %v (%T)",
 			m.target, m.target)
 	}
+	// Checked before the type assertion for the same reason as in matchErrorMatcher.FailureMessage.
+	if actual == nil {
+		return fmt.Sprintf("expected an error assignable to %T, got a nil error", m.target)
+	}
 	actualErr, ok := actual.(error)
 	if !ok {
 		return fmt.Sprintf("expected an error assignable to %T, got %v (%T) — errors.As needs an error actual",
 			m.target, actual, actual)
-	}
-	if actualErr == nil {
-		return fmt.Sprintf("expected an error assignable to %T, got a nil error", m.target)
 	}
 	return fmt.Sprintf("expected %s to unwrap to %T — errors.As(actual, target) is false",
 		describeError(actualErr), m.target)
