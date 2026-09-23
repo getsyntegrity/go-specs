@@ -87,6 +87,34 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `Spec.BeforeAll(fn)` and `Spec.AfterAll(fn)` on the canonical `Describe`/`Spec` engine: once-per-
+  group setup and teardown, instead of once per spec the way `BeforeEach`/`AfterEach` already work.
+  A group (the root `Describe` body, a nested `Describe`, or a `When`) is entered lazily, right
+  before its first runnable spec — including one belonging to a nested group — and its `AfterAll`
+  runs right after its last spec or subgroup finishes; a group with no `It` anywhere in its subtree
+  never runs either hook at all. Setup is outer-to-inner, teardown inner-to-outer, matching
+  `BeforeEach`/`AfterEach`'s existing order. A `BeforeAll` failure (an assertion, a panic, or
+  `Fatal`/`FailNow`) is reported once as a synthetic `[BeforeAll]` case, stops the rest of that
+  group's own `BeforeAll`s and every nested group's hooks, and reports every descendant spec
+  skipped — but never affects a sibling group, and the failing group's own `AfterAll` still runs.
+  An `AfterAll` failure is reported once as a synthetic `[AfterAll]` case without retroactively
+  failing a spec that already passed, and every remaining `AfterAll` (same group and outer) still
+  runs. Both the default bytecode-compiler path and the `Analyze`/registry path implement this
+  identically. Not yet implemented on the `Builder`/`Program`/`Runner` engine (tracked as a
+  follow-up); see [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md). See
+  [docs/SUITE_HOOKS_CONTRACT.md](docs/SUITE_HOOKS_CONTRACT.md) for the full normative contract and
+  [docs/DSL.md](docs/DSL.md#beforeall--afterall) for the DSL summary.
+  ([#207](https://github.com/getsyntegrity/go-specs/issues/207))
+- Structural reporting for synthetic group hook cases: `report.SpecResultEvent.Hook`, a compact
+  `report.HookKind` (`HookBeforeAll`/`HookAfterAll`, zero value `HookNone` for a real spec),
+  copied onto `report.Case.Hook` as a string (`"BeforeAll"`/`"AfterAll"`, omitted from JSON and
+  shards when empty). A hook case's identity is its group path plus the marker: its JUnit
+  classname is the full group path, and TXT/HTML print it as `<group path> [BeforeAll]`. The
+  change is additive: a suite that registers no group hook keeps its exact report output, shard
+  bytes and allocation counts, so `report.SchemaVersion` is unchanged. `HookKind` is a `uint8`
+  rather than a string because `SpecResultEvent` is copied by value once per spec on every engine;
+  its 112-byte size is pinned by a test (`docs/SUITE_HOOKS_CONTRACT.md` H10).
+  ([#207](https://github.com/getsyntegrity/go-specs/issues/207), [#228](https://github.com/getsyntegrity/go-specs/pull/228))
 - `Builder.PendingIt(name, fn)` and `specs.Pending(fn) SpecFn` (routed through `ItWith`, mirroring
   `SkipIt`/`Skip`), a spec state distinct from skipped: a pending spec's body never runs either, but
   it means "the specification exists, the implementation does not" rather than "intentionally not

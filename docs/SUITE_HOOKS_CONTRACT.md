@@ -4,11 +4,10 @@ Status: normative. Tracking issue: [#207](https://github.com/getsyntegrity/go-sp
 
 This document is the contract every go-specs execution engine must follow for **group hooks** —
 setup and teardown that run once per `Describe`/`When` group, instead of once per spec the way
-`BeforeEach`/`AfterEach` already do. It is engine-agnostic and is written before any engine
-implements it: the canonical `Describe` engine (`specs.Describe`, `Spec.Describe`, `Spec.When`,
-`Spec.It`) is the first to adopt it, in the change that follows this contract, and any engine that
-later adds `BeforeAll`/`AfterAll` — including the Builder/Runner engine in a follow-up change —
-must implement exactly these rules, not reinterpret them.
+`BeforeEach`/`AfterEach` already do. It is engine-agnostic: today only the canonical `Describe`
+engine (`specs.Describe`, `Spec.Describe`, `Spec.When`, `Spec.It`) implements it, but any engine
+that later adds `BeforeAll`/`AfterAll` — including the Builder/Runner engine in a follow-up change
+— must implement exactly these rules, not reinterpret them.
 
 ## The problem this solves
 
@@ -235,7 +234,7 @@ same Go scope, not through the `*Context` itself.
 
 | Engine | `BeforeAll`/`AfterAll` |
 | --- | --- |
-| `Describe`/`Spec` (canonical, `ExecutionPlan` + `CompiledSuite`) | 🚧 in progress — lands in the change that follows this contract (#207) |
+| `Describe`/`Spec` (canonical, `ExecutionPlan` + `CompiledSuite`) | ✅ supported |
 | `Builder`/`Program`/`Runner` | ❌ not yet — a follow-up change after the `Describe` engine; H9 above is what it must implement |
 
 See `docs/EXECUTION_ENGINES.md` for the full engine inventory this table is part of.

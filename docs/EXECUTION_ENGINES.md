@@ -134,6 +134,7 @@ of the others.
 | Reporting (`report.EventReporter`) | ✅ | ✅ | ❌ | ❌ | ❌ | ⚠️ `parallelStep` only |
 | FailFast | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Isolation (spec survives `Fatalf`) | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ (sentinel) |
+| `BeforeAll`/`AfterAll` group hooks ([#207](https://github.com/getsyntegrity/go-specs/issues/207), `docs/SUITE_HOOKS_CONTRACT.md`) | ✅ | ❌ (follow-up) | ❌ | ❌ | ❌ | ❌ |
 
 Two asymmetries are **deliberate** and must not be "consolidated" away:
 

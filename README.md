@@ -14,7 +14,8 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 
 ## Key features
 
-- **BDD-style API** — `Describe`, `When`, `It`, `BeforeEach`, and `AfterEach` for structured specs
+- **BDD-style API** — `Describe`, `When`, `It`, `BeforeEach`/`AfterEach` (per spec), and
+  `BeforeAll`/`AfterAll` (once per group) for structured specs
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
 - **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, etc.), composable with `Not`/`All`/`Any`, and snapshot testing
@@ -64,7 +65,13 @@ func TestMathWithHooks(t *testing.T) {
 }
 ```
 
-See [examples/basic](examples/basic) and [examples/hooks](examples/hooks) for runnable examples.
+`BeforeAll`/`AfterAll` run once per `Describe`/`When` group instead of once per spec — useful for
+an expensive fixture (a test database, a server) shared across several specs. See
+[docs/DSL.md](docs/DSL.md#beforeall--afterall) and
+[docs/SUITE_HOOKS_CONTRACT.md](docs/SUITE_HOOKS_CONTRACT.md) for the full contract.
+
+See [examples/basic](examples/basic), [examples/hooks](examples/hooks) and
+[examples/suite_hooks](examples/suite_hooks) for runnable examples.
 
 ## Benchmarks
 
