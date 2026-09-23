@@ -25,6 +25,11 @@ type registry struct {
 	mu    sync.Mutex
 	arena *NodeArena
 	stack []int
+	// groupHooks holds BeforeAll/AfterAll registrations (issue #207), nil until the first one. It
+	// lives here rather than on NodeArena so a suite without group hooks allocates nothing for it
+	// (docs/SUITE_HOOKS_CONTRACT.md H10); registry had 8 bytes of slack in its allocation size class
+	// on develop, so this pointer costs nothing either (group_hook_cost_test.go).
+	groupHooks *arenaGroupHooks
 }
 
 // registryStack holds one Analyze/Describe registry stack per goroutine. A flat, ungoroutine-scoped
@@ -140,6 +145,39 @@ func (r *registry) appendAfterHook(fn func(*Context)) {
 	defer r.mu.Unlock()
 	id := r.currentNodeIDLocked()
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
+}
+
+// appendBeforeAllHook adds a once-per-group setup hook to the current node (issue #207). Unlike
+// appendBeforeHook, this hook is never flattened onto descendant It nodes — see arenaGroupHooks.
+func (r *registry) appendBeforeAllHook(fn func(*Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	appendArenaGroupHook(&r.groupHooksLocked().before, r.currentNodeIDLocked(), fn)
+}
+
+// appendAfterAllHook adds a once-per-group teardown hook to the current node (issue #207).
+func (r *registry) appendAfterAllHook(fn func(*Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	appendArenaGroupHook(&r.groupHooksLocked().after, r.currentNodeIDLocked(), fn)
+}
+
+// groupHooksLocked returns r.groupHooks, allocating it on first use. r.mu must be held.
+func (r *registry) groupHooksLocked() *arenaGroupHooks {
+	if r.groupHooks == nil {
+		r.groupHooks = &arenaGroupHooks{}
+	}
+	return r.groupHooks
+}
+
+// groupHooksOf returns r's group hooks, or nil for a nil registry or one without any.
+func (r *registry) groupHooksOf() *arenaGroupHooks {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.groupHooks
 }
 
 func pushRegistry(r *registry) func() {

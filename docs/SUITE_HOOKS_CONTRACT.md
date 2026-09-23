@@ -4,11 +4,10 @@ Status: normative. Tracking issue: [#207](https://github.com/getsyntegrity/go-sp
 
 This document is the contract every go-specs execution engine must follow for **group hooks** —
 setup and teardown that run once per `Describe`/`When` group, instead of once per spec the way
-`BeforeEach`/`AfterEach` already do. It is engine-agnostic and is written before any engine
-implements it: the canonical `Describe` engine (`specs.Describe`, `Spec.Describe`, `Spec.When`,
-`Spec.It`) is the first to adopt it, in the change that follows this contract, and any engine that
-later adds `BeforeAll`/`AfterAll` — including the Builder/Runner engine in a follow-up change —
-must implement exactly these rules, not reinterpret them.
+`BeforeEach`/`AfterEach` already do. It is engine-agnostic: today only the canonical `Describe`
+engine (`specs.Describe`, `Spec.Describe`, `Spec.When`, `Spec.It`) implements it, but any engine
+that later adds `BeforeAll`/`AfterAll` — including the Builder/Runner engine in a follow-up change
+— must implement exactly these rules, not reinterpret them.
 
 ## The problem this solves
 
@@ -24,11 +23,12 @@ contains.
 
 ## The mechanism, in one paragraph
 
-Each group is *entered* lazily, right before the first spec that will actually run inside it —
-not when the group is declared. Entering a group runs its `BeforeAll` hooks outer-to-inner (the
-same order `BeforeEach` already uses); leaving a group — right after its last spec or subgroup
-finishes — runs its `AfterAll` hooks inner-to-outer (the same order `AfterEach` already uses). A
-group with no spec to run at all is never entered, so an unused fixture never pays its setup cost.
+Each group is *entered* when the suite reaches it — not when it is declared — and, against a real
+`*testing.T`, it runs as a Go subtest of its own. Entering a group runs its `BeforeAll` hooks
+outer-to-inner (the same order `BeforeEach` already uses); leaving a group — right after its last
+spec or subgroup finishes — runs its `AfterAll` hooks inner-to-outer (the same order `AfterEach`
+already uses). A group with no `It` in it at all is never entered, so an unused fixture never pays
+its setup cost.
 A hook failure is reported as one synthetic case attached to the group, distinct from a real spec,
 and never stops teardown: once a group's `BeforeAll` has started, its `AfterAll` is guaranteed to
 run.
@@ -73,10 +73,29 @@ s.BeforeAll(func(ctx *specs.Context) { order = append(order, "second") })
 // runs "first" then "second"
 ```
 
+**A hooked group needs a unique, non-empty name.** A group that registers `BeforeAll` or `AfterAll`
+runs as its own Go subtest (H7), so its name has to work as one. It must be explicit and non-empty,
+and no spec or other hooked group of the same suite may have the same full subtest name once `go
+test` has normalized both (spaces become `_`, non-printable runes are escaped). The suite is
+rejected while it is built — before any spec runs, on every entry point (`Describe`,
+`DescribeWithReporter`, `BuildSuite`, and inside `Analyze`) — with a panic naming the group, for
+each of these shapes:
+
+- an empty group name: `When("")`, or `specs.Describe(t, "", ...)` with root hooks;
+- an `It("")` directly inside the group;
+- a spec with the group's full name, e.g. `It("x")` next to a hooked `When("x")`, or `It("sp_ace")`
+  next to a hooked `When("sp ace")`;
+- another hooked group with the same full name: two hooked sibling `When("x")`, or a hooked
+  `When("a/b")` next to `When("a")` containing a hooked `When("b")`.
+
+Each of these would otherwise make Go rename a subtest (`#00`, `#01`) and change a spec's full
+subtest name. Groups without `BeforeAll`/`AfterAll` are not checked and keep every name they could
+always have.
+
 ### H2 — Entry and order: outer before inner, inner after outer
 
-A group is entered lazily, right before its first runnable spec (including a spec that belongs to
-a nested group). Setup is outer→inner; teardown is inner→outer:
+A group is entered right before its first spec or nested group runs. Setup is outer→inner; teardown
+is inner→outer:
 
 ```
 outer BeforeAll → inner BeforeAll → [BeforeEach → It → AfterEach]* → inner AfterAll → outer AfterAll
@@ -118,6 +137,24 @@ A spec that only turns out not to execute at *run time* — for example, one tha
 inside its own body — does not change this: the group was already entered, its `BeforeAll` already
 ran, and its `AfterAll` still runs.
 
+**External test selection (`go test -run`/`-skip`).** Filtering that is only discovered during
+execution — `go test -run` and `-skip`, which Go's `testing` package applies lazily, one subtest at
+a time — cannot be part of the decision above, and it cannot prevent the entry of a group subtest
+that `testing` selected. A hooked group belongs to its own subtest, and its hooks run whenever
+`testing` selects that subtest:
+
+- `go test -run '^TestCheckout$/^checkout$/^cart_has_items$/^charges_the_card$'` selects one spec
+  inside a hooked group; the group's `BeforeAll` runs exactly once, before it, and its `AfterAll`
+  after it. A spec that runs always has its group's setup.
+- A pattern that does not select the group subtest at all (for example `-run
+  '^TestCheckout$/^checkout$/^other_group$'`) never enters the group: none of its hooks run, no
+  synthetic hook case is emitted, and its specs are reported `Filtered`, exactly as they are without
+  group hooks.
+- A pattern that selects the group subtest but none of its specs (for example `-run
+  '^TestCheckout$/^checkout$/^cart_has_items$/^nomatch$'`) does enter the group: its `BeforeAll` and
+  `AfterAll` run, and every spec is reported `Filtered`. `testing` only learns that no spec
+  matches while the group subtest is already running.
+
 ### H4 — `BeforeAll` failure
 
 A failure — an assertion via `ctx`, `Fatal`/`FailNow` (`runtime.Goexit`), or a panic — in any
@@ -140,12 +177,36 @@ s.Describe("A", func(a *specs.Spec) {
 s.It("B, a sibling of A, runs normally", func(*specs.Context) { /* ... */ })
 ```
 
+**Failures reported directly through `ctx.T`.** An assertion through `ctx`, `ctx.T.Fatal`,
+`ctx.T.FailNow` and a panic are always detected. A *non-fatal* report made directly on `ctx.T`
+(`ctx.T.Error`, `ctx.T.Errorf`, `ctx.T.Fail`) leaves only one trace: the `*testing.T` it was made on
+turns failed. Go's `testing` propagates a failure to every parent test and offers no way to observe
+an individual call, so that trace is readable only while the hook's `*testing.T` had not failed
+before the hook ran. Every hooked group has its own subtest (see H1 and H7), and that subtest has
+never failed when its `BeforeAll` runs, because the group is entered before any of its specs. A
+`BeforeAll` that reports through `ctx.T.Errorf` is therefore always detected. (`AfterAll` is
+different; see H6.)
+
 ### H5 — The `AfterAll` guarantee
 
-Once a group was entered — its first `BeforeAll` started, or it has no `BeforeAll` at all and its
-first spec started — every one of its `AfterAll`s runs, including after a `BeforeAll`
+Once a group was entered — its subtest started (or, without a `*testing.T`, the suite reached it)
+— every one of its `AfterAll`s runs, including after a `BeforeAll`
 failure/panic, a spec failure, or a spec panic. A failing `AfterAll` does not stop the remaining
 `AfterAll`s of that same group, or of an outer group.
+
+This includes a run stopped by an unsupported `ctx.T.Parallel()` call (in a spec body or a hook,
+see "Hook lifetime"): no further spec runs, but every group already entered still runs its
+`AfterAll`s while the stop unwinds, inner group first.
+
+The guarantee is built on Go's own `defer`: each `AfterAll` is deferred, one per hook, before the
+group's first `BeforeAll` runs. A deferred call runs on a normal return and on `runtime.Goexit` alike,
+and a `Goexit` inside one deferred `AfterAll` (an `ctx.Expect` failure, `ctx.T.Fatal`, `FailNow`)
+still runs the remaining ones.
+
+**`ctx.T.SkipNow()` in a `BeforeAll`** (or `ctx.T.Skip`) skips the group: its specs, including
+nested groups' specs, are reported skipped — not failed — with a message naming the group, no
+`[BeforeAll]` case is emitted, the group's `AfterAll`s still run, and `go test` reports the group's
+subtest as skipped.
 
 ### H6 — `AfterAll` failure
 
@@ -153,6 +214,13 @@ Reported once, as a synthetic case `[AfterAll]` under the group's own path. Spec
 passed keep their passed status — an `AfterAll` failure never retroactively fails a spec that
 already finished. Per H5, every remaining `AfterAll` (the rest of this group's own list, and every
 outer group's) still runs.
+
+Limitation: an `AfterAll` that reports a failure *only* through a non-fatal `ctx.T.Error`,
+`ctx.T.Errorf` or `ctx.T.Fail`, in a group whose `*testing.T` has already failed (typically because
+one of its specs failed), produces no `[AfterAll]` case — for the reason explained under H4. `go
+test` still prints the message and fails the group's subtest; only the synthetic case is missing.
+Failing through an assertion (`ctx.Expect(...)`), `ctx.T.Fatal`/`FailNow` or a panic is always
+reported. Reporting every such `AfterAll` as failed instead would invent failures.
 
 ```go
 s.BeforeAll(func(*specs.Context) { /* ok */ })
@@ -167,8 +235,34 @@ Hook panics and `FailNow`/`Fatal` (`runtime.Goexit`) go through the same single 
 every other execution path in this engine already uses (`reportRecoveredPanic` /
 `recoverSpecFailure`, `specs/panic_report.go`): they are never double-reported, and they are
 attributed to the synthetic hook case, not to whichever spec happens to run next. A `Goexit` in a
-group hook must not abort sibling groups — each group's hooks run inside their own isolated
-subtest, the same isolation a real spec's body already gets (`runSpecProgramIsolated`).
+group hook must not abort sibling groups.
+
+Hooks are **not subtests**. When the suite runs against a real `*testing.T`, every group that
+registers a hook gets a real Go subtest of its own, and its specs and nested groups run inside it.
+The subtest names compose to exactly the name each spec had without group hooks
+(`TestCheckout/checkout/cart_has_items/charges_the_card` either way), so `-run` patterns and IDE
+links keep working. The group subtests themselves are visible, though: `go test -v` prints a
+`=== RUN`/`--- PASS` line for `TestCheckout/checkout/cart_has_items`, and `go test -json` reports it
+as a test of its own, so tools that count tests from that stream (gotestsum, IDE test trees) count
+one more entry per hooked group than before.
+
+The group subtest's own goroutine runs the whole group: its `BeforeAll`s, then its specs and nested
+groups, then its `AfterAll`s. Hooks never run on a goroutine of their own, so `ctx.T` — the group's
+subtest — is only ever used from the goroutine running that test, the only one Go supports
+`Fatal`, `FailNow`, `SkipNow` and `Parallel` from. A `Goexit` in a hook ends the group's subtest
+(its `AfterAll`s still run, see H5), never a sibling group. A hook failure — an assertion,
+`ctx.T.Fatal`, `ctx.T.FailNow`, `ctx.T.Errorf`, or a panic — is reported as the synthetic case
+*and* marks the group's subtest failed, so `go test` prints `--- FAIL:
+TestCheckout/checkout/cart_has_items` for it. Specs skipped by a `BeforeAll` failure are reported
+skipped without a subtest of their own.
+
+Within one suite, the naming rule in H1 guarantees these names. A collision with a subtest that
+only exists at run time cannot be known while the suite is built: a second same-named hooked
+`specs.Describe(t, "suite", ...)` in the same test function, your own earlier `t.Run("suite", ...)`,
+or a spec of an earlier hook-free suite whose full name equals the group's. Go then does what it
+always does for a repeated subtest name: it gives the group subtest a `#NN` suffix
+(`TestX/suite#01`), and the group's specs sit under it (`TestX/suite#01/when_a/spec`). The suffix is
+deterministic, unique and selectable with `-run`; everything else about the group is unchanged.
 
 ### H8 — Reporting: hook cases are structurally distinct
 
@@ -209,8 +303,23 @@ the Builder/Runner engine, which implements it in a follow-up change, not in the
 
 A suite that registers no `BeforeAll`/`AfterAll` anywhere keeps its current allocation counts
 (pinned by `specs/allocation_contract_test.go`) and its current report output, byte for byte. Group
-hook bookkeeping exists only in the compiled plan of a suite that actually uses `BeforeAll`/
+hook bookkeeping is allocated only for a suite that actually uses `BeforeAll`/
 `AfterAll`; a suite that does not pays nothing for a feature it never asked for.
+
+Allocation *counts* are not enough to prove that, because a struct can grow without allocating
+more often. The first draft of #207 added five slice headers to `ExecutionPlan` and `NodeArena`,
+kept `BenchmarkDescribeVariant_Describe` at exactly 426 allocs/op, and still cost every suite about
+96 B/op: `ExecutionPlan` grew from 192 to 264 bytes and moved up an allocation size class. The rule
+is therefore pinned in bytes, by `specs/group_hook_cost_test.go`:
+
+- `ExecutionPlan` (192 bytes) and `NodeArena` (96 bytes) keep their exact pre-#207 sizes. Both sit
+  exactly on a size-class boundary, so they carry no group-hook field at all.
+- Group-hook storage hangs off one pointer on `CompiledSuite` and one on the Analyze registry, both
+  of which had 8 bytes of slack in their size class. The pointer stays nil, and nothing behind it is
+  allocated, until a `BeforeAll`/`AfterAll` is registered.
+
+With that layout, `BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast` report the same
+B/op and allocs/op as before the feature (57,180–57,188 B/op and 426 allocs/op on both trees).
 
 The per-spec event is part of this rule. `report.SpecResultEvent` is built and copied by value for
 every spec on every engine, so any field this feature adds to it is a cost every suite pays, hook
@@ -225,17 +334,44 @@ never emits a hook case — from ~17.5 µs/op to ~20.2 µs/op. The compact field
 ## Where a hook's `*Context` comes from
 
 `BeforeAll`/`AfterAll` receive a `*specs.Context`, the same type `BeforeEach`/`AfterEach`/`It`
-receive, built the same way: acquired from the runner's context pool and `Reset` against the
-group's own isolated subtest backend (see H7) before the hook runs. State a `BeforeAll` needs to
-share with the specs it sets up for (e.g. `db` in the example above) is carried the same way it
-already is without this feature: a variable captured by the hook and spec closures declared in the
-same Go scope, not through the `*Context` itself.
+receive, acquired from the runner's context pool. Its failures are reported to the group's subtest
+(see H7). State a `BeforeAll` needs to share with the specs it sets up for (e.g. `db` in the example
+above) is carried the same way it already is without this feature: a variable captured by the hook
+and spec closures declared in the same Go scope, not through the `*Context` itself.
+
+### Hook lifetime
+
+Against a real `*testing.T`, `ctx.T` in a hook is the **group's own subtest**. Anything a
+`BeforeAll` registers through it — `ctx.T.Cleanup`, `ctx.T.TempDir`, `ctx.T.Setenv`, and fixture
+libraries built on them — therefore lives for the whole group: it is visible to every spec of the
+group and to its `AfterAll`, and it is released when the group's subtest ends, right after its
+`AfterAll` and before the next sibling group starts. A `ctx.T.Setenv` in group A is restored before
+sibling group B runs.
+
+```go
+s.When("with a scratch dir", func(w *specs.Spec) {
+    var dir string
+    w.BeforeAll(func(ctx *specs.Context) {
+        dir = ctx.T.TempDir()        // removed after this group's AfterAll
+        ctx.T.Setenv("APP_ENV", "test") // restored before the next sibling group
+    })
+    w.It("writes a file", func(*specs.Context) { /* dir and APP_ENV are both still here */ })
+})
+```
+
+`ctx.T.Parallel()` is not supported inside a hook: making the group's subtest parallel would detach
+the group's hooks from its specs. It is detected and stops the run with a diagnostic, the same way
+`ctx.T.Parallel()` inside a sequential spec body already is. `ctx.T.SkipNow()` inside a
+`BeforeAll` skips the group (see H5).
+
+On a backend that is not a real `*testing.T` (a `*testing.B`, or a fake backend in go-specs' own
+tests) there are no subtests: hooks run directly, with the same H1–H7 semantics.
 
 ## Engine support
 
 | Engine | `BeforeAll`/`AfterAll` |
 | --- | --- |
-| `Describe`/`Spec` (canonical, `ExecutionPlan` + `CompiledSuite`) | 🚧 in progress — lands in the change that follows this contract (#207) |
+| `Describe`/`Spec` (canonical, `ExecutionPlan` + `CompiledSuite`) | ✅ supported |
 | `Builder`/`Program`/`Runner` | ❌ not yet — a follow-up change after the `Describe` engine; H9 above is what it must implement |
 
 See `docs/EXECUTION_ENGINES.md` for the full engine inventory this table is part of.

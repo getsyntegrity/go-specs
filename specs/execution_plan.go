@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,6 +68,12 @@ type planScratch struct {
 	afterFlat  []func(*Context)
 	program    []Instruction
 	path       []string
+	// hooks and groups carry the arena path's once-per-group hooks in and its compiled planGroups
+	// out for the duration of one buildExecutionPlanFromArenaGroups call (issue #207). They live on
+	// the pooled scratch rather than as extra recursion parameters or plan fields, so a suite
+	// without group hooks pays nothing for them (H10); both are cleared before the call returns.
+	hooks  *arenaGroupHooks
+	groups *planGroups
 }
 
 var planScratchPool = sync.Pool{
@@ -95,11 +102,24 @@ func countSpecsArena(arena *NodeArena, rootID int) int {
 }
 
 func buildExecutionPlanFromArena(arena *NodeArena, rootID int, plan *ExecutionPlan, scratch *planScratch) {
+	buildExecutionPlanFromArenaGroups(arena, rootID, plan, scratch, nil)
+}
+
+// buildExecutionPlanFromArenaGroups is buildExecutionPlanFromArena for an arena whose scopes may
+// carry once-per-group hooks (hooks, owned by the registry that built the arena — see
+// arenaGroupHooks). It returns the compiled group bookkeeping, or nil when no scope registered a
+// BeforeAll/AfterAll.
+func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *ExecutionPlan, scratch *planScratch, hooks *arenaGroupHooks) *planGroups {
 	if arena == nil || plan == nil || scratch == nil {
-		return
+		return nil
 	}
 	scratch.path = scratch.path[:0]
+	scratch.hooks = hooks
+	scratch.groups = nil
 	buildExecutionPlanFromArenaRec(arena, rootID, plan, scratch)
+	groups := scratch.groups
+	scratch.hooks, scratch.groups = nil, nil
+	return groups
 }
 
 func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *ExecutionPlan, scratch *planScratch) {
@@ -111,6 +131,9 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	if name != "" && node.Type != SuiteNode {
 		scratch.path = append(scratch.path, name)
 	}
+	// groupStart is this node's own once-per-group hooks' entry point (H2/H3): the index the next
+	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
+	groupStart := len(plan.Names)
 	if node.Type == ItNode {
 		scratch.beforeFlat = scratch.beforeFlat[:0]
 		scratch.afterFlat = scratch.afterFlat[:0]
@@ -153,6 +176,21 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
 	}
+	// Close this node's own group hooks (issue #207), the arena-path equivalent of
+	// bytecodeCompiler.closeGroupHooksAtTop: an ItNode has none of its own (BeforeAll/AfterAll are
+	// never registered on a leaf spec), and the SuiteNode root is never exposed to the public
+	// BeforeAll/AfterAll DSL surface, so both are skipped here defensively.
+	if node.Type != ItNode && node.Type != SuiteNode {
+		if before, after := scratch.hooks.of(nodeID); len(before) > 0 || len(after) > 0 {
+			path := scratch.path
+			if name == "" {
+				// The registry path never pushes an empty name; record it so the rejection names the
+				// group as declared (validateHookGroups).
+				path = append(slices.Clip(path), "")
+			}
+			registerHookGroup(&scratch.groups, path, name, before, after, groupStart, len(plan.Names)-1)
+		}
+	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
 		scratch.path = scratch.path[:len(scratch.path)-1]
 	}
@@ -180,6 +218,10 @@ type CompiledSuite struct {
 	RootID   int
 	Name     string // suite name for SuiteStartEvent/SuiteEndEvent; falls back to the backend's name if empty
 	Reporter report.EventReporter
+	// groups is the suite's BeforeAll/AfterAll bookkeeping, nil when it registers neither (see
+	// planGroups for why it lives here rather than on ExecutionPlan). Unexported: a CompiledSuite
+	// built by hand has no group hooks, which is exactly what nil means.
+	groups *planGroups
 }
 
 // Run executes all specs in the plan. Uses one context from the pool per spec.
@@ -187,11 +229,14 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	if s == nil || s.Plan == nil || tb == nil || len(s.Plan.ProgramStart) == 0 {
 		return
 	}
+	if observe := suiteRunObserver.Load(); observe != nil {
+		(*observe)(s)
+	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		runPlanSpecsInOrder(backend, nil, s.Plan)
+		s.runSpecs(backend, nil)
 		return
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
@@ -203,7 +248,7 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	runPlanSpecsInOrder(backend, counter, s.Plan)
+	s.runSpecs(backend, counter)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:          name,
 		Time:          time.Now(),
@@ -211,8 +256,15 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 		TotalSpecs:    counter.total,
 		FailedSpecs:   counter.failed,
 		FilteredSpecs: counter.filtered,
+		SkippedSpecs:  counter.skipped,
 	})
 }
+
+// suiteRunObserver, when set, sees every CompiledSuite right before it runs. It exists only so this
+// package's tests can inspect a suite that an entry point such as Describe builds and runs without
+// ever returning it — group_hook_cost_test.go uses it to prove H10 on every entry point. Unset in
+// production, where it costs one atomic load per suite run and allocates nothing.
+var suiteRunObserver atomic.Pointer[func(*CompiledSuite)]
 
 // specCounter decorates an EventReporter to tally executed/failed/filtered specs for the enclosing
 // suite's SuiteEndEvent, then forwards every event unchanged to the underlying reporter.
@@ -221,6 +273,11 @@ type specCounter struct {
 	total    int
 	failed   int
 	filtered int
+	// skipped counts a spec reported Skipped: true — today that is only a spec suppressed by an
+	// ancestor group's failed BeforeAll (issue #207 H4); the canonical Describe engine has no
+	// compile-time Skip/Pending of its own (see docs/EXECUTION_ENGINES.md), so this field stays 0
+	// for every suite that predates that feature.
+	skipped int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
@@ -231,13 +288,26 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	if e.Filtered {
 		c.filtered++
 	}
+	if e.Skipped {
+		c.skipped++
+	}
 	c.EventReporter.SpecFinished(e)
 }
 
-// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. The plan is already
-// flat — its hooks are compiled into each spec's own instruction range — so there is no group
-// nesting to walk here. Each spec still gets its own subtest when the backend wraps a real
-// *testing.T; that decision belongs to runSpecProgram, not to this loop.
+// runSpecs runs every spec of the suite once: through runPlanSpecsInOrder, unchanged from before
+// issue #207, for a suite without group hooks (H10), or through runPlanWithGroups otherwise.
+func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) {
+	if s.groups == nil {
+		runPlanSpecsInOrder(backend, rep, s.Plan)
+		return
+	}
+	runPlanWithGroups(backend, rep, s.Plan, s.groups)
+}
+
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. Each spec's own
+// before/body/after hooks are already flat — compiled into its own instruction range — so there is
+// no group nesting to walk. A suite with BeforeAll/AfterAll never reaches here; see
+// runPlanWithGroups.
 func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
 	for i := 0; i < len(plan.ProgramStart); i++ {
 		runExecution(backend, rep, plan, i)

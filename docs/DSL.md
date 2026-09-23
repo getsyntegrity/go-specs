@@ -50,6 +50,76 @@ s.AfterEach(func(ctx *specs.Context) {
 })
 ```
 
+## BeforeAll / AfterAll
+
+`BeforeAll` and `AfterAll` register a function that runs once per group — the root `Describe` body,
+a nested `Describe`, or a `When` — instead of once per spec. See
+[`docs/SUITE_HOOKS_CONTRACT.md`](SUITE_HOOKS_CONTRACT.md) for the full normative contract (entry
+order, failure semantics, reporting); the short version:
+
+```go
+s.BeforeAll(func(ctx *specs.Context) {
+    // runs once, right before this group's first runnable spec
+})
+s.AfterAll(func(ctx *specs.Context) {
+    // runs once, right after this group's last spec (or subgroup) finishes
+})
+```
+
+A group with no `It` anywhere in it (including nested groups) never runs its `BeforeAll`/
+`AfterAll` at all — there is nothing to set up for. A `BeforeAll` failure skips the rest of the
+group (every descendant spec is reported skipped) but the group's `AfterAll` still runs.
+
+**Example**, mirroring the nested execution order below:
+
+```go
+specs.Describe(t, "outer", func(s *specs.Spec) {
+    s.BeforeAll(func(ctx *specs.Context) { /* runs once, before "inner"'s first spec */ })
+    s.AfterAll(func(ctx *specs.Context) { /* runs once, after "inner"'s last spec */ })
+
+    s.When("inner", func(w *specs.Spec) {
+        w.BeforeAll(func(ctx *specs.Context) { /* runs once, before "spec" */ })
+        w.AfterAll(func(ctx *specs.Context) { /* runs once, after "spec" */ })
+        w.It("spec", func(ctx *specs.Context) { /* ... */ })
+    })
+})
+```
+
+Execution order — outer `BeforeAll`, then inner `BeforeAll`, then the spec, then inner `AfterAll`,
+then outer `AfterAll`:
+
+```mermaid
+flowchart TD
+    OuterBefore[outer BeforeAll] --> InnerBefore[inner BeforeAll]
+    InnerBefore --> Spec[spec]
+    Spec --> InnerAfter[inner AfterAll]
+    InnerAfter --> OuterAfter[outer AfterAll]
+```
+
+Unlike `BeforeEach`/`AfterEach`, a group's `BeforeAll`/`AfterAll` never run again for a second
+spec in the same group — the whole point is that they run once, no matter how many specs (or
+nested groups' specs) the group contains. See
+[`examples/suite_hooks`](../examples/suite_hooks) for a runnable example sharing one fixture
+across several specs, and `docs/SUITE_HOOKS_CONTRACT.md` for the full failure-handling contract
+(a failing `BeforeAll` skips the rest of its group but never a sibling group, and a group's
+`AfterAll` is guaranteed once the group was entered, even after a failure).
+
+A hooked group runs in a Go subtest of its own, with the same full subtest names its specs have
+without hooks, so `go test -run` selecting one spec still runs that spec's group hooks. The hooks
+belong to the group's subtest: a pattern that does not select the group runs none of them, and one
+that selects the group but none of its specs still runs its `BeforeAll`/`AfterAll`.
+`ctx.T.SkipNow()` in a `BeforeAll` skips the group. Inside a hook, `ctx.T` is the group's
+subtest: `ctx.T.Cleanup`, `ctx.T.TempDir` and `ctx.T.Setenv` registered in a `BeforeAll` last until
+the group's `AfterAll` has run, and never leak into a sibling group. `ctx.T.Parallel()` is not
+supported inside a hook.
+
+Because a hooked group is a subtest, it needs a name that works as one: explicit, non-empty, and not
+shared (after `go test`'s normalization, e.g. spaces to `_`) with a spec or another hooked group of
+the suite. A group that breaks this — `When("")` with hooks, a hooked group with an `It("")`
+directly inside, a hooked `When("x")` next to an `It("x")` or another hooked `When("x")` — is
+rejected with a panic while the suite is built, before anything runs. Groups without hooks keep
+every name they could always have. Each hooked group also shows up as a test of its own in `go test -v`/`-json` output.
+
 ## It
 
 `It` registers a single spec (test case). The function receives the execution context.
