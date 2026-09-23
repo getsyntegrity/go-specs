@@ -45,6 +45,9 @@ type jsonCase struct {
 	DurationMs int64    `json:"durationMs"`
 	Message    string   `json:"message,omitempty"`
 	Output     string   `json:"output,omitempty"`
+	// Hook marks a synthetic group hook case ("BeforeAll"/"AfterAll"); omitted entirely for a real
+	// spec (issue #207 H8) so a report with no group hooks renders no "hook" key anywhere.
+	Hook string `json:"hook,omitempty"`
 }
 
 type jsonPackageCoverage struct {
@@ -105,6 +108,7 @@ func toJSONSuite(s Suite) jsonSuite {
 			DurationMs: c.Duration.Milliseconds(),
 			Message:    c.Message,
 			Output:     c.Output,
+			Hook:       c.Hook,
 		})
 	}
 	return jsonSuite{

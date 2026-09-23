@@ -33,6 +33,36 @@ type SpecStartEvent struct {
 	Time time.Time
 }
 
+// HookKind marks whether a spec-shaped event is a synthetic group hook case emitted by a
+// BeforeAll/AfterAll failure (issue #207, docs/SUITE_HOOKS_CONTRACT.md H8), or a real spec. It is
+// a compact uint8 enum rather than a string so that adding it to SpecResultEvent (see below) costs
+// nothing: SpecResultEvent is copied by value once per spec on every engine, so any size growth is
+// paid by every suite, including one that never registers a BeforeAll/AfterAll at all — exactly
+// what H10 ("no cost for suites without BeforeAll/AfterAll") forbids. A string field here would
+// grow SpecResultEvent by 16 bytes; HookKind fits in existing struct padding instead (see
+// SpecResultEvent.Hook).
+type HookKind uint8
+
+const (
+	// HookNone is the zero value: an ordinary spec, not a synthetic hook case.
+	HookNone HookKind = iota
+	HookBeforeAll
+	HookAfterAll
+)
+
+// String returns "BeforeAll", "AfterAll", or "" for HookNone — the same text callers already read
+// off Case.Hook as a plain string.
+func (k HookKind) String() string {
+	switch k {
+	case HookBeforeAll:
+		return "BeforeAll"
+	case HookAfterAll:
+		return "AfterAll"
+	default:
+		return ""
+	}
+}
+
 // SpecResultEvent captures the result of an individual spec.
 //
 // SpecStartEvent is always the exact event this spec's SpecStarted call sent (same Time, not
@@ -52,7 +82,19 @@ type SpecResultEvent struct {
 	// implementation does not. Body never ran, Duration is always 0, and Failed is always false —
 	// same shape as Skipped — but the cause differs: Skipped is "intentionally not executed",
 	// Pending is "not implemented yet". A spec is never more than one of Skipped/Filtered/Pending.
-	Pending  bool
+	Pending bool
+	// Hook marks this result as a synthetic group hook case (issue #207, docs/SUITE_HOOKS_CONTRACT.md
+	// H8): HookBeforeAll or HookAfterAll, HookNone for a real spec. It lives only here, on the
+	// result event — the matching SpecStartEvent this spec's SpecStarted call carried is never
+	// marked, so a consumer that wants to distinguish a hook case structurally (never by pattern
+	// matching Name's bracketed "[BeforeAll]"/"[AfterAll]" text, which is presentation, not
+	// identity) must attribute at SpecFinished. Only a failed hook produces an event at all: a
+	// passing BeforeAll/AfterAll emits nothing, so a suite that registers no group hooks never sets
+	// this field and its report is unaffected. Placed next to Failed/Skipped/Filtered/Pending
+	// deliberately: it occupies padding those bools already leave before Duration, so
+	// SpecResultEvent's size is unchanged from before this field existed (H10) — see
+	// report/hook_case_test.go's TestSpecResultEventSizeUnchanged.
+	Hook     HookKind
 	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped, Filtered or Pending
 	Message  string        // short failure summary; empty when not Failed, and also empty for an
 	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the

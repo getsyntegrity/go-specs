@@ -45,6 +45,19 @@ type Case struct {
 	Duration time.Duration
 	Message  string // failure/error summary; empty unless Status is Failed or Error
 	Output   string // full output/stack trace, when the source event carried one
+	// Hook is SpecResultEvent.Hook.String() (see report/events.go's HookKind): "BeforeAll"/"AfterAll"
+	// for a synthetic group hook case, empty for a real spec. Collector converts the compact
+	// HookKind enum to this plain string once per case, so every renderer and the JSON/XML output
+	// keep working with a string exactly as before HookKind existed. This is additive, not a
+	// schema-version change — see SchemaVersion's doc comment: a new field never bumps it, only a
+	// new value in a closed vocabulary such as Status would. A report with no group hooks never sets
+	// it, and every renderer keeps its existing byte-for-byte output for that case (issue #207 H10).
+	//
+	// Tagged omitempty because Case itself gets serialized directly (not through a renderer's own
+	// DTO) by report/coordination/writer.go's shard envelope: without the tag, every ordinary case
+	// in every shard would carry a spurious `"Hook": ""`, which is exactly the per-suite cost H10
+	// forbids for a suite that never registers a group hook.
+	Hook string `json:"Hook,omitempty"`
 }
 
 // Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
