@@ -39,6 +39,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,12 +140,59 @@ func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *Exec
 		topT, r.real = rb.tb.(*testing.T)
 	}
 	if r.real {
-		r.taken = make(map[string]bool, len(plan.FullNames))
+		r.taken = claimedSubtestNames.snapshot(topT)
 		for i := range plan.ProgramStart {
 			r.taken[normalizeSubtestName(specSubtestName(plan, i))] = true
 		}
+		// Deferred so the names are recorded even when the run is stopped by runtime.Goexit.
+		defer claimedSubtestNames.record(topT, r.taken)
 	}
 	r.runRange(topT, "", 0, len(plan.ProgramStart)-1, r.top, nil)
+}
+
+// claimedSubtestNames remembers, per *testing.T, the normalized subtest names that hooked suites
+// already used under it, so a second hooked Describe with the same name in the same test function
+// sees the first one's names (see groupSubtestName). Without it, the second call's root group would
+// open "suite" again — which testing renames "suite#01" — where the hook-free layout keeps "suite"
+// and suffixes the specs instead. Only hooked runs record: a suite without group hooks must not pay
+// for this (H10), and its flat names can collide with a group name only through a spec whose full
+// breadcrumb equals the group's, a residual case documented in docs/SUITE_HOOKS_CONTRACT.md H7.
+// An entry is dropped when its *testing.T finishes.
+var claimedSubtestNames = subtestNameRegistry{byT: map[*testing.T]map[string]bool{}}
+
+type subtestNameRegistry struct {
+	mu  sync.Mutex
+	byT map[*testing.T]map[string]bool
+}
+
+// snapshot returns a private copy of the names claimed under t so far.
+func (reg *subtestNameRegistry) snapshot(t *testing.T) map[string]bool {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	names := make(map[string]bool, len(reg.byT[t]))
+	for n := range reg.byT[t] {
+		names[n] = true
+	}
+	return names
+}
+
+// record adds names to the names claimed under t.
+func (reg *subtestNameRegistry) record(t *testing.T, names map[string]bool) {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	claimed, ok := reg.byT[t]
+	if !ok {
+		claimed = make(map[string]bool, len(names))
+		reg.byT[t] = claimed
+		t.Cleanup(func() {
+			reg.mu.Lock()
+			defer reg.mu.Unlock()
+			delete(reg.byT, t)
+		})
+	}
+	for n := range names {
+		claimed[n] = true
+	}
 }
 
 // buildTree derives each group's directly nested groups from the spec ranges. Sorting by Start,

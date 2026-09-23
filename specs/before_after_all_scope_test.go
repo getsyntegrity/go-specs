@@ -334,6 +334,12 @@ func subtestIdentitySuite(hooks bool, names *[]string) func(*Spec) {
 			w.It("leaf", record)
 		})
 		s.It("dup", record)
+		for _, name := range []string{"h", "h#01", "h", "sp ace", "sp_ace"} {
+			s.When(name, func(w *Spec) {
+				hook(w)
+				w.It("x", record)
+			})
+		}
 	}
 }
 
@@ -357,8 +363,8 @@ func TestGroupHooksDoNotChangeSpecSubtestNames(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("spec subtest names with group hooks:\n  %q\nwithout:\n  %q", got, want)
 	}
-	if len(want) != 9 {
-		t.Fatalf("recorded %d spec names, want 9: %q", len(want), want)
+	if len(want) != 14 {
+		t.Fatalf("recorded %d spec names, want 14: %q", len(want), want)
 	}
 }
 
@@ -440,5 +446,44 @@ func TestGroupHookFailureAttributionThroughCtxT(t *testing.T) {
 	}
 	if !strings.Contains(out, "AfterAll errorf after a failed spec") {
 		t.Fatalf("the AfterAll's direct ctx.T.Errorf did not reach go test output:\n%s", out)
+	}
+}
+
+// repeatedDescribeNames runs two same-named Describe calls in one test function, with or without
+// group hooks, and records every spec's ctx.T.Name().
+func repeatedDescribeNames(t *testing.T, hooks bool) []string {
+	var names []string
+	for range 2 {
+		body := subtestIdentitySuite(hooks, &names)
+		Describe(t, "suite", func(s *Spec) {
+			body(s)
+			s.When("extra", func(w *Spec) {
+				if hooks {
+					w.BeforeAll(func(*Context) {})
+				}
+				w.It("x", func(ctx *Context) { names = append(names, ctx.T.Name()) })
+			})
+		})
+	}
+	return names
+}
+
+// TestRepeatedHookedDescribeKeepsSpecSubtestNames proves the name guarantee also holds across two
+// same-named Describe calls in one test function: the second call's groups must not open a subtest
+// ("suite#01") where the hook-free run gives its specs a "#01" suffix instead.
+func TestRepeatedHookedDescribeKeepsSpecSubtestNames(t *testing.T) {
+	var plain, hooked []string
+	t.Run("run", func(t *testing.T) { plain = repeatedDescribeNames(t, false) })
+	t.Run("hooked", func(t *testing.T) { hooked = repeatedDescribeNames(t, true) })
+	strip := func(names []string, prefix string) []string {
+		out := make([]string, len(names))
+		for i, n := range names {
+			out[i] = strings.TrimPrefix(n, prefix)
+		}
+		return out
+	}
+	got, want := strip(hooked, t.Name()+"/hooked/"), strip(plain, t.Name()+"/run/")
+	if !slices.Equal(got, want) {
+		t.Fatalf("spec subtest names with group hooks:\n  %q\nwithout:\n  %q", got, want)
 	}
 }

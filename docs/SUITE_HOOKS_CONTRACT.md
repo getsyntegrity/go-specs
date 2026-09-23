@@ -216,7 +216,15 @@ start triggered the group's entry, whose subtest is marked skipped with the same
 A few group names cannot get a subtest of their own without changing a spec's full subtest name:
 an empty group name (`When("")`), a group containing an `It("")`, and a group whose normalized name
 is already taken by a sibling group or a spec (two sibling `When("x")`, or an `It("x")` next to a
-hooked `When("x")`). Such a group runs inline in its enclosing scope instead. Every rule above still
+hooked `When("x")`). Names used by an earlier hooked suite under the same `*testing.T` count too,
+so a second `specs.Describe(t, "suite", ...)` in the same test function keeps exactly the names it
+would have without hooks. Such a group runs inline in its enclosing scope instead.
+
+One residual case is not detected: a subtest opened earlier under the same `*testing.T` by
+something other than a hooked go-specs suite — your own `t.Run("suite", ...)`, or a hook-free
+suite's spec whose full breadcrumb equals the group's (an `It("x")` in a hook-free
+`Describe(t, "suite")` followed by a hooked `Describe(t, "suite")` with a `When("x")`). Go then
+names the group subtest `suite#01`, and its specs carry that name. Every rule above still
 holds for it; only its hooks' `ctx.T` is the enclosing scope's (see "Hook lifetime" below).
 
 ### H8 — Reporting: hook cases are structurally distinct
