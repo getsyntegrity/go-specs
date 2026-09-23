@@ -108,8 +108,12 @@ A hooked group runs in a Go subtest of its own, with the same full subtest names
 without hooks, so `go test -run` selecting one spec still runs that spec's group hooks, and a
 pattern that selects none of a group's specs never runs them. Inside a hook, `ctx.T` is the group's
 subtest: `ctx.T.Cleanup`, `ctx.T.TempDir` and `ctx.T.Setenv` registered in a `BeforeAll` last until
-the group's `AfterAll` has run, and never leak into a sibling group. `ctx.T.Parallel()` is not
-supported inside a hook.
+the group's `AfterAll` has run, and never leak into a sibling group. The exception is a group that
+cannot get a subtest of its own without renaming its specs — an empty name (`When("")`), an
+`It("")` inside it, or a name already used by a sibling group or spec: it runs inline in its
+enclosing scope, so `ctx.T` is that scope's and these resources last until the enclosing scope ends
+(see "Hook lifetime" in `docs/SUITE_HOOKS_CONTRACT.md`). `ctx.T.Parallel()` is not supported inside
+a hook. Each hooked group also shows up as a test of its own in `go test -v`/`-json` output.
 
 ## It
 

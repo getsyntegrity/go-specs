@@ -209,7 +209,10 @@ Hooks are **not subtests**. When the suite runs against a real `*testing.T`, eve
 registers a hook gets a real Go subtest of its own, and its specs and nested groups run inside it.
 The subtest names compose to exactly the name each spec had without group hooks
 (`TestCheckout/checkout/cart_has_items/charges_the_card` either way), so `-run` patterns and IDE
-links keep working. Each hook then runs synchronously on a goroutine of its own, with `ctx.T` set to
+links keep working. The group subtests themselves are visible, though: `go test -v` prints a
+`=== RUN`/`--- PASS` line for `TestCheckout/checkout/cart_has_items`, and `go test -json` reports it
+as a test of its own, so tools that count tests from that stream (gotestsum, IDE test trees) count
+one more entry per hooked group than before. Each hook then runs synchronously on a goroutine of its own, with `ctx.T` set to
 the group's subtest: a `Goexit` or panic unwinds only that goroutine, never the group, the spec
 that triggered the group's entry, or a sibling. A hook failure — an assertion, `ctx.T.Fatal`,
 `ctx.T.FailNow`, or a panic — is reported as the synthetic case *and* marks the group's subtest
