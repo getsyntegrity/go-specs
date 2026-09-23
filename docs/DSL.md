@@ -105,8 +105,10 @@ across several specs, and `docs/SUITE_HOOKS_CONTRACT.md` for the full failure-ha
 `AfterAll` is guaranteed once the group was entered, even after a failure).
 
 A hooked group runs in a Go subtest of its own, with the same full subtest names its specs have
-without hooks, so `go test -run` selecting one spec still runs that spec's group hooks, and a
-pattern that selects none of a group's specs never runs them. Inside a hook, `ctx.T` is the group's
+without hooks, so `go test -run` selecting one spec still runs that spec's group hooks. The hooks
+belong to the group's subtest: a pattern that does not select the group runs none of them, and one
+that selects the group but none of its specs still runs its `BeforeAll`/`AfterAll`.
+`ctx.T.SkipNow()` in a `BeforeAll` skips the group. Inside a hook, `ctx.T` is the group's
 subtest: `ctx.T.Cleanup`, `ctx.T.TempDir` and `ctx.T.Setenv` registered in a `BeforeAll` last until
 the group's `AfterAll` has run, and never leak into a sibling group. `ctx.T.Parallel()` is not
 supported inside a hook.

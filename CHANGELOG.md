@@ -89,8 +89,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 - `Spec.BeforeAll(fn)` and `Spec.AfterAll(fn)` on the canonical `Describe`/`Spec` engine: once-per-
   group setup and teardown, instead of once per spec the way `BeforeEach`/`AfterEach` already work.
-  A group (the root `Describe` body, a nested `Describe`, or a `When`) is entered lazily, right
-  before its first runnable spec — including one belonging to a nested group — and its `AfterAll`
+  A group (the root `Describe` body, a nested `Describe`, or a `When`) is entered right before its
+  first spec or nested group runs, and its `AfterAll`
   runs right after its last spec or subgroup finishes; a group with no `It` anywhere in its subtree
   never runs either hook at all. Setup is outer-to-inner, teardown inner-to-outer, matching
   `BeforeEach`/`AfterEach`'s existing order. A `BeforeAll` failure (an assertion, a panic, or
@@ -100,9 +100,11 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   An `AfterAll` failure is reported once as a synthetic `[AfterAll]` case without retroactively
   failing a spec that already passed, and every remaining `AfterAll` (same group and outer) still
   runs. A hooked group runs in a Go subtest of its own (full spec subtest names are unchanged), and
-  is entered only when one of its specs actually starts, so `go test -run` never filters a group's
-  hooks apart from the specs they guard. Hooks are not subtests: `ctx.T` inside one is the group's
-  subtest, so `ctx.T.Cleanup`/`TempDir`/`Setenv` registered in a `BeforeAll` live through the
+  that subtest's own goroutine runs its `BeforeAll`s, its children, then its `AfterAll`s (deferred,
+  so they survive `Fatal`/`FailNow`/`SkipNow`). A spec selected with `go test -run` always gets its
+  group's setup; a group subtest `testing` selects runs its hooks even if no spec in it matches.
+  `ctx.T.SkipNow()` in a `BeforeAll` skips the group. Hooks are not subtests: `ctx.T` inside one is
+  the group's subtest, so `ctx.T.Cleanup`/`TempDir`/`Setenv` registered in a `BeforeAll` live through the
   group's `AfterAll` and end before the next sibling group, and a hook failure fails the group's
   subtest.
   **Breaking (for this unreleased API): a group that registers `BeforeAll`/`AfterAll` must have an

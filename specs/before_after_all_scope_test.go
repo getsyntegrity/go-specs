@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -14,8 +15,8 @@ import (
 // before_after_all_scope_test.go pins how once-per-group hooks interact with Go's own test tree
 // (issue #207, docs/SUITE_HOOKS_CONTRACT.md H3, H5, H7 and "Hook lifetime"):
 //
-//   - `go test -run` can never filter a group's hooks independently of the specs they guard: a
-//     group is entered exactly when one of its specs actually starts, and never otherwise;
+//   - a hooked group belongs to its own subtest: a spec selected with `go test -run` always gets its
+//     group's setup, and the hooks run whenever testing selects the group subtest, never otherwise;
 //   - ctx.T inside a hook is the group's own subtest, so t.Cleanup/TempDir/Setenv registered in a
 //     BeforeAll live through the group's AfterAll and end before the next sibling group runs;
 //   - a hook failure is attributed to the group's subtest;
@@ -48,6 +49,10 @@ func TestGroupHookScopeHelper(t *testing.T) {
 		})
 	case "attribution":
 		groupHookAttributionScenario(t)
+	case "deferred-after-all":
+		groupHookDeferredAfterAllScenario(t)
+	case "skip":
+		groupHookSkipScenario(t)
 	case "spec-parallel":
 		Describe(t, "suite", func(s *Spec) {
 			s.When("outer", func(o *Spec) {
@@ -431,19 +436,124 @@ func TestRepeatedHookedDescribeGetsATestingSuffix(t *testing.T) {
 	}
 }
 
-// TestRunFilterMatchingOnlyTheGroupPrefixNeverRunsItsHooks is regression (b'): a -run pattern that
-// matches the group's own subtest but none of its specs opens the group subtest (testing matches the
-// prefix and descends into it) yet must not enter the group — entry happens only inside a spec
-// subtest that actually starts (H3).
-func TestRunFilterMatchingOnlyTheGroupPrefixNeverRunsItsHooks(t *testing.T) {
+// TestRunFilterMatchingOnlyTheGroupPrefixRunsItsHooks pins H3 for filtering that testing only
+// applies while the suite runs: a -run pattern that matches the hooked group's own subtest selects
+// that subtest, and a group subtest runs its BeforeAll and AfterAll whenever testing selects it —
+// even when -run then selects none of its specs.
+func TestRunFilterMatchingOnlyTheGroupPrefixRunsItsHooks(t *testing.T) {
 	out, ok := runGroupHookScopeHelper(t, "select", "^suite$/^group$/^nomatch$")
 	if !ok {
 		t.Fatalf("child process failed:\n%s", out)
 	}
-	if got := marks(out); len(got) != 0 {
-		t.Fatalf("marks = %q, want none: no spec matched, so no hook may run\n%s", got, out)
+	if got, want := marks(out), []string{"before-all", "after-all"}; !slices.Equal(got, want) {
+		t.Fatalf("marks = %q, want %q: the selected group subtest runs its hooks, and no spec runs\n%s", got, want, out)
 	}
-	if !strings.Contains(out, "=== RUN   TestGroupHookScopeHelper/suite/group\n") {
-		t.Fatalf("expected the group subtest itself to be opened by the prefix match:\n%s", out)
+}
+
+// TestGroupHooksRunOnTheGroupSubtestGoroutine proves a hook runs on the goroutine of the test its
+// ctx.T belongs to — the group subtest's own tRunner goroutine — which is the only goroutine Go
+// supports calling ctx.T.Fatal/FailNow/SkipNow/Parallel from. A hook run on a goroutine spawned by
+// go-specs would show that spawn as the "created by" frame instead of testing.(*T).Run.
+func TestGroupHooksRunOnTheGroupSubtestGoroutine(t *testing.T) {
+	stacks := map[string]string{}
+	capture := func(kind string) func(*Context) {
+		return func(*Context) {
+			buf := make([]byte, 64<<10)
+			stacks[kind] = string(buf[:runtime.Stack(buf, false)])
+		}
+	}
+	Describe(t, "suite", func(s *Spec) {
+		s.When("group", func(w *Spec) {
+			w.BeforeAll(capture("BeforeAll"))
+			w.AfterAll(capture("AfterAll"))
+			w.It("spec", func(*Context) {})
+		})
+	})
+	for _, kind := range []string{"BeforeAll", "AfterAll"} {
+		stack, ok := stacks[kind]
+		if !ok {
+			t.Fatalf("%s did not run", kind)
+		}
+		if !strings.Contains(stack, "testing.tRunner") || !strings.Contains(stack, "created by testing.(*T).Run") {
+			t.Fatalf("%s did not run on a test's own goroutine:\n%s", kind, stack)
+		}
+		if strings.Contains(stack, "created by github.com/getsyntegrity/go-specs") {
+			t.Fatalf("%s ran on a goroutine spawned by go-specs:\n%s", kind, stack)
+		}
+	}
+}
+
+func groupHookDeferredAfterAllScenario(t *testing.T) {
+	DescribeWithReporter(t, "suite", printingReporter{}, func(s *Spec) {
+		s.When("outer", func(o *Spec) {
+			o.AfterAll(func(*Context) { fmt.Println("MARK after-all outer") })
+			o.When("inner", func(w *Spec) {
+				w.AfterAll(func(ctx *Context) { fmt.Println("MARK after-all inner 1"); ctx.T.FailNow() })
+				w.AfterAll(func(ctx *Context) { fmt.Println("MARK after-all inner 2"); ctx.Expect(false).To(BeTrue()) })
+				w.AfterAll(func(*Context) { fmt.Println("MARK after-all inner 3") })
+				w.It("spec", func(*Context) { fmt.Println("MARK body spec") })
+			})
+		})
+	})
+}
+
+// TestFailNowInAnAfterAllStillRunsTheRemainingAfterAlls proves H5/H6 on a real *testing.T, where
+// FailNow and a failed assertion end in runtime.Goexit: the remaining AfterAlls of the same group
+// still run, in registration order, then the outer group's, and the group reports one [AfterAll]
+// case.
+func TestFailNowInAnAfterAllStillRunsTheRemainingAfterAlls(t *testing.T) {
+	out, ok := runGroupHookScopeHelper(t, "deferred-after-all", "")
+	if ok {
+		t.Fatalf("child process passed, want the failing AfterAlls to fail it:\n%s", out)
+	}
+	want := []string{
+		"body spec",
+		"result suite/outer/inner/spec failed=false",
+		"after-all inner 1",
+		"after-all inner 2",
+		"after-all inner 3",
+		"case suite/outer/inner [AfterAll] failed=true",
+		"after-all outer",
+	}
+	if got := marks(out); !slices.Equal(got, want) {
+		t.Fatalf("marks =\n  %q\nwant\n  %q\n%s", got, want, out)
+	}
+}
+
+func groupHookSkipScenario(t *testing.T) {
+	DescribeWithReporter(t, "suite", printingReporter{}, func(s *Spec) {
+		s.When("skipped", func(w *Spec) {
+			w.BeforeAll(func(ctx *Context) { ctx.T.Skip("no database in this environment") })
+			w.AfterAll(func(*Context) { fmt.Println("MARK after-all skipped") })
+			w.It("first", func(*Context) { fmt.Println("MARK body first") })
+			w.When("nested", func(n *Spec) {
+				n.BeforeAll(func(*Context) { fmt.Println("MARK nested before-all") })
+				n.It("second", func(*Context) { fmt.Println("MARK body second") })
+			})
+		})
+		s.It("sibling", func(*Context) { fmt.Println("MARK body sibling") })
+	})
+}
+
+// TestSkipNowInABeforeAllSkipsTheGroup pins that ctx.T.Skip in a BeforeAll skips its group: every
+// descendant is reported skipped (not failed), the AfterAll still runs, no [BeforeAll] case is
+// emitted, and `go test` passes, showing the group subtest as skipped.
+func TestSkipNowInABeforeAllSkipsTheGroup(t *testing.T) {
+	out, ok := runGroupHookScopeHelper(t, "skip", "")
+	if !ok {
+		t.Fatalf("child process failed, want a skipped group to pass:\n%s", out)
+	}
+	want := []string{
+		"skipped suite/skipped/first",
+		"skipped suite/skipped/nested/second",
+		"after-all skipped",
+		"body sibling",
+		"result suite/sibling failed=false",
+	}
+	if got := marks(out); !slices.Equal(got, want) {
+		t.Fatalf("marks =\n  %q\nwant\n  %q\n%s", got, want, out)
+	}
+	if !strings.Contains(out, "--- SKIP: TestGroupHookScopeHelper/suite/skipped (") {
+		t.Fatalf("the group subtest was not reported skipped:\n%s", out)
 	}
 }
