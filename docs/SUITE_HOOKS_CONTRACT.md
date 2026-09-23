@@ -151,6 +151,19 @@ s.Describe("A", func(a *specs.Spec) {
 s.It("B, a sibling of A, runs normally", func(*specs.Context) { /* ... */ })
 ```
 
+**Failures reported directly through `ctx.T`.** An assertion through `ctx`, `ctx.T.Fatal`,
+`ctx.T.FailNow` and a panic are always detected. A *non-fatal* report made directly on `ctx.T`
+(`ctx.T.Error`, `ctx.T.Errorf`, `ctx.T.Fail`) leaves only one trace: the `*testing.T` it was made on
+turns failed. Go's `testing` propagates a failure to every parent test and offers no way to observe
+an individual call, so that trace is readable only while the hook's `*testing.T` had not failed
+before the hook ran. For a group with its own subtest (see H7) that is always the case when its
+`BeforeAll` runs: the group is entered before any of its specs. A group that runs inline in its
+enclosing scope (the name edge cases in H7) shares that scope's `*testing.T`, which may already have
+failed. When it has, go-specs cannot tell a passing `BeforeAll` from one that reported through
+`ctx.T.Errorf`, and it **fails closed**: the `BeforeAll` is reported as a `[BeforeAll]` case whose
+message says the outcome could not be determined, and the group's specs are skipped rather than run
+without a verified setup. The cure is to give such a group a unique, non-empty name.
+
 ### H5 — The `AfterAll` guarantee
 
 Once a group was entered — its first `BeforeAll` started, or it has no `BeforeAll` at all and its
@@ -164,6 +177,14 @@ Reported once, as a synthetic case `[AfterAll]` under the group's own path. Spec
 passed keep their passed status — an `AfterAll` failure never retroactively fails a spec that
 already finished. Per H5, every remaining `AfterAll` (the rest of this group's own list, and every
 outer group's) still runs.
+
+Limitation: an `AfterAll` that reports a failure *only* through a non-fatal `ctx.T.Error`,
+`ctx.T.Errorf` or `ctx.T.Fail`, in a group whose `*testing.T` has already failed (typically because
+one of its specs failed), produces no `[AfterAll]` case — for the reason explained under H4. `go
+test` still prints the message and fails the group's subtest; only the synthetic case is missing.
+Failing through an assertion (`ctx.Expect(...)`), `ctx.T.Fatal`/`FailNow` or a panic is always
+reported. Unlike `BeforeAll` this cannot fail closed: an `AfterAll` has nothing left to skip, and
+reporting every such `AfterAll` as failed would invent failures.
 
 ```go
 s.BeforeAll(func(*specs.Context) { /* ok */ })

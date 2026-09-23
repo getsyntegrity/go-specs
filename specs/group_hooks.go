@@ -353,7 +353,18 @@ func (r *groupRun) enter(chain []int) int {
 		}
 		scope.entered = true
 		group := &r.pg.groups[g]
-		message, output, failed := r.runHooks(g, group.BeforeAll, true)
+		message, output, failed, unobservable := r.runHooks(g, group.BeforeAll, true)
+		if unobservable && !failed {
+			// See runGroupHookInScope: this BeforeAll ran on an enclosing scope that had already
+			// failed, so a failure it reported through ctx.T would leave no trace. H4 forbids running a
+			// spec whose setup may have failed, so the group fails closed.
+			failed = true
+			message = fmt.Sprintf("go-specs: cannot tell whether BeforeAll of group %q failed: the group has no subtest of its own "+
+				"(see docs/SUITE_HOOKS_CONTRACT.md H7), so the hook reported on its enclosing scope's *testing.T, which had "+
+				"already failed, and a failure reported directly through ctx.T would be invisible. Its specs are skipped "+
+				"rather than run without a verified setup; give the group a unique, non-empty name to avoid this.",
+				groupDisplayName(r.pg, g))
+		}
 		if failed {
 			scope.failed = true
 			reportHookCase(r.rep, group.Path, hookKindBeforeAll, message, output)
@@ -374,7 +385,10 @@ func (r *groupRun) exitGroup(g int) {
 		return
 	}
 	group := &r.pg.groups[g]
-	message, output, failed := r.runHooks(g, group.AfterAll, false)
+	// An AfterAll whose scope had already failed and that reported only through a non-fatal
+	// ctx.T.Error/Errorf/Fail is not observable here (unobservable is ignored): `go test` still fails
+	// the scope, but no [AfterAll] case is emitted — the documented H6 limitation.
+	message, output, failed, _ := r.runHooks(g, group.AfterAll, false)
 	if failed {
 		reportHookCase(r.rep, group.Path, hookKindAfterAll, message, output)
 		if scope.t != nil {
@@ -387,16 +401,19 @@ func (r *groupRun) exitGroup(g int) {
 // selects H4 (BeforeAll: stop at the first failing hook) versus H6 (AfterAll: every hook still
 // runs). message/output are the first failing hook's recovered panic pair; they stay "" for an
 // assertion or Fatal/FailNow failure, exactly like a real spec's SpecResultEvent.Message.
-func (r *groupRun) runHooks(g int, hooks []func(*Context), stopOnFailure bool) (message, output string, failed bool) {
+// unobservable reports that at least one hook ran on a scope that had already failed and returned
+// without a failure this function could see (see runGroupHookInScope).
+func (r *groupRun) runHooks(g int, hooks []func(*Context), stopOnFailure bool) (message, output string, failed, unobservable bool) {
 	t := r.scopes[g].t
 	for _, h := range hooks {
 		if h == nil {
 			continue
 		}
 		var m, o string
-		var hookFailed bool
+		var hookFailed, hookUnobservable bool
 		if t != nil {
-			m, o, hookFailed = runGroupHookInScope(t, h)
+			m, o, hookFailed, hookUnobservable = runGroupHookInScope(t, h)
+			unobservable = unobservable || hookUnobservable
 		} else {
 			m, o, hookFailed = runGroupHookDirect(r.backend, h)
 		}
@@ -497,7 +514,18 @@ func (r *groupRun) runSpecSubtest(t *testing.T, name string, i int, chain []int)
 // runtime.Goexit, which leaves no other trace here). A panic is recovered through the single
 // recovery authority (runGroupHookOnce -> recoverSpecFailure), which reports it once through the
 // backend and returns normally.
-func runGroupHookInScope(scopeT *testing.T, fn func(*Context)) (message, output string, failed bool) {
+//
+// One kind of failure cannot always be seen: a non-fatal report made directly on ctx.T
+// (ctx.T.Error/Errorf/Fail). The only trace it leaves is scopeT.Failed() turning true, and
+// testing.T.Fail propagates to every parent, so once anything in the scope has failed, that flag is
+// already true and says nothing about this hook. testing offers no per-call observation of a
+// *testing.T, and ctx.T must be the scope's own *testing.T for Cleanup/TempDir/Setenv to live as long
+// as the group, so this is inherent rather than an oversight. unobservable is true in exactly that
+// case — the scope had failed before the hook and the hook returned normally without any failure
+// visible here — and the caller decides: a BeforeAll fails closed (H4), an AfterAll is documented as
+// unreported (H6). A real group subtest has never failed when its BeforeAll runs (entry happens
+// before any of its specs), so only a group run inline in its enclosing scope can be affected there.
+func runGroupHookInScope(scopeT *testing.T, fn func(*Context)) (message, output string, failed, unobservable bool) {
 	backend := &groupHookBackend{t: scopeT}
 	ctx, release := acquireContext(backend)
 	defer release()
@@ -517,7 +545,8 @@ func runGroupHookInScope(scopeT *testing.T, fn func(*Context)) (message, output 
 		// skipped from inside its own hook, so this is a failure, and one that must be visible.
 		scopeT.Errorf("go-specs: a group hook stopped without returning (t.SkipNow or runtime.Goexit); group hooks cannot skip their group")
 	}
-	return message, output, failed
+	unobservable = scopeFailedBefore && !failed
+	return message, output, failed, unobservable
 }
 
 // runGroupHookDirect runs fn against a fresh Context for backend, with no *testing.T scope (a
