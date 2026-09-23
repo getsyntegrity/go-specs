@@ -72,6 +72,25 @@ s.BeforeAll(func(ctx *specs.Context) { order = append(order, "second") })
 // runs "first" then "second"
 ```
 
+**A hooked group needs a unique, non-empty name.** A group that registers `BeforeAll` or `AfterAll`
+runs as its own Go subtest (H7), so its name has to work as one. It must be explicit and non-empty,
+and no spec or other hooked group of the same suite may have the same full subtest name once `go
+test` has normalized both (spaces become `_`, non-printable runes are escaped). The suite is
+rejected while it is built — before any spec runs, on every entry point (`Describe`,
+`DescribeWithReporter`, `BuildSuite`, and inside `Analyze`) — with a panic naming the group, for
+each of these shapes:
+
+- an empty group name: `When("")`, or `specs.Describe(t, "", ...)` with root hooks;
+- an `It("")` directly inside the group;
+- a spec with the group's full name, e.g. `It("x")` next to a hooked `When("x")`, or `It("sp_ace")`
+  next to a hooked `When("sp ace")`;
+- another hooked group with the same full name: two hooked sibling `When("x")`, or a hooked
+  `When("a/b")` next to `When("a")` containing a hooked `When("b")`.
+
+Each of these would otherwise make Go rename a subtest (`#00`, `#01`) and change a spec's full
+subtest name. Groups without `BeforeAll`/`AfterAll` are not checked and keep every name they could
+always have.
+
 ### H2 — Entry and order: outer before inner, inner after outer
 
 A group is entered lazily, right before its first runnable spec (including a spec that belongs to
@@ -156,13 +175,10 @@ s.It("B, a sibling of A, runs normally", func(*specs.Context) { /* ... */ })
 (`ctx.T.Error`, `ctx.T.Errorf`, `ctx.T.Fail`) leaves only one trace: the `*testing.T` it was made on
 turns failed. Go's `testing` propagates a failure to every parent test and offers no way to observe
 an individual call, so that trace is readable only while the hook's `*testing.T` had not failed
-before the hook ran. For a group with its own subtest (see H7) that is always the case when its
-`BeforeAll` runs: the group is entered before any of its specs. A group that runs inline in its
-enclosing scope (the name edge cases in H7) shares that scope's `*testing.T`, which may already have
-failed. When it has, go-specs cannot tell a passing `BeforeAll` from one that reported through
-`ctx.T.Errorf`, and it **fails closed**: the `BeforeAll` is reported as a `[BeforeAll]` case whose
-message says the outcome could not be determined, and the group's specs are skipped rather than run
-without a verified setup. The cure is to give such a group a unique, non-empty name.
+before the hook ran. Every hooked group has its own subtest (see H1 and H7), and that subtest has
+never failed when its `BeforeAll` runs, because the group is entered before any of its specs. A
+`BeforeAll` that reports through `ctx.T.Errorf` is therefore always detected. (`AfterAll` is
+different; see H6.)
 
 ### H5 — The `AfterAll` guarantee
 
@@ -187,8 +203,7 @@ Limitation: an `AfterAll` that reports a failure *only* through a non-fatal `ctx
 one of its specs failed), produces no `[AfterAll]` case — for the reason explained under H4. `go
 test` still prints the message and fails the group's subtest; only the synthetic case is missing.
 Failing through an assertion (`ctx.Expect(...)`), `ctx.T.Fatal`/`FailNow` or a panic is always
-reported. Unlike `BeforeAll` this cannot fail closed: an `AfterAll` has nothing left to skip, and
-reporting every such `AfterAll` as failed would invent failures.
+reported. Reporting every such `AfterAll` as failed instead would invent failures.
 
 ```go
 s.BeforeAll(func(*specs.Context) { /* ok */ })
@@ -220,19 +235,13 @@ failed, so `go test` prints `--- FAIL: TestCheckout/checkout/cart_has_items` for
 by a `BeforeAll` failure are reported skipped without a subtest of their own, except the one whose
 start triggered the group's entry, whose subtest is marked skipped with the same reason.
 
-A few group names cannot get a subtest of their own without changing a spec's full subtest name:
-an empty group name (`When("")`), a group containing an `It("")`, and a group whose normalized name
-is already taken by a sibling group or a spec (two sibling `When("x")`, or an `It("x")` next to a
-hooked `When("x")`). Names used by an earlier hooked suite under the same `*testing.T` count too,
-so a second `specs.Describe(t, "suite", ...)` in the same test function keeps exactly the names it
-would have without hooks. Such a group runs inline in its enclosing scope instead.
-
-One residual case is not detected: a subtest opened earlier under the same `*testing.T` by
-something other than a hooked go-specs suite — your own `t.Run("suite", ...)`, or a hook-free
-suite's spec whose full breadcrumb equals the group's (an `It("x")` in a hook-free
-`Describe(t, "suite")` followed by a hooked `Describe(t, "suite")` with a `When("x")`). Go then
-names the group subtest `suite#01`, and its specs carry that name. Every rule above still
-holds for it; only its hooks' `ctx.T` is the enclosing scope's (see "Hook lifetime" below).
+Within one suite, the naming rule in H1 guarantees these names. A collision with a subtest that
+only exists at run time cannot be known while the suite is built: a second same-named hooked
+`specs.Describe(t, "suite", ...)` in the same test function, your own earlier `t.Run("suite", ...)`,
+or a spec of an earlier hook-free suite whose full name equals the group's. Go then does what it
+always does for a repeated subtest name: it gives the group subtest a `#NN` suffix
+(`TestX/suite#01`), and the group's specs sit under it (`TestX/suite#01/when_a/spec`). The suffix is
+deterministic, unique and selectable with `-run`; everything else about the group is unchanged.
 
 ### H8 — Reporting: hook cases are structurally distinct
 
@@ -328,9 +337,6 @@ s.When("with a scratch dir", func(w *specs.Spec) {
     w.It("writes a file", func(*specs.Context) { /* dir and APP_ENV are both still here */ })
 })
 ```
-
-For a group that runs inline in its enclosing scope (the name edge cases at the end of H7), `ctx.T`
-is that enclosing scope's `*testing.T`, so these resources live until the enclosing scope ends.
 
 `ctx.T.Parallel()` is not supported inside a hook: making the group's subtest parallel would detach
 the group's hooks from its specs. It is detected and stops the run with a diagnostic, the same way

@@ -303,10 +303,11 @@ func TestBeforeAllFailuresAreAttributedToTheGroupSubtest(t *testing.T) {
 	}
 }
 
-// subtestIdentitySuite declares the same tree with or without group hooks on every scope. The names
-// deliberately include the shapes that make nested subtests diverge from one flat subtest name:
-// spaces, a "/" inside a name, duplicate sibling group names, an empty spec name, and a spec whose
-// breadcrumb equals a hooked group's.
+// subtestIdentitySuite declares the same tree with or without group hooks. Every scope that is a
+// valid hooked group (docs/SUITE_HOOKS_CONTRACT.md H7) gets hooks in the hooked variant: names with
+// spaces, a "/" inside a name, an explicit "#01" name next to its base name, and leaf names repeated
+// across groups. The shapes a hooked group may not have — duplicate sibling names, an empty name,
+// an It("") inside — are declared too, without hooks, since hook-free groups keep every name.
 func subtestIdentitySuite(hooks bool, names *[]string) func(*Spec) {
 	record := func(ctx *Context) { *names = append(*names, ctx.T.Name()) }
 	hook := func(s *Spec) {
@@ -319,31 +320,23 @@ func subtestIdentitySuite(hooks bool, names *[]string) func(*Spec) {
 		hook(s)
 		s.It("root spec", record)
 		s.It("dup", record)
-		s.When("dup", func(w *Spec) {
-			hook(w)
-			w.It("leaf", record)
-		})
 		s.When("with space", func(w *Spec) {
 			hook(w)
 			w.It("leaf", record)
-			w.It("", record)
 			w.When("inner/slash", func(n *Spec) {
 				hook(n)
 				n.It("leaf", record)
 			})
+			w.When("plain", func(n *Spec) { n.It("", record) })
 		})
-		s.When("twin", func(w *Spec) {
-			hook(w)
-			w.It("leaf", record)
-		})
-		s.When("twin", func(w *Spec) {
-			hook(w)
-			w.It("leaf", record)
-		})
+		s.When("twin", func(w *Spec) { w.It("leaf", record) })
+		s.When("twin", func(w *Spec) { w.It("leaf", record) })
+		s.When("", func(w *Spec) { w.It("leaf", record) })
 		s.It("dup", record)
-		for _, name := range []string{"h", "h#01", "h", "sp ace", "sp_ace"} {
+		for _, name := range []string{"h", "h#01", "sp ace"} {
 			s.When(name, func(w *Spec) {
 				hook(w)
+				w.It("x", record)
 				w.It("x", record)
 			})
 		}
@@ -358,140 +351,83 @@ func TestGroupHooksDoNotChangeSpecSubtestNames(t *testing.T) {
 	t.Run("run", func(t *testing.T) { Describe(t, "suite", subtestIdentitySuite(false, &plain)) })
 	t.Run("hooked", func(t *testing.T) { Describe(t, "suite", subtestIdentitySuite(true, &hooked)) })
 
-	strip := func(names []string, prefix string) []string {
-		out := make([]string, len(names))
-		for i, n := range names {
-			out[i] = strings.TrimPrefix(n, prefix)
-		}
-		return out
-	}
-	got := strip(hooked, t.Name()+"/hooked/")
-	want := strip(plain, t.Name()+"/run/")
+	got := stripNames(hooked, t.Name()+"/hooked/")
+	want := stripNames(plain, t.Name()+"/run/")
 	if !slices.Equal(got, want) {
 		t.Fatalf("spec subtest names with group hooks:\n  %q\nwithout:\n  %q", got, want)
 	}
-	if len(want) != 14 {
-		t.Fatalf("recorded %d spec names, want 14: %q", len(want), want)
+	if len(want) != 15 {
+		t.Fatalf("recorded %d spec names, want 15: %q", len(want), want)
 	}
 }
 
-// verboseReporter is printingReporter plus each hook case's message, for scenarios that assert on
-// why a hook case was reported.
-type verboseReporter struct{ printingReporter }
-
-func (r verboseReporter) SpecFinished(e report.SpecResultEvent) {
-	r.printingReporter.SpecFinished(e)
-	if e.Hook != report.HookNone && e.Message != "" {
-		fmt.Printf("MARK   message %s\n", e.Message)
+func stripNames(names []string, prefix string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = strings.TrimPrefix(n, prefix)
 	}
+	return out
 }
 
 func groupHookAttributionScenario(t *testing.T) {
 	fail := func(ctx *Context) { ctx.Expect(false).To(BeTrue()) }
-	// "clean" runs first, while this test's *testing.T has not failed yet: its inline group (empty
-	// name, so no subtest of its own) reports a direct ctx.T.Errorf that is still observable.
-	DescribeWithReporter(t, "clean", verboseReporter{}, func(s *Spec) {
-		s.When("", func(n *Spec) {
-			n.BeforeAll(func(ctx *Context) { ctx.T.Errorf("inline BeforeAll errorf on a clean scope") })
-			n.It("n0", func(*Context) { fmt.Println("MARK body n0") })
+	DescribeWithReporter(t, "suite", printingReporter{}, func(s *Spec) {
+		s.When("errorf", func(w *Spec) {
+			w.BeforeAll(func(ctx *Context) { ctx.T.Errorf("BeforeAll reports through ctx.T.Errorf") })
+			w.It("never runs", func(*Context) { fmt.Println("MARK body never runs") })
 		})
-	})
-	DescribeWithReporter(t, "suite", verboseReporter{}, func(s *Spec) {
-		s.BeforeAll(func(*Context) {})
-		s.When("real", func(w *Spec) {
+		s.When("after", func(w *Spec) {
 			w.AfterAll(func(ctx *Context) { ctx.T.Errorf("AfterAll errorf after a failed spec") })
 			w.It("fails", fail)
-		})
-		s.It("first fails", fail)
-		s.When("", func(n *Spec) {
-			n.BeforeAll(func(ctx *Context) { ctx.T.Errorf("inline BeforeAll errorf after a failure") })
-			n.It("n1", func(*Context) { fmt.Println("MARK body n1") })
-		})
-		s.When("", func(n *Spec) {
-			n.BeforeAll(func(*Context) {})
-			n.It("n2", func(*Context) { fmt.Println("MARK body n2") })
 		})
 	})
 }
 
 // TestGroupHookFailureAttributionThroughCtxT pins how a failure a hook reports directly through
-// ctx.T (Errorf, not an assertion and not Fatal) is attributed. testing.T.Fail propagates to every
-// parent, so such a report is only observable on a scope that had not failed yet:
-//
-//   - on a clean scope it is always a hook failure (H4);
-//   - an inline group's BeforeAll whose enclosing scope has already failed cannot be told apart from
-//     a passing one, so its specs are skipped rather than run without a verified setup — H4 never
-//     lets a descendant of a possibly failed BeforeAll run;
-//   - an AfterAll whose scope has already failed and that reports only through ctx.T.Errorf produces
-//     no [AfterAll] case; `go test` still fails the scope (docs/SUITE_HOOKS_CONTRACT.md H6).
+// ctx.T (Errorf: not an assertion, not Fatal) is attributed. Every hooked group runs in its own
+// subtest, which has not failed yet when its BeforeAll runs, so such a BeforeAll is always detected
+// (H4). testing.T.Fail propagates to every parent, though, so an AfterAll that reports only through
+// ctx.T.Errorf in a group whose spec already failed produces no [AfterAll] case; `go test` still
+// prints the message and fails the group (docs/SUITE_HOOKS_CONTRACT.md H6).
 func TestGroupHookFailureAttributionThroughCtxT(t *testing.T) {
 	out, ok := runGroupHookScopeHelper(t, "attribution", "")
 	if ok {
 		t.Fatalf("child process passed, want it to fail:\n%s", out)
 	}
-	var got []string
-	for _, m := range marks(out) {
-		if !strings.HasPrefix(m, "  message ") {
-			got = append(got, m)
-		}
-	}
 	want := []string{
-		"case clean/ [BeforeAll] failed=true",
-		"skipped clean//n0",
-		"result suite/real/fails failed=true",
-		"result suite/first fails failed=true",
-		"case suite/ [BeforeAll] failed=true",
-		"skipped suite//n1",
-		"case suite/ [BeforeAll] failed=true",
-		"skipped suite//n2",
+		"case suite/errorf [BeforeAll] failed=true",
+		"skipped suite/errorf/never runs",
+		"result suite/after/fails failed=true",
 	}
-	if !slices.Equal(got, want) {
+	if got := marks(out); !slices.Equal(got, want) {
 		t.Fatalf("marks =\n  %q\nwant\n  %q\n%s", got, want, out)
-	}
-	if n := strings.Count(out, "MARK   message go-specs: cannot tell whether BeforeAll of group \"suite/\" failed"); n != 2 {
-		t.Fatalf("got %d ambiguity messages for the inline groups after a failure, want 2:\n%s", n, out)
 	}
 	if !strings.Contains(out, "AfterAll errorf after a failed spec") {
 		t.Fatalf("the AfterAll's direct ctx.T.Errorf did not reach go test output:\n%s", out)
 	}
+	if !strings.Contains(out, "--- FAIL: TestGroupHookScopeHelper/suite/after (") {
+		t.Fatalf("the group with the failing AfterAll did not fail in go test:\n%s", out)
+	}
 }
 
-// repeatedDescribeNames runs two same-named Describe calls in one test function, with or without
-// group hooks, and records every spec's ctx.T.Name().
-func repeatedDescribeNames(t *testing.T, hooks bool) []string {
+// TestRepeatedHookedDescribeGetsATestingSuffix pins what happens to a name collision that only
+// exists at run time: a second same-named hooked Describe in the same test function cannot be
+// detected while its suite is built, so testing gives its root group subtest the usual
+// deterministic "#01" suffix, and its specs sit under it (docs/SUITE_HOOKS_CONTRACT.md H7).
+func TestRepeatedHookedDescribeGetsATestingSuffix(t *testing.T) {
 	var names []string
 	for range 2 {
-		body := subtestIdentitySuite(hooks, &names)
 		Describe(t, "suite", func(s *Spec) {
-			body(s)
-			s.When("extra", func(w *Spec) {
-				if hooks {
-					w.BeforeAll(func(*Context) {})
-				}
+			s.BeforeAll(func(*Context) {})
+			s.When("group", func(w *Spec) {
+				w.AfterAll(func(*Context) {})
 				w.It("x", func(ctx *Context) { names = append(names, ctx.T.Name()) })
 			})
 		})
 	}
-	return names
-}
-
-// TestRepeatedHookedDescribeKeepsSpecSubtestNames proves the name guarantee also holds across two
-// same-named Describe calls in one test function: the second call's groups must not open a subtest
-// ("suite#01") where the hook-free run gives its specs a "#01" suffix instead.
-func TestRepeatedHookedDescribeKeepsSpecSubtestNames(t *testing.T) {
-	var plain, hooked []string
-	t.Run("run", func(t *testing.T) { plain = repeatedDescribeNames(t, false) })
-	t.Run("hooked", func(t *testing.T) { hooked = repeatedDescribeNames(t, true) })
-	strip := func(names []string, prefix string) []string {
-		out := make([]string, len(names))
-		for i, n := range names {
-			out[i] = strings.TrimPrefix(n, prefix)
-		}
-		return out
-	}
-	got, want := strip(hooked, t.Name()+"/hooked/"), strip(plain, t.Name()+"/run/")
-	if !slices.Equal(got, want) {
-		t.Fatalf("spec subtest names with group hooks:\n  %q\nwithout:\n  %q", got, want)
+	want := []string{"suite/group/x", "suite#01/group/x"}
+	if got := stripNames(names, t.Name()+"/"); !slices.Equal(got, want) {
+		t.Fatalf("names = %q, want %q", got, want)
 	}
 }
 

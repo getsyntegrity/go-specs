@@ -116,7 +116,7 @@ func (c *bytecodeCompiler) closeGroupHooksAtTop() {
 	}
 	start := c.groupStartStack[n-1]
 	end := len(c.plan.Names) - 1
-	registerHookGroup(&c.groups, c.nameStack, before, after, start, end)
+	registerHookGroup(&c.groups, c.nameStack, c.nameStack[n-1], before, after, start, end)
 }
 
 // AppendBefore adds a before-each hook to the current scope.

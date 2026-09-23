@@ -182,7 +182,13 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	// BeforeAll/AfterAll DSL surface, so both are skipped here defensively.
 	if node.Type != ItNode && node.Type != SuiteNode {
 		if before, after := scratch.hooks.of(nodeID); len(before) > 0 || len(after) > 0 {
-			registerHookGroup(&scratch.groups, scratch.path, before, after, groupStart, len(plan.Names)-1)
+			path := scratch.path
+			if name == "" {
+				// The registry path never pushes an empty name; record it so the rejection names the
+				// group as declared (validateHookGroups).
+				path = append(slices.Clip(path), "")
+			}
+			registerHookGroup(&scratch.groups, path, name, before, after, groupStart, len(plan.Names)-1)
 		}
 	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {

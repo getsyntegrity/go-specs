@@ -39,7 +39,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -65,8 +64,12 @@ type planGroups struct {
 // scope chain including the group's own name — the Path its synthetic hook case reports (see
 // reportHookCase). Start and End are the plan indices of the first and last spec in the scope's
 // subtree; scopes nest, so two groups' ranges are either disjoint or one contains the other.
+//
+// Name is the group's own declared name, kept separately from Path because the Analyze/registry
+// path does not record an empty name in Path; validateHookGroups needs it to reject one.
 type hookGroup struct {
 	Path       []string
+	Name       string
 	BeforeAll  []func(*Context)
 	AfterAll   []func(*Context)
 	Start, End int
@@ -82,7 +85,7 @@ type hookGroup struct {
 // startIdx > endIdx means the scope's subtree contributed zero specs to the plan — H3's "a group
 // with zero runnable specs is never entered": nothing is registered, so the hooks are silently
 // discarded along with the scope itself.
-func registerHookGroup(pg **planGroups, path []string, before, after []func(*Context), startIdx, endIdx int) {
+func registerHookGroup(pg **planGroups, path []string, name string, before, after []func(*Context), startIdx, endIdx int) {
 	if pg == nil || startIdx < 0 || startIdx > endIdx {
 		return
 	}
@@ -94,6 +97,7 @@ func registerHookGroup(pg **planGroups, path []string, before, after []func(*Con
 	}
 	(*pg).groups = append((*pg).groups, hookGroup{
 		Path:      append([]string(nil), path...),
+		Name:      name,
 		BeforeAll: before,
 		AfterAll:  after,
 		Start:     startIdx,
@@ -105,9 +109,8 @@ func registerHookGroup(pg **planGroups, path []string, before, after []func(*Con
 type groupScope struct {
 	// children are the group's directly nested groups, ordered by Start.
 	children []int
-	// t is the *testing.T the group's hooks see as ctx.T: the group's own subtest, or, for a group
-	// run without one (see groupSubtestName), the enclosing scope's. nil on a non-*testing.T
-	// backend.
+	// t is the *testing.T the group's hooks see as ctx.T: the group's own subtest. nil on a
+	// non-*testing.T backend.
 	t *testing.T
 	// entered is set when the group's first descendant spec starts (H2/H3) and makes its AfterAll
 	// owed (H5); failed is set when one of its BeforeAlls fails (H4).
@@ -124,9 +127,6 @@ type groupRun struct {
 	top     []int // groups not nested in another group, ordered by Start
 	// real is true when backend wraps a real *testing.T, i.e. when groups get subtests.
 	real bool
-	// taken holds the normalized subtest names already claimed by a spec or a group subtest; see
-	// groupSubtestName. Built only when real.
-	taken map[string]bool
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
 	// ctx.T.Parallel(); every enclosing group subtest then unwinds too (see stopIfStopped), running
 	// the AfterAlls of the groups it had entered on the way out, and no further spec runs. It is
@@ -142,60 +142,7 @@ func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *Exec
 	if rb, ok := backend.(*runnableBackend); ok {
 		topT, r.real = rb.tb.(*testing.T)
 	}
-	if r.real {
-		r.taken = claimedSubtestNames.snapshot(topT)
-		for i := range plan.ProgramStart {
-			r.taken[normalizeSubtestName(specSubtestName(plan, i))] = true
-		}
-		// Deferred so the names are recorded even when the run is stopped by runtime.Goexit.
-		defer claimedSubtestNames.record(topT, r.taken)
-	}
 	r.runRange(topT, "", 0, len(plan.ProgramStart)-1, r.top, nil)
-}
-
-// claimedSubtestNames remembers, per *testing.T, the normalized subtest names that hooked suites
-// already used under it, so a second hooked Describe with the same name in the same test function
-// sees the first one's names (see groupSubtestName). Without it, the second call's root group would
-// open "suite" again — which testing renames "suite#01" — where the hook-free layout keeps "suite"
-// and suffixes the specs instead. Only hooked runs record: a suite without group hooks must not pay
-// for this (H10), and its flat names can collide with a group name only through a spec whose full
-// breadcrumb equals the group's, a residual case documented in docs/SUITE_HOOKS_CONTRACT.md H7.
-// An entry is dropped when its *testing.T finishes.
-var claimedSubtestNames = subtestNameRegistry{byT: map[*testing.T]map[string]bool{}}
-
-type subtestNameRegistry struct {
-	mu  sync.Mutex
-	byT map[*testing.T]map[string]bool
-}
-
-// snapshot returns a private copy of the names claimed under t so far.
-func (reg *subtestNameRegistry) snapshot(t *testing.T) map[string]bool {
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-	names := make(map[string]bool, len(reg.byT[t]))
-	for n := range reg.byT[t] {
-		names[n] = true
-	}
-	return names
-}
-
-// record adds names to the names claimed under t.
-func (reg *subtestNameRegistry) record(t *testing.T, names map[string]bool) {
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-	claimed, ok := reg.byT[t]
-	if !ok {
-		claimed = make(map[string]bool, len(names))
-		reg.byT[t] = claimed
-		t.Cleanup(func() {
-			reg.mu.Lock()
-			defer reg.mu.Unlock()
-			delete(reg.byT, t)
-		})
-	}
-	for n := range names {
-		claimed[n] = true
-	}
 }
 
 // buildTree derives each group's directly nested groups from the spec ranges. Sorting by Start,
@@ -276,15 +223,14 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int, chain []int) {
 	}
 	inner := append(chain[:len(chain):len(chain)], g)
 	children := r.scopes[g].children
-	name, groupPrefix, ok := r.groupSubtestName(prefix, g)
-	// exitGroup is deferred in both branches so a group that was entered still runs its AfterAlls
-	// when an unsupported ctx.T.Parallel() stops the run and unwinds it with runtime.Goexit (H5).
-	if !ok {
-		r.scopes[g].t = t
+	if !r.real {
 		defer r.exitGroup(g)
 		r.runRange(t, prefix, group.Start, group.End, children, inner)
 		return
 	}
+	name, groupPrefix := groupSubtestName(prefix, group)
+	// exitGroup is deferred so a group that was entered still runs its AfterAlls when an unsupported
+	// ctx.T.Parallel() stops the run and unwinds it with runtime.Goexit (H5).
 	ran, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
 		r.scopes[g].t = gt
 		defer r.exitGroup(g)
@@ -306,42 +252,93 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int, chain []int) {
 	}
 }
 
-// groupSubtestName returns the name group g's subtest is opened with inside a scope whose specs
-// carry prefix, and the prefix the group's own specs then carry. ok is false when the group must
-// run inline in its enclosing scope instead, because a subtest of its own would change a spec's
-// full Go subtest name. That happens only for names the flat mapping already treats specially (see
-// joinSubtestPath):
+// groupSubtestName returns the name a hooked group's subtest is opened with inside a scope whose
+// specs carry prefix, and the prefix the group's own specs then carry. validateHookGroups has
+// already guaranteed, while the suite was built, that the name is non-empty and that no spec or
+// group in the suite normalizes to the same subtest name, so every spec's full name composes to
+// exactly the name it has without group hooks.
 //
-//   - the group's own segment is empty (Describe(t, "", ...), When("")), which testing would name
-//     "#00" as a subtest of its own;
-//   - a spec in the group has an empty name, which testing would likewise rename to "#00";
-//   - the group's normalized name is already taken by a spec or an earlier group — duplicate
-//     sibling scopes, or a spec whose breadcrumb equals the group's — which testing would suffix
-//     with "#01" at the group level rather than at the spec.
-//
-// A group run inline still follows every H1-H10 rule; only its hooks' ctx.T is the enclosing
-// scope's, so what they register with ctx.T.Cleanup/TempDir/Setenv lives until that scope ends.
-func (r *groupRun) groupSubtestName(prefix string, g int) (name, groupPrefix string, ok bool) {
-	if !r.real {
-		return "", "", false
-	}
-	group := &r.pg.groups[g]
+// Collisions that only exist at run time — a second same-named hooked Describe in the same test
+// function, or a subtest the caller opened earlier under the same name — are left to testing,
+// which gives the group subtest its usual deterministic "#01" suffix (docs/SUITE_HOOKS_CONTRACT.md
+// H7).
+func groupSubtestName(prefix string, group *hookGroup) (name, groupPrefix string) {
 	groupPrefix = joinSubtestPath(group.Path, "")
-	if len(groupPrefix) < len(prefix)+2 || groupPrefix[:len(prefix)] != prefix {
-		return "", "", false
+	return groupPrefix[len(prefix) : len(groupPrefix)-1], groupPrefix
+}
+
+// validateHookGroups rejects, while the suite is being built and before anything runs, every hooked
+// group that could not run as its own Go subtest without changing a spec's subtest name. A group
+// that registers BeforeAll or AfterAll must have an explicit, non-empty name that no spec and no
+// other hooked group in the suite shares once go test has normalized both (spaces become "_",
+// non-printable runes are escaped). The shapes rejected, and why each would break a name:
+//
+//   - an empty group name (When(""), or Describe(t, "", ...) with root hooks): testing names an
+//     empty subtest "#00";
+//   - an It("") directly inside the group: same, for the spec's subtest inside the group;
+//   - a spec whose full name equals the group's: the group subtest would take the name first and
+//     push the spec to "#01", where the hook-free layout keeps it;
+//   - another hooked group with the same full name (two sibling When("x"), "sp ace" next to
+//     "sp_ace", or When("a/b") next to When("a") { When("b") }): the second group subtest would be
+//     renamed "#01" at the group level.
+//
+// It panics with a message naming the group, the convention this engine already uses for a
+// registration it cannot honour (see Spec.requireBuildTarget). Groups without hooks are never
+// checked; they have no subtest of their own.
+func validateHookGroups(plan *ExecutionPlan, pg *planGroups) {
+	if pg == nil {
+		return
 	}
-	name = groupPrefix[len(prefix) : len(groupPrefix)-1]
-	full := normalizeSubtestName(groupPrefix[:len(groupPrefix)-1])
-	if r.taken[full] {
-		return "", "", false
-	}
-	for i := group.Start; i <= group.End; i++ {
-		if specSubtestName(r.plan, i) == groupPrefix {
-			return "", "", false
+	specNames := make(map[string]int, len(plan.FullNames))
+	for i := range plan.ProgramStart {
+		n := normalizeSubtestName(specSubtestName(plan, i))
+		if _, ok := specNames[n]; !ok {
+			specNames[n] = i
 		}
 	}
-	r.taken[full] = true
-	return name, groupPrefix, true
+	groupNames := make(map[string]int, len(pg.groups))
+	// Registration order is innermost-first; check outer groups first so the reported group is the
+	// later declaration of a duplicate.
+	order := make([]int, len(pg.groups))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		ga, gb := &pg.groups[a], &pg.groups[b]
+		if ga.Start != gb.Start {
+			return ga.Start - gb.Start
+		}
+		return len(ga.Path) - len(gb.Path)
+	})
+	for _, g := range order {
+		group := &pg.groups[g]
+		if group.Name == "" {
+			failHookGroup(group, "it has an empty name")
+		}
+		prefix := joinSubtestPath(group.Path, "")
+		full := prefix[:len(prefix)-1]
+		for i := group.Start; i <= group.End; i++ {
+			fullName := specSubtestName(plan, i)
+			if specEventName(plan, i) == "" && (fullName == prefix || fullName == full) {
+				failHookGroup(group, `it declares an It with an empty name directly inside it, which go test would name "#00"`)
+			}
+		}
+		normalized := normalizeSubtestName(full)
+		if i, ok := specNames[normalized]; ok {
+			failHookGroup(group, fmt.Sprintf("a spec in the suite has the same subtest name %q (%q)", normalized, specEventPath(plan, i)))
+		}
+		if other, ok := groupNames[normalized]; ok {
+			failHookGroup(group, fmt.Sprintf("another group in the suite has the same subtest name %q (%q)", normalized, pg.groups[other].Path))
+		}
+		groupNames[normalized] = g
+	}
+}
+
+func failHookGroup(group *hookGroup, reason string) {
+	panic(fmt.Sprintf("specs: group %q registers BeforeAll/AfterAll, so it must run as its own Go subtest, "+
+		"which needs an explicit, non-empty name that is unique among the specs and groups of its suite "+
+		"(compared the way go test names subtests: spaces become underscores): %s. Rename the group or the "+
+		"conflicting spec or group (docs/SUITE_HOOKS_CONTRACT.md H7).", group.Path, reason))
 }
 
 // normalizeSubtestName applies testing's own presentation rewrite to a subtest name — spaces
@@ -409,18 +406,7 @@ func (r *groupRun) enter(chain []int) int {
 		}
 		scope.entered = true
 		group := &r.pg.groups[g]
-		message, output, failed, unobservable := r.runHooks(g, group.BeforeAll, true)
-		if unobservable && !failed {
-			// See runGroupHookInScope: this BeforeAll ran on an enclosing scope that had already
-			// failed, so a failure it reported through ctx.T would leave no trace. H4 forbids running a
-			// spec whose setup may have failed, so the group fails closed.
-			failed = true
-			message = fmt.Sprintf("go-specs: cannot tell whether BeforeAll of group %q failed: the group has no subtest of its own "+
-				"(see docs/SUITE_HOOKS_CONTRACT.md H7), so the hook reported on its enclosing scope's *testing.T, which had "+
-				"already failed, and a failure reported directly through ctx.T would be invisible. Its specs are skipped "+
-				"rather than run without a verified setup; give the group a unique, non-empty name to avoid this.",
-				groupDisplayName(r.pg, g))
-		}
+		message, output, failed, _ := r.runHooks(g, group.BeforeAll, true)
 		if failed {
 			scope.failed = true
 			reportHookCase(r.rep, group.Path, hookKindBeforeAll, message, output)

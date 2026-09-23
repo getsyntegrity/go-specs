@@ -103,9 +103,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   is entered only when one of its specs actually starts, so `go test -run` never filters a group's
   hooks apart from the specs they guard. Hooks are not subtests: `ctx.T` inside one is the group's
   subtest, so `ctx.T.Cleanup`/`TempDir`/`Setenv` registered in a `BeforeAll` live through the
-  group's `AfterAll` and end before the next sibling group (except for a group that runs inline in
-  its enclosing scope because its name is empty or already taken — its resources live until that
-  scope ends), and a hook failure fails the group's subtest. Because hooked groups are real
+  group's `AfterAll` and end before the next sibling group, and a hook failure fails the group's
+  subtest.
+  **Breaking (for this unreleased API): a group that registers `BeforeAll`/`AfterAll` must have an
+  explicit, non-empty name that no spec or other hooked group of its suite shares after `go test`'s
+  name normalization.** A hooked `When("")`, a hooked group with an `It("")` directly inside, or a
+  hooked `When("x")` next to an `It("x")` or another hooked `When("x")` is rejected with a panic
+  while the suite is built, instead of silently running without a subtest of its own. A collision
+  that only exists at run time (a second same-named hooked `Describe` in one test function) gets
+  Go's usual `#01` subtest suffix. Because hooked groups are real
   subtests, `go test -v`/`-json` (and tools built on it, such as gotestsum or IDE test trees) now
   list each hooked group as a test of its own, which raises their test counts; spec subtest names
   are unchanged. A suite that registers no group hook allocates nothing extra, byte for byte. Both the

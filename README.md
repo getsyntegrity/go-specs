@@ -66,7 +66,9 @@ func TestMathWithHooks(t *testing.T) {
 ```
 
 `BeforeAll`/`AfterAll` run once per `Describe`/`When` group instead of once per spec — useful for
-an expensive fixture (a test database, a server) shared across several specs. See
+an expensive fixture (a test database, a server) shared across several specs. A hooked group runs
+as its own Go subtest, so it needs an explicit, non-empty name that no sibling spec or other hooked
+group shares; a suite that breaks this is rejected while it is built. See
 [docs/DSL.md](docs/DSL.md#beforeall--afterall) and
 [docs/SUITE_HOOKS_CONTRACT.md](docs/SUITE_HOOKS_CONTRACT.md) for the full contract.
 

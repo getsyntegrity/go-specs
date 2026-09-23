@@ -84,6 +84,7 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 	}
 	var groups *planGroups
 	s.plan, groups = c.takePlanAndGroups()
+	validateHookGroups(s.plan, groups)
 	if tb != nil {
 		s.Compile()
 		s.suite.groups = groups
@@ -104,6 +105,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		}
 		var groups *planGroups
 		s.plan, groups = c.takePlanAndGroups()
+		validateHookGroups(s.plan, groups)
 		s.Compile()
 		s.suite.groups = groups
 		return s.suite
@@ -255,6 +257,7 @@ func (s *Spec) Compile() {
 		defer planScratchPool.Put(scratch)
 		plan := newExecutionPlan(countSpecsArena(s.arena, s.rootID))
 		groups := buildExecutionPlanFromArenaGroups(s.arena, s.rootID, plan, scratch, s.registry.groupHooksOf())
+		validateHookGroups(plan, groups)
 		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter, groups: groups}
 	})
 }
