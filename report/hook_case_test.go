@@ -317,28 +317,48 @@ func TestJUnitClassNameUnchangedForAnOrdinarySpec(t *testing.T) {
 // change to either renderer's case rendering can't silently reintroduce the same class of bug
 // without failing a test.
 func TestRenderTXTAndHTMLDoNotCollapseHookCaseIdentity(t *testing.T) {
+	// Two sibling groups' hook cases share the Name "[BeforeAll]"; only the group path tells them
+	// apart, so TXT and HTML must show it (H8: a hook case's identity is (group path, marker)).
 	c := NewCollector()
 	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
-	c.SpecFinished(SpecResultEvent{
-		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when cart has items"}},
-		Failed:         true,
-		Hook:           HookBeforeAll,
-	})
+	for _, group := range []string{"when cart has items", "when cart is empty"} {
+		c.SpecFinished(SpecResultEvent{
+			SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", group}},
+			Failed:         true,
+			Hook:           HookBeforeAll,
+		})
+	}
 	r := c.Report()
+	want := []string{
+		"Checkout/when cart has items [BeforeAll]",
+		"Checkout/when cart is empty [BeforeAll]",
+	}
 
 	var txt bytes.Buffer
 	if err := RenderTXT(&txt, r); err != nil {
 		t.Fatalf("RenderTXT: %v", err)
 	}
-	if !strings.Contains(txt.String(), "[BeforeAll]") {
-		t.Fatalf("expected the hook case name in TXT output:\n%s", txt.String())
-	}
-
 	var html bytes.Buffer
 	if err := RenderHTML(&html, r); err != nil {
 		t.Fatalf("RenderHTML: %v", err)
 	}
-	if !strings.Contains(html.String(), "[BeforeAll]") {
-		t.Fatalf("expected the hook case name in HTML output:\n%s", html.String())
+	for _, w := range want {
+		if !strings.Contains(txt.String(), w) {
+			t.Errorf("TXT output lacks %q:\n%s", w, txt.String())
+		}
+		if !strings.Contains(html.String(), w) {
+			t.Errorf("HTML output lacks %q:\n%s", w, html.String())
+		}
+	}
+}
+
+func TestHookCaseDisplayNameLeavesOrdinarySpecsUnchanged(t *testing.T) {
+	spec := Case{Name: "charges the card", Path: []string{"Checkout", "when cart has items", "charges the card"}}
+	if got := caseDisplayName(spec); got != "charges the card" {
+		t.Fatalf("ordinary spec display name = %q, want %q", got, "charges the card")
+	}
+	rootHook := Case{Name: "[AfterAll]", Hook: "AfterAll"}
+	if got := caseDisplayName(rootHook); got != "[AfterAll]" {
+		t.Fatalf("hook case without a path = %q, want %q", got, "[AfterAll]")
 	}
 }

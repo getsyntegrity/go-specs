@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -48,12 +49,24 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	return bw.err
 }
 
+// caseDisplayName is the human-facing name TXT and HTML print for a case. A real spec keeps its
+// own Name, exactly as before. A synthetic group hook case is named only by its marker
+// ("[BeforeAll]"/"[AfterAll]"), which every group shares, so it is prefixed with its group Path
+// (joined with "/") — otherwise two sibling groups' hook failures would print identically. This is
+// the same identity JUnit gets from junitClassName (docs/SUITE_HOOKS_CONTRACT.md H8).
+func caseDisplayName(c Case) string {
+	if c.Hook == "" || len(c.Path) == 0 {
+		return c.Name
+	}
+	return strings.Join(c.Path, "/") + " " + c.Name
+}
+
 func renderTXTCase(bw *errWriter, c Case) {
 	switch c.Status {
 	case StatusFailed:
-		bw.printf("  FAIL  %s (%ss)\n", c.Name, formatSeconds(c.Duration))
+		bw.printf("  FAIL  %s (%ss)\n", caseDisplayName(c), formatSeconds(c.Duration))
 	case StatusError:
-		bw.printf("  ERROR %s (%ss)\n", c.Name, formatSeconds(c.Duration))
+		bw.printf("  ERROR %s (%ss)\n", caseDisplayName(c), formatSeconds(c.Duration))
 	default:
 		return // passed/skipped/filtered/pending cases are covered by the suite totals line only
 	}

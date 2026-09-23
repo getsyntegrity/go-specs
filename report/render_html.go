@@ -159,7 +159,7 @@ func RenderHTML(w io.Writer, r NormalizedReport) error {
 		}
 		for _, c := range s.Cases {
 			hs.Cases = append(hs.Cases, htmlCase{
-				Name:        c.Name,
+				Name:        caseDisplayName(c),
 				Status:      string(c.Status),
 				StatusClass: string(c.Status),
 				Duration:    formatSeconds(c.Duration),

@@ -187,9 +187,11 @@ before `Duration`, so `SpecResultEvent`'s size is unchanged. Only a *failed* hoo
 passing `BeforeAll` or `AfterAll` emits nothing, so the report shape of an existing suite that
 registers no group hooks is completely unchanged.
 
-A hook case's identity in every renderer is (group path, `"[BeforeAll]"`/`"[AfterAll]"`) — e.g. its
-JUnit classname is the full group path, not the group path with its last element dropped as for a
-real spec, since a hook case's `Path` already *is* the group and carries no separate leaf name.
+A hook case's identity in every renderer is (group path, `"[BeforeAll]"`/`"[AfterAll]"`), because
+every group shares the same marker name. Its JUnit classname is the full group path, not the group
+path with its last element dropped as for a real spec, since a hook case's `Path` already *is* the
+group and carries no separate leaf name. TXT and HTML print it as `<group path> [BeforeAll]`, e.g.
+`Checkout/when cart has items [BeforeAll]`; real specs keep printing their own name only.
 
 ### H9 — Parallel and `FailFast` (normative now, implemented later)
 
