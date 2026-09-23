@@ -487,3 +487,20 @@ func TestRepeatedHookedDescribeKeepsSpecSubtestNames(t *testing.T) {
 		t.Fatalf("spec subtest names with group hooks:\n  %q\nwithout:\n  %q", got, want)
 	}
 }
+
+// TestRunFilterMatchingOnlyTheGroupPrefixNeverRunsItsHooks is regression (b'): a -run pattern that
+// matches the group's own subtest but none of its specs opens the group subtest (testing matches the
+// prefix and descends into it) yet must not enter the group — entry happens only inside a spec
+// subtest that actually starts (H3).
+func TestRunFilterMatchingOnlyTheGroupPrefixNeverRunsItsHooks(t *testing.T) {
+	out, ok := runGroupHookScopeHelper(t, "select", "^suite$/^group$/^nomatch$")
+	if !ok {
+		t.Fatalf("child process failed:\n%s", out)
+	}
+	if got := marks(out); len(got) != 0 {
+		t.Fatalf("marks = %q, want none: no spec matched, so no hook may run\n%s", got, out)
+	}
+	if !strings.Contains(out, "=== RUN   TestGroupHookScopeHelper/suite/group\n") {
+		t.Fatalf("expected the group subtest itself to be opened by the prefix match:\n%s", out)
+	}
+}
