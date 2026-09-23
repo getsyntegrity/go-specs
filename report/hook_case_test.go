@@ -205,3 +205,140 @@ func TestRenderXMLHookAttribute(t *testing.T) {
 		t.Fatalf("expected no hook attribute for a suite with no group hooks, got:\n%s", ordinary.String())
 	}
 }
+
+// TestJUnitClassNameKeepsTheFullGroupPathForAHookCase proves the #207 fix for a JUnit identity
+// collapse: junitClassName(suiteName, path) used to always drop path's last element, assuming it
+// duplicates the case's own Name — true for a real spec (Path ends in the spec's own name) but
+// false for a synthetic hook case, whose Path is the GROUP path and whose Name is the bracketed
+// hook marker ("[BeforeAll]"/"[AfterAll]"). Dropping a real group level there collapsed
+// "Checkout/when cart has items" down to "Checkout", so a hook case's classname must instead be
+// the full group path, joined with "/".
+func TestJUnitClassNameKeepsTheFullGroupPathForAHookCase(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
+	c.SpecFinished(SpecResultEvent{
+		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when cart has items"}},
+		Failed:         true,
+		Hook:           HookBeforeAll,
+	})
+	c.SuiteFinished(SuiteEndEvent{Name: "Checkout"})
+
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, c.Report()); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if len(doc.Suites) != 1 || len(doc.Suites[0].TestCases) != 1 {
+		t.Fatalf("got %+v, want one suite with one testcase", doc.Suites)
+	}
+	tc := doc.Suites[0].TestCases[0]
+	if want := "Checkout/when cart has items"; tc.ClassName != want {
+		t.Fatalf("hook case classname = %q, want %q", tc.ClassName, want)
+	}
+}
+
+// TestJUnitSiblingGroupHookCasesGetDistinctIdentity proves two sibling groups' [BeforeAll] cases
+// no longer collapse onto the same (classname, name) pair once junitClassName keeps their full,
+// distinct group paths.
+func TestJUnitSiblingGroupHookCasesGetDistinctIdentity(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
+	c.SpecFinished(SpecResultEvent{
+		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when cart has items"}},
+		Failed:         true,
+		Hook:           HookBeforeAll,
+	})
+	c.SpecFinished(SpecResultEvent{
+		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when cart is empty"}},
+		Failed:         true,
+		Hook:           HookBeforeAll,
+	})
+	c.SuiteFinished(SuiteEndEvent{Name: "Checkout"})
+
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, c.Report()); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if len(doc.Suites) != 1 || len(doc.Suites[0].TestCases) != 2 {
+		t.Fatalf("got %+v, want one suite with two testcases", doc.Suites)
+	}
+	first, second := doc.Suites[0].TestCases[0], doc.Suites[0].TestCases[1]
+	if first.Name == second.Name && first.ClassName == second.ClassName {
+		t.Fatalf("two sibling groups' hook cases collapsed onto the same identity: (%q, %q)", first.ClassName, first.Name)
+	}
+	if want := "Checkout/when cart has items"; first.ClassName != want {
+		t.Fatalf("first hook case classname = %q, want %q", first.ClassName, want)
+	}
+	if want := "Checkout/when cart is empty"; second.ClassName != want {
+		t.Fatalf("second hook case classname = %q, want %q", second.ClassName, want)
+	}
+}
+
+// TestJUnitClassNameUnchangedForAnOrdinarySpec proves the #207 fix does not touch a real spec's
+// classname: junitClassName(suiteName, path) still drops path's last element (the spec's own
+// name, duplicated from Name) exactly as before.
+func TestJUnitClassNameUnchangedForAnOrdinarySpec(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
+	c.SpecFinished(SpecResultEvent{
+		SpecStartEvent: SpecStartEvent{Name: "adds an item", Path: []string{"Checkout", "when cart has items", "adds an item"}},
+		Failed:         true,
+	})
+	c.SuiteFinished(SuiteEndEvent{Name: "Checkout"})
+
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, c.Report()); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if len(doc.Suites) != 1 || len(doc.Suites[0].TestCases) != 1 {
+		t.Fatalf("got %+v, want one suite with one testcase", doc.Suites)
+	}
+	if want := "Checkout/when cart has items"; doc.Suites[0].TestCases[0].ClassName != want {
+		t.Fatalf("ordinary spec classname = %q, want %q (unchanged)", doc.Suites[0].TestCases[0].ClassName, want)
+	}
+}
+
+// TestRenderTXTAndHTMLDoNotCollapseHookCaseIdentity proves TXT and HTML never had the JUnit bug
+// in the first place: neither renderer ever computes an identity from Path at all (junitClassName
+// is JUnit-only), so neither ever drops a group level for a hook case. They print c.Name as-is —
+// exactly the same as for a real spec, before and after this fix — so there is nothing to
+// byte-for-byte regress here. This test pins that "no path-dropping logic exists" fact so a future
+// change to either renderer's case rendering can't silently reintroduce the same class of bug
+// without failing a test.
+func TestRenderTXTAndHTMLDoNotCollapseHookCaseIdentity(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "Checkout"})
+	c.SpecFinished(SpecResultEvent{
+		SpecStartEvent: SpecStartEvent{Name: "[BeforeAll]", Path: []string{"Checkout", "when cart has items"}},
+		Failed:         true,
+		Hook:           HookBeforeAll,
+	})
+	r := c.Report()
+
+	var txt bytes.Buffer
+	if err := RenderTXT(&txt, r); err != nil {
+		t.Fatalf("RenderTXT: %v", err)
+	}
+	if !strings.Contains(txt.String(), "[BeforeAll]") {
+		t.Fatalf("expected the hook case name in TXT output:\n%s", txt.String())
+	}
+
+	var html bytes.Buffer
+	if err := RenderHTML(&html, r); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	if !strings.Contains(html.String(), "[BeforeAll]") {
+		t.Fatalf("expected the hook case name in HTML output:\n%s", html.String())
+	}
+}

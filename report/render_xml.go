@@ -108,7 +108,7 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 }
 
 func renderJUnitCase(suiteName string, c Case) junitTestCase {
-	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path), Time: formatSeconds(c.Duration), Hook: c.Hook}
+	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path, c.Hook != ""), Time: formatSeconds(c.Duration), Hook: c.Hook}
 	switch c.Status {
 	case StatusFailed:
 		tc.Failure = &junitFailure{Message: c.Message, Body: c.Output}
@@ -124,12 +124,29 @@ func renderJUnitCase(suiteName string, c Case) junitTestCase {
 	return tc
 }
 
-// junitClassName derives a JUnit classname from a case's enclosing scopes: c.Path[:len(c.Path)-1]
-// (outermost first, per SpecStartEvent.Path's doc in events.go), joined with "/". Two specs with
-// the same leaf name declared under different When/Describe branches therefore get different
-// classnames, so their (classname, name) pair stays unique. Falls back to suiteName when Path
-// carries no scopes at all (e.g. a Case built without Path, outside the normal collector path).
-func junitClassName(suiteName string, path []string) string {
+// junitClassName derives a JUnit classname from a case's Path.
+//
+// For a real spec, Path ends in the spec's own name (SpecStartEvent.Path's doc in events.go), so
+// the classname is the enclosing scopes only: c.Path[:len(c.Path)-1] (outermost first), joined
+// with "/". Two specs with the same leaf name declared under different When/Describe branches
+// therefore get different classnames, so their (classname, name) pair stays unique. Falls back to
+// suiteName when Path carries no scopes at all (e.g. a Case built without Path, outside the normal
+// collector path).
+//
+// For a synthetic group hook case (isHook true), Path is already the GROUP path — there is no
+// trailing "own name" element to drop, because the case's Name is the bracketed hook marker
+// ("[BeforeAll]"/"[AfterAll]"), not a scope. Dropping the last element there collapsed a real group
+// level: "[BeforeAll]" of Checkout/when cart has items got classname "Checkout" instead of
+// "Checkout/when cart has items", so two sibling groups' hook cases could end up sharing the same
+// (classname, name) pair (issue #207, docs/SUITE_HOOKS_CONTRACT.md H8). A hook case's classname is
+// therefore the full Path, joined with "/", falling back to suiteName when Path is empty.
+func junitClassName(suiteName string, path []string, isHook bool) string {
+	if isHook {
+		if len(path) == 0 {
+			return suiteName
+		}
+		return strings.Join(path, "/")
+	}
 	if len(path) <= 1 {
 		return suiteName
 	}
