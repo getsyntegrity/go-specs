@@ -19,7 +19,7 @@ import (
 // a controlledBackend's Fatal/FailNow panics with the local isolatedCaseAbort sentinel and never
 // touches the real test, exactly like every other recovery test in this package already does. The
 // one exception is TestBeforeAllFailNowGoexitDoesNotAbortSiblingGroupRealProcess, which needs a
-// genuine *testing.T to prove real per-hook subtest isolation and therefore uses the subprocess
+// genuine *testing.T to prove real hook-goroutine isolation and therefore uses the subprocess
 // pattern established by execution_plan_isolation_test.go instead.
 //
 // Happy-path ordering (no failures) lives in before_after_all_test.go.
@@ -260,7 +260,7 @@ func TestGroupHookFailuresCountInTotals(t *testing.T) {
 }
 
 // TestBeforeAllFailNowGoexitDoesNotAbortSiblingGroupRealProcess proves a real t.Fatal/FailNow
-// inside a BeforeAll (runtime.Goexit) is isolated to that one hook's own subtest and does not abort
+// inside a BeforeAll (runtime.Goexit) is isolated to that hook's own goroutine and does not abort
 // a sibling group (H7) — against a genuine *testing.T, in a subprocess, matching the pattern
 // TestSpecRunRealFatalfIsolatesJustThatSpecRealProcess already established in
 // execution_plan_isolation_test.go: a nested t.Run's real Fatalf would otherwise mark this outer

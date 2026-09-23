@@ -99,8 +99,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   skipped — but never affects a sibling group, and the failing group's own `AfterAll` still runs.
   An `AfterAll` failure is reported once as a synthetic `[AfterAll]` case without retroactively
   failing a spec that already passed, and every remaining `AfterAll` (same group and outer) still
-  runs. Both the default bytecode-compiler path and the `Analyze`/registry path implement this
-  identically. Not yet implemented on the `Builder`/`Program`/`Runner` engine (tracked as a
+  runs. A hooked group runs in a Go subtest of its own (full spec subtest names are unchanged), and
+  is entered only when one of its specs actually starts, so `go test -run` never filters a group's
+  hooks apart from the specs they guard. Hooks are not subtests: `ctx.T` inside one is the group's
+  subtest, so `ctx.T.Cleanup`/`TempDir`/`Setenv` registered in a `BeforeAll` live through the
+  group's `AfterAll` and end before the next sibling group, and a hook failure fails the group's
+  subtest. A suite that registers no group hook allocates nothing extra, byte for byte. Both the
+  default bytecode-compiler path and the `Analyze`/registry path implement this identically. Not yet
+  implemented on the `Builder`/`Program`/`Runner` engine (tracked as a
   follow-up); see [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md). See
   [docs/SUITE_HOOKS_CONTRACT.md](docs/SUITE_HOOKS_CONTRACT.md) for the full normative contract and
   [docs/DSL.md](docs/DSL.md#beforeall--afterall) for the DSL summary.

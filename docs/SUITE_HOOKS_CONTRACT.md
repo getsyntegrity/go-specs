@@ -117,6 +117,18 @@ A spec that only turns out not to execute at *run time* — for example, one tha
 inside its own body — does not change this: the group was already entered, its `BeforeAll` already
 ran, and its `AfterAll` still runs.
 
+**External test selection (`go test -run`).** A `-run` filter is applied by Go's `testing` package
+while the suite runs, so it cannot be part of the decision above. Instead, a group is entered only
+when one of its descendant specs *actually starts* — inside that spec's own subtest, right before
+its body. The consequences are exact in both directions:
+
+- `go test -run '^TestCheckout$/^checkout$/^cart_has_items$/^charges_the_card$'` selects one spec
+  inside a hooked group; the group's `BeforeAll` runs exactly once, before it, and its `AfterAll`
+  after it. A group hook is never filtered out on its own while a spec it guards still runs.
+- A `-run` pattern that selects no spec of a group means the group is never entered: none of its
+  hooks run, and no synthetic hook case is emitted. Its specs are reported `Filtered`, exactly as
+  they are without group hooks.
+
 ### H4 — `BeforeAll` failure
 
 A failure — an assertion via `ctx`, `Fatal`/`FailNow` (`runtime.Goexit`), or a panic — in any
@@ -166,8 +178,25 @@ Hook panics and `FailNow`/`Fatal` (`runtime.Goexit`) go through the same single 
 every other execution path in this engine already uses (`reportRecoveredPanic` /
 `recoverSpecFailure`, `specs/panic_report.go`): they are never double-reported, and they are
 attributed to the synthetic hook case, not to whichever spec happens to run next. A `Goexit` in a
-group hook must not abort sibling groups — each group's hooks run inside their own isolated
-subtest, the same isolation a real spec's body already gets (`runSpecProgramIsolated`).
+group hook must not abort sibling groups.
+
+Hooks are **not subtests**. When the suite runs against a real `*testing.T`, every group that
+registers a hook gets a real Go subtest of its own, and its specs and nested groups run inside it.
+The subtest names compose to exactly the name each spec had without group hooks
+(`TestCheckout/checkout/cart_has_items/charges_the_card` either way), so `-run` patterns and IDE
+links keep working. Each hook then runs synchronously on a goroutine of its own, with `ctx.T` set to
+the group's subtest: a `Goexit` or panic unwinds only that goroutine, never the group, the spec
+that triggered the group's entry, or a sibling. A hook failure — an assertion, `ctx.T.Fatal`,
+`ctx.T.FailNow`, or a panic — is reported as the synthetic case *and* marks the group's subtest
+failed, so `go test` prints `--- FAIL: TestCheckout/checkout/cart_has_items` for it. Specs skipped
+by a `BeforeAll` failure are reported skipped without a subtest of their own, except the one whose
+start triggered the group's entry, whose subtest is marked skipped with the same reason.
+
+A few group names cannot get a subtest of their own without changing a spec's full subtest name:
+an empty group name (`When("")`), a group containing an `It("")`, and a group whose normalized name
+is already taken by a sibling group or a spec (two sibling `When("x")`, or an `It("x")` next to a
+hooked `When("x")`). Such a group runs inline in its enclosing scope instead. Every rule above still
+holds for it; only its hooks' `ctx.T` is the enclosing scope's (see "Hook lifetime" below).
 
 ### H8 — Reporting: hook cases are structurally distinct
 
@@ -239,11 +268,41 @@ never emits a hook case — from ~17.5 µs/op to ~20.2 µs/op. The compact field
 ## Where a hook's `*Context` comes from
 
 `BeforeAll`/`AfterAll` receive a `*specs.Context`, the same type `BeforeEach`/`AfterEach`/`It`
-receive, built the same way: acquired from the runner's context pool and `Reset` against the
-group's own isolated subtest backend (see H7) before the hook runs. State a `BeforeAll` needs to
-share with the specs it sets up for (e.g. `db` in the example above) is carried the same way it
-already is without this feature: a variable captured by the hook and spec closures declared in the
-same Go scope, not through the `*Context` itself.
+receive, acquired from the runner's context pool. Its failures are reported to the group's subtest
+(see H7). State a `BeforeAll` needs to share with the specs it sets up for (e.g. `db` in the example
+above) is carried the same way it already is without this feature: a variable captured by the hook
+and spec closures declared in the same Go scope, not through the `*Context` itself.
+
+### Hook lifetime
+
+Against a real `*testing.T`, `ctx.T` in a hook is the **group's own subtest**. Anything a
+`BeforeAll` registers through it — `ctx.T.Cleanup`, `ctx.T.TempDir`, `ctx.T.Setenv`, and fixture
+libraries built on them — therefore lives for the whole group: it is visible to every spec of the
+group and to its `AfterAll`, and it is released when the group's subtest ends, right after its
+`AfterAll` and before the next sibling group starts. A `ctx.T.Setenv` in group A is restored before
+sibling group B runs.
+
+```go
+s.When("with a scratch dir", func(w *specs.Spec) {
+    var dir string
+    w.BeforeAll(func(ctx *specs.Context) {
+        dir = ctx.T.TempDir()        // removed after this group's AfterAll
+        ctx.T.Setenv("APP_ENV", "test") // restored before the next sibling group
+    })
+    w.It("writes a file", func(*specs.Context) { /* dir and APP_ENV are both still here */ })
+})
+```
+
+For a group that runs inline in its enclosing scope (the name edge cases at the end of H7), `ctx.T`
+is that enclosing scope's `*testing.T`, so these resources live until the enclosing scope ends.
+
+`ctx.T.Parallel()` is not supported inside a hook: making the group's subtest parallel would detach
+the group's hooks from its specs. It is detected and stops the run with a diagnostic, the same way
+`ctx.T.Parallel()` inside a sequential spec body already is. `ctx.T.SkipNow()` inside a hook cannot
+skip the group; it is reported as a hook failure.
+
+On a backend that is not a real `*testing.T` (a `*testing.B`, or a fake backend in go-specs' own
+tests) there are no subtests: hooks run directly, with the same H1–H7 semantics.
 
 ## Engine support
 
