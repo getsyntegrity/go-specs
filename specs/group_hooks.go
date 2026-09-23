@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,8 +128,10 @@ type groupRun struct {
 	// groupSubtestName. Built only when real.
 	taken map[string]bool
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
-	// ctx.T.Parallel(); every enclosing group subtest then unwinds too (see stopIfStopped).
-	stopped bool
+	// ctx.T.Parallel(); every enclosing group subtest then unwinds too (see stopIfStopped), running
+	// the AfterAlls of the groups it had entered on the way out, and no further spec runs. It is
+	// atomic because a parked hook or spec resumes on its own goroutine after the stop was set.
+	stopped atomic.Bool
 }
 
 // runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook.
@@ -254,7 +257,7 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children, c
 // stopIfStopped unwinds t's goroutine once the run has been stopped deeper down, so the stop
 // reaches the test that owns the suite exactly as it does without group hooks.
 func (r *groupRun) stopIfStopped(t *testing.T) {
-	if r.stopped && t != nil {
+	if r.stopped.Load() && t != nil {
 		t.FailNow()
 	}
 }
@@ -274,20 +277,22 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int, chain []int) {
 	inner := append(chain[:len(chain):len(chain)], g)
 	children := r.scopes[g].children
 	name, groupPrefix, ok := r.groupSubtestName(prefix, g)
+	// exitGroup is deferred in both branches so a group that was entered still runs its AfterAlls
+	// when an unsupported ctx.T.Parallel() stops the run and unwinds it with runtime.Goexit (H5).
 	if !ok {
 		r.scopes[g].t = t
+		defer r.exitGroup(g)
 		r.runRange(t, prefix, group.Start, group.End, children, inner)
-		r.exitGroup(g)
 		return
 	}
 	ran, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
 		r.scopes[g].t = gt
+		defer r.exitGroup(g)
 		r.runRange(gt, groupPrefix, group.Start, group.End, children, inner)
-		r.exitGroup(g)
 	})
 	if parked {
 		// A hook of this group called the unsupported ctx.T.Parallel() on the group subtest.
-		r.stopped = true
+		r.stopped.Store(true)
 		t.Helper()
 		t.Fatalf("%s", unsupportedGroupHookParallelMessage(groupDisplayName(r.pg, g)))
 	}
@@ -398,6 +403,9 @@ func (r *groupRun) enter(chain []int) int {
 		}
 		if scope.entered {
 			continue
+		}
+		if r.stopped.Load() {
+			return -1
 		}
 		scope.entered = true
 		group := &r.pg.groups[g]
@@ -524,7 +532,14 @@ func (r *groupRun) runSpecSubtest(t *testing.T, name string, i int, chain []int)
 	var message, output string
 	var suppressed bool
 	ran, parked := runSubtestGuardingParallel(t, name, func(st *testing.T) {
-		if failing := r.enter(chain); failing >= 0 {
+		failing := r.enter(chain)
+		if r.stopped.Load() {
+			// A BeforeAll that called the unsupported ctx.T.Parallel() resumed after the run was
+			// stopped: nothing may run any more.
+			suppressed = true
+			st.Skip("go-specs: not run, because the run was stopped by an unsupported ctx.T.Parallel() call")
+		}
+		if failing >= 0 {
 			suppressed = true
 			reportGroupSuppressedSpec(r.rep, r.plan, r.pg, i, failing)
 			st.Skipf("skipped: BeforeAll failed for group %q", groupDisplayName(r.pg, failing))
@@ -536,7 +551,7 @@ func (r *groupRun) runSpecSubtest(t *testing.T, name string, i int, chain []int)
 		message, output = runProgram(program, ctx)
 	})
 	if parked {
-		r.stopped = true
+		r.stopped.Store(true)
 		failUnsupportedSpecBodyParallel(t, ctx, name)
 	}
 	if suppressed {

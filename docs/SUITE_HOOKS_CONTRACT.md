@@ -171,6 +171,10 @@ first spec started — every one of its `AfterAll`s runs, including after a `Bef
 failure/panic, a spec failure, or a spec panic. A failing `AfterAll` does not stop the remaining
 `AfterAll`s of that same group, or of an outer group.
 
+This includes a run stopped by an unsupported `ctx.T.Parallel()` call (in a spec body or a hook,
+see "Hook lifetime"): no further spec runs, but every group already entered still runs its
+`AfterAll`s while the stop unwinds, inner group first.
+
 ### H6 — `AfterAll` failure
 
 Reported once, as a synthetic case `[AfterAll]` under the group's own path. Specs that already

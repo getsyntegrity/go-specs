@@ -40,7 +40,9 @@ func TestGroupHookScopeHelper(t *testing.T) {
 		Describe(t, "suite", func(s *Spec) {
 			s.When("group", func(w *Spec) {
 				w.BeforeAll(func(ctx *Context) { ctx.T.Parallel() })
-				w.It("spec", func(*Context) {})
+				w.AfterAll(func(*Context) { fmt.Println("MARK after-all group") })
+				w.It("spec", func(*Context) { fmt.Println("MARK body spec") })
+				w.It("spec 2", func(*Context) { fmt.Println("MARK body spec 2") })
 			})
 			s.It("after", func(*Context) { fmt.Println("MARK after") })
 		})
@@ -50,9 +52,12 @@ func TestGroupHookScopeHelper(t *testing.T) {
 		Describe(t, "suite", func(s *Spec) {
 			s.When("outer", func(o *Spec) {
 				o.BeforeAll(func(*Context) {})
+				o.AfterAll(func(*Context) { fmt.Println("MARK after-all outer") })
 				o.When("inner", func(w *Spec) {
 					w.BeforeAll(func(*Context) {})
+					w.AfterAll(func(*Context) { fmt.Println("MARK after-all inner") })
 					w.It("parks", func(ctx *Context) { ctx.T.Parallel() })
+					w.It("after in inner", func(*Context) { fmt.Println("MARK after in inner") })
 				})
 				o.It("after in outer", func(*Context) { fmt.Println("MARK after in outer") })
 			})
@@ -63,7 +68,8 @@ func TestGroupHookScopeHelper(t *testing.T) {
 
 // TestSpecBodyParallelInsideHookedGroupsStopsTheWholeRun proves the existing ctx.T.Parallel() guard
 // for spec bodies (spec_body_parallel.go) still stops the whole run when the spec sits inside nested
-// group subtests, not just the innermost group.
+// group subtests, not just the innermost group — and that every group already entered still runs
+// its AfterAll while the stop unwinds, inner first (H5), with no further spec running.
 func TestSpecBodyParallelInsideHookedGroupsStopsTheWholeRun(t *testing.T) {
 	out, ok := runGroupHookScopeHelper(t, "spec-parallel", "")
 	if ok {
@@ -72,15 +78,16 @@ func TestSpecBodyParallelInsideHookedGroupsStopsTheWholeRun(t *testing.T) {
 	if !strings.Contains(out, "ctx.T.Parallel() is not supported in the sequential spec") {
 		t.Fatalf("missing the unsupported-Parallel diagnostic:\n%s", out)
 	}
-	if got := marks(out); len(got) != 0 {
-		t.Fatalf("the run continued after the unsupported Parallel call: %q\n%s", got, out)
+	if got, want := marks(out), []string{"after-all inner", "after-all outer"}; !slices.Equal(got, want) {
+		t.Fatalf("marks = %q, want %q: owed AfterAlls must run and no spec may run after the stop\n%s", got, want, out)
 	}
 }
 
 // TestGroupHookParallelStopsTheRun proves ctx.T.Parallel() inside a group hook — where ctx.T is the
 // group's own subtest — is detected and stops the run with a diagnostic, the same way it already is
 // inside a sequential spec body (spec_body_parallel.go), instead of silently detaching the group's
-// hooks from its specs.
+// hooks from its specs. The group was entered, so its AfterAll still runs (H5), but no spec of it —
+// and nothing after it — runs once the run has stopped.
 func TestGroupHookParallelStopsTheRun(t *testing.T) {
 	out, ok := runGroupHookScopeHelper(t, "parallel", "")
 	if ok {
@@ -89,8 +96,8 @@ func TestGroupHookParallelStopsTheRun(t *testing.T) {
 	if !strings.Contains(out, "ctx.T.Parallel() is not supported in a BeforeAll/AfterAll hook") {
 		t.Fatalf("missing the unsupported-Parallel diagnostic:\n%s", out)
 	}
-	if slices.Contains(marks(out), "after") {
-		t.Fatalf("the run continued after the unsupported Parallel call:\n%s", out)
+	if got, want := marks(out), []string{"after-all group"}; !slices.Equal(got, want) {
+		t.Fatalf("marks = %q, want %q: the AfterAll is owed, and no spec may run after the stop\n%s", got, want, out)
 	}
 }
 
