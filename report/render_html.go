@@ -64,7 +64,7 @@ const htmlTemplate = `<!DOCTYPE html>
 {{range .Cases}}
 <tr>
   <td><span class="status status-{{.StatusClass}}">{{.Status}}</span></td>
-  <td>{{.Name}}{{if .Message}}<div class="diagnostics">{{.Message}}</div>{{end}}{{if .Output}}<div class="diagnostics">{{.Output}}</div>{{end}}</td>
+  <td>{{.Name}}{{if .Hook}}<span class="hook-{{.Hook}}" style="display:inline-block;margin-left:0.5rem;font-size:0.75rem;font-weight:600;padding:0.05rem 0.4rem;border-radius:3px;background:#eee;color:#555;">{{.Hook}}</span>{{end}}{{if .Message}}<div class="diagnostics">{{.Message}}</div>{{end}}{{if .Output}}<div class="diagnostics">{{.Output}}</div>{{end}}</td>
   <td>{{.Duration}}s</td>
 </tr>
 {{end}}
@@ -111,6 +111,9 @@ type htmlCase struct {
 	Duration    string
 	Message     string
 	Output      string
+	// Hook marks a synthetic group hook case ("BeforeAll"/"AfterAll"), empty for a real spec; see
+	// jsonCase.Hook / Case.Hook (issue #207 H8).
+	Hook string
 }
 
 type htmlSuite struct {
@@ -162,6 +165,7 @@ func RenderHTML(w io.Writer, r NormalizedReport) error {
 				Duration:    formatSeconds(c.Duration),
 				Message:     c.Message,
 				Output:      c.Output,
+				Hook:        c.Hook,
 			})
 		}
 		view.Suites = append(view.Suites, hs)

@@ -57,6 +57,9 @@ func renderTXTCase(bw *errWriter, c Case) {
 	default:
 		return // passed/skipped/filtered/pending cases are covered by the suite totals line only
 	}
+	if c.Hook != "" {
+		bw.printf("        hook: %s\n", c.Hook)
+	}
 	if c.Message != "" {
 		bw.printf("        message: %s\n", c.Message)
 	}

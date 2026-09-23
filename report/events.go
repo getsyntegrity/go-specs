@@ -31,6 +31,14 @@ type SpecStartEvent struct {
 	// Path is freshly allocated per event and safe to retain or modify.
 	Path []string
 	Time time.Time
+	// Hook marks a synthetic group hook case emitted by a BeforeAll/AfterAll failure (issue #207,
+	// docs/SUITE_HOOKS_CONTRACT.md H8): "BeforeAll" or "AfterAll", empty for a real spec. It exists
+	// so a consumer can tell a hook case apart from a real spec structurally — never by pattern
+	// matching Name's bracketed "[BeforeAll]"/"[AfterAll]" text, which is presentation, not
+	// identity. Only a failed hook produces an event at all: a passing BeforeAll/AfterAll emits
+	// nothing, so a suite that registers no group hooks never sets this field and its report is
+	// unaffected.
+	Hook string
 }
 
 // SpecResultEvent captures the result of an individual spec.

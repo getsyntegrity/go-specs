@@ -45,6 +45,12 @@ type Case struct {
 	Duration time.Duration
 	Message  string // failure/error summary; empty unless Status is Failed or Error
 	Output   string // full output/stack trace, when the source event carried one
+	// Hook is exactly SpecStartEvent.Hook (see report/events.go): "BeforeAll"/"AfterAll" for a
+	// synthetic group hook case, empty for a real spec. This is additive, not a schema-version
+	// change — see SchemaVersion's doc comment: a new field never bumps it, only a new value in a
+	// closed vocabulary such as Status would. A report with no group hooks never sets it, and every
+	// renderer keeps its existing byte-for-byte output for that case (issue #207 H10).
+	Hook string
 }
 
 // Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.

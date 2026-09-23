@@ -57,6 +57,7 @@ func (c *Collector) SpecFinished(e SpecResultEvent) {
 		Duration: e.Duration,
 		Message:  e.Message,
 		Output:   e.Output,
+		Hook:     e.Hook,
 	})
 	c.report.Suites[c.openAt].Totals.add(status)
 	c.report.Execution.add(status)

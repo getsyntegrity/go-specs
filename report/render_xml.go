@@ -38,13 +38,18 @@ type junitProperty struct {
 }
 
 type junitTestCase struct {
-	XMLName   xml.Name      `xml:"testcase"`
-	Name      string        `xml:"name,attr"`
-	ClassName string        `xml:"classname,attr"`
-	Time      string        `xml:"time,attr"`
-	Failure   *junitFailure `xml:"failure,omitempty"`
-	Error     *junitFailure `xml:"error,omitempty"`
-	Skipped   *junitSkipped `xml:"skipped,omitempty"`
+	XMLName   xml.Name `xml:"testcase"`
+	Name      string   `xml:"name,attr"`
+	ClassName string   `xml:"classname,attr"`
+	Time      string   `xml:"time,attr"`
+	// Hook marks a synthetic group hook case ("BeforeAll"/"AfterAll") as a structural attribute,
+	// omitted entirely for a real spec (issue #207 H8) so a suite with no group hooks renders no
+	// hook attribute anywhere. JUnit has no native vocabulary for this, so it is a plain custom
+	// attribute rather than an invented status.
+	Hook    string        `xml:"hook,attr,omitempty"`
+	Failure *junitFailure `xml:"failure,omitempty"`
+	Error   *junitFailure `xml:"error,omitempty"`
+	Skipped *junitSkipped `xml:"skipped,omitempty"`
 }
 
 // junitFailure covers both <failure> and <error>: JUnit gives them the same shape (an optional
@@ -103,7 +108,7 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 }
 
 func renderJUnitCase(suiteName string, c Case) junitTestCase {
-	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path), Time: formatSeconds(c.Duration)}
+	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path), Time: formatSeconds(c.Duration), Hook: c.Hook}
 	switch c.Status {
 	case StatusFailed:
 		tc.Failure = &junitFailure{Message: c.Message, Body: c.Output}
