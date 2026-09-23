@@ -460,12 +460,14 @@ const (
 func hookCaseName(kind report.HookKind) string { return "[" + kind.String() + "]" }
 
 // reportHookCase emits the single synthetic case a failed group hook produces (H4/H6/H8): one
-// SpecStarted/SpecFinished pair whose Path is the group's own declared scope chain (the same Path
-// a real spec declared directly in that group would carry, plus this hook's bracketed name as the
-// leaf — the same shape specEventPath already gives a real spec). Its Hook field is set only on
-// the SpecFinished event, never SpecStarted (report.SpecStartEvent carries no Hook field at all —
-// see report/events.go's HookKind doc), so it marks the result structurally distinct from a real
-// spec. Duration is always 0 — group hooks are not timed today, only whether they failed; only a
+// SpecStarted/SpecFinished pair whose Path is exactly the group's own declared scope chain and
+// nothing else. Unlike a real spec's Path, it has no trailing leaf element: the case's Name (the
+// bracketed "[BeforeAll]"/"[AfterAll]" marker) is its leaf, and the renderers already treat a hook
+// case's Path as the group (report.junitClassName, report.caseDisplayName). Appending the marker
+// to Path as well printed it twice in TXT and pushed it into the JUnit classname. Its Hook field
+// is set only on the SpecFinished event, never SpecStarted (report.SpecStartEvent carries no Hook
+// field at all — see report/events.go's HookKind doc), so it marks the result structurally
+// distinct from a real spec. Duration is always 0 — group hooks are not timed today, only whether they failed; only a
 // failed hook produces a case at all (H8), which is why every call site above only reaches this
 // when failed is true.
 func reportHookCase(rep report.EventReporter, groupPath []string, kind report.HookKind, message, output string) {
@@ -473,7 +475,7 @@ func reportHookCase(rep report.EventReporter, groupPath []string, kind report.Ho
 		return
 	}
 	name := hookCaseName(kind)
-	path := append(append([]string(nil), groupPath...), name)
+	path := append([]string(nil), groupPath...)
 	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
 	rep.SpecStarted(started)
 	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Failed: true, Message: message, Output: output, Hook: kind})
