@@ -343,3 +343,36 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	s.requireBuildTarget("AfterEach")
 	s.registry.appendAfterHook(fn)
 }
+
+// BeforeAll registers a once-per-group setup hook (issue #207): it runs exactly once for this
+// Describe/When group, right before the group's first runnable spec — including a spec that
+// belongs to a nested group — never once per spec the way BeforeEach does. A group with no It
+// anywhere in its subtree never runs its BeforeAll at all. Multiple registrations in the same
+// group run in registration order. See docs/SUITE_HOOKS_CONTRACT.md for the full contract.
+func (s *Spec) BeforeAll(fn func(*Context)) {
+	if s == nil || fn == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.AppendBeforeAll(fn)
+		return
+	}
+	s.requireBuildTarget("BeforeAll")
+	s.registry.appendBeforeAllHook(fn)
+}
+
+// AfterAll registers a once-per-group teardown hook (issue #207): it runs exactly once for this
+// Describe/When group, right after the group's last spec or subgroup finishes — guaranteed to run
+// once the group was entered, even after a BeforeAll or spec failure/panic. See
+// docs/SUITE_HOOKS_CONTRACT.md for the full contract.
+func (s *Spec) AfterAll(fn func(*Context)) {
+	if s == nil || fn == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.AppendAfterAll(fn)
+		return
+	}
+	s.requireBuildTarget("AfterAll")
+	s.registry.appendAfterAllHook(fn)
+}

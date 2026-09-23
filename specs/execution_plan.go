@@ -2,6 +2,7 @@
 package specs
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -42,6 +43,69 @@ type ExecutionPlan struct {
 	PathScopes     []string
 	PathScopeStart []int
 	PathScopeLen   []int
+
+	// Groups holds one entry per Describe/When (or root) scope that registered at least one
+	// BeforeAll/AfterAll hook and has at least one runnable spec in its subtree (issue #207,
+	// docs/SUITE_HOOKS_CONTRACT.md). Nil for a suite that registers neither hook anywhere — H10:
+	// the runtime skips every bit of group-lifecycle bookkeeping below in that case, so such a
+	// suite's allocation counts and report output are exactly what they were before this feature.
+	Groups []hookGroup
+	// GroupEnter[i] lists indices into Groups entered immediately before spec i runs; GroupEnter[i]
+	// is built by appending at each scope's close (innermost scope first), so it holds inner-to-
+	// outer order and must be read in REVERSE to get the outer-to-inner order H2 requires (outer
+	// BeforeAll before inner BeforeAll). GroupExit[i] lists indices exited immediately after spec i
+	// runs, built the same way but read FORWARD, which already is inner-to-outer (H2's teardown
+	// order). Both are nil, or shorter than len(Names), whenever no group targets a given spec or
+	// any later one — every reader must bounds-check before indexing.
+	GroupEnter [][]int
+	GroupExit  [][]int
+}
+
+// hookGroup is one Describe/When (or root) scope's once-per-group hooks, plus the declared scope
+// chain (including the group's own name) reported as the synthetic hook case's Path when one of
+// its hooks fails — see reportHookCase.
+type hookGroup struct {
+	Path      []string
+	BeforeAll []func(*Context)
+	AfterAll  []func(*Context)
+}
+
+// registerHookGroup attaches one scope's own BeforeAll/AfterAll hooks to plan, entered right
+// before spec startIdx runs and exited right after spec endIdx runs. Both compile paths
+// (bytecodeCompiler.closeGroupHooksAtTop and buildExecutionPlanFromArenaRec) call this at the
+// exact point they close a Describe/When/root scope, mirroring how BeforeEach/AfterEach are
+// attributed but never flattened onto child specs (H1).
+//
+// startIdx > endIdx means the scope's subtree contributed zero specs to the plan — H3's "a group
+// with zero runnable specs is never entered": nothing is registered, so the hooks are silently
+// discarded along with the scope itself, and the case where neither hook was registered at all is
+// already filtered by both callers before this is reached.
+func registerHookGroup(plan *ExecutionPlan, path []string, before, after []func(*Context), startIdx, endIdx int) {
+	if plan == nil || startIdx < 0 || startIdx > endIdx {
+		return
+	}
+	if len(before) == 0 && len(after) == 0 {
+		return
+	}
+	g := hookGroup{Path: append([]string(nil), path...), BeforeAll: before, AfterAll: after}
+	idx := len(plan.Groups)
+	plan.Groups = append(plan.Groups, g)
+	growGroupSlots(&plan.GroupEnter, startIdx)
+	growGroupSlots(&plan.GroupExit, endIdx)
+	plan.GroupEnter[startIdx] = append(plan.GroupEnter[startIdx], idx)
+	plan.GroupExit[endIdx] = append(plan.GroupExit[endIdx], idx)
+}
+
+// growGroupSlots grows *s so index idx is valid, preserving existing entries. Only ever called
+// from registerHookGroup, so the cost is paid only by a suite that actually registers a group
+// hook (H10).
+func growGroupSlots(s *[][]int, idx int) {
+	if idx < len(*s) {
+		return
+	}
+	grown := make([][]int, idx+1)
+	copy(grown, *s)
+	*s = grown
 }
 
 func newExecutionPlan(estimatedSpecs int) *ExecutionPlan {
@@ -111,6 +175,9 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	if name != "" && node.Type != SuiteNode {
 		scratch.path = append(scratch.path, name)
 	}
+	// groupStart is this node's own once-per-group hooks' entry point (H2/H3): the index the next
+	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
+	groupStart := len(plan.Names)
 	if node.Type == ItNode {
 		scratch.beforeFlat = scratch.beforeFlat[:0]
 		scratch.afterFlat = scratch.afterFlat[:0]
@@ -152,6 +219,26 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	}
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
+	}
+	// Close this node's own group hooks (issue #207), the arena-path equivalent of
+	// bytecodeCompiler.closeGroupHooksAtTop: an ItNode has none of its own (BeforeAll/AfterAll are
+	// never registered on a leaf spec), and the SuiteNode root is never exposed to the public
+	// BeforeAll/AfterAll DSL surface, so both are skipped here defensively.
+	if node.Type != ItNode && node.Type != SuiteNode {
+		// Bounds-checked, not a direct index: NodeArena is exported with exported fields, and a
+		// hand-built arena that predates this feature (e.g. a test fixture) may carry
+		// BeforeHooks/AfterHooks but no BeforeAllHooks/AfterAllHooks at all — nil is the correct
+		// "no group hooks declared" answer for it, not a panic.
+		var before, after []func(*Context)
+		if nodeID < len(arena.BeforeAllHooks) {
+			before = arena.BeforeAllHooks[nodeID]
+		}
+		if nodeID < len(arena.AfterAllHooks) {
+			after = arena.AfterAllHooks[nodeID]
+		}
+		if len(before) > 0 || len(after) > 0 {
+			registerHookGroup(plan, scratch.path, before, after, groupStart, len(plan.Names)-1)
+		}
 	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
 		scratch.path = scratch.path[:len(scratch.path)-1]
@@ -211,6 +298,7 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 		TotalSpecs:    counter.total,
 		FailedSpecs:   counter.failed,
 		FilteredSpecs: counter.filtered,
+		SkippedSpecs:  counter.skipped,
 	})
 }
 
@@ -221,6 +309,11 @@ type specCounter struct {
 	total    int
 	failed   int
 	filtered int
+	// skipped counts a spec reported Skipped: true — today that is only a spec suppressed by an
+	// ancestor group's failed BeforeAll (issue #207 H4); the canonical Describe engine has no
+	// compile-time Skip/Pending of its own (see docs/EXECUTION_ENGINES.md), so this field stays 0
+	// for every suite that predates that feature.
+	skipped int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
@@ -231,17 +324,249 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	if e.Filtered {
 		c.filtered++
 	}
+	if e.Skipped {
+		c.skipped++
+	}
 	c.EventReporter.SpecFinished(e)
 }
 
-// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. The plan is already
-// flat — its hooks are compiled into each spec's own instruction range — so there is no group
-// nesting to walk here. Each spec still gets its own subtest when the backend wraps a real
-// *testing.T; that decision belongs to runSpecProgram, not to this loop.
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. Each spec's own
+// before/body/after hooks are already flat — compiled into its own instruction range — so there is
+// no group nesting to walk for those. Group hooks (BeforeAll/AfterAll, issue #207) are the one
+// exception: plan.Groups is nil for a suite that registers neither (H10), and the fast path below
+// (no groupState at all) is then exactly runPlanSpecsInOrder's pre-#207 body — same calls, same
+// allocations. A suite that does register a group hook pays for groupState, sized once to
+// len(plan.Groups), and this loop additionally opens/closes groups around the spec index they were
+// attached to; see runGroupEnter/runGroupExit.
 func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
-	for i := 0; i < len(plan.ProgramStart); i++ {
-		runExecution(backend, rep, plan, i)
+	if len(plan.Groups) == 0 {
+		for i := 0; i < len(plan.ProgramStart); i++ {
+			runExecution(backend, rep, plan, i)
+		}
+		return
 	}
+	gs := &groupState{entered: make([]bool, len(plan.Groups)), failingGroup: -1}
+	for i := 0; i < len(plan.ProgramStart); i++ {
+		runGroupEnter(backend, rep, plan, gs, i)
+		if gs.failingGroup != -1 {
+			reportGroupSuppressedSpec(rep, plan, i, gs.failingGroup)
+		} else {
+			runExecution(backend, rep, plan, i)
+		}
+		runGroupExit(backend, rep, plan, gs, i)
+	}
+}
+
+// groupState is the group-lifecycle bookkeeping threaded through one CompiledSuite.Run: which
+// groups have been entered (so their AfterAll is owed, H5) and which group — if any — is currently
+// the reason descendant specs are being skipped (H4). failingGroup is a single index, not a stack,
+// because the moment a group's own BeforeAll fails, none of its descendant groups are ever entered
+// at all (see runGroupEnter): there is at most one "currently failing ancestor" in scope anywhere
+// in this plan's execution at a time, and it always resolves at that same group's own exit.
+type groupState struct {
+	entered      []bool
+	failingGroup int
+}
+
+// runGroupEnter processes plan.GroupEnter[i]: every group whose first runnable spec is i. It reads
+// the list in REVERSE — GroupEnter is built inner-scope-first (see ExecutionPlan.GroupEnter's doc
+// comment) — so groups are entered outer-to-inner, per H2. A group is skipped entirely (never
+// entered, its entered[g] left false) when an ancestor is already failing (H4: "every nested
+// group's hooks" stay unentered); otherwise its BeforeAll hooks run, and a failure there makes it
+// the new failingGroup for its own descendants.
+func runGroupEnter(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, gs *groupState, i int) {
+	if i >= len(plan.GroupEnter) {
+		return
+	}
+	entries := plan.GroupEnter[i]
+	for k := len(entries) - 1; k >= 0; k-- {
+		g := entries[k]
+		if gs.failingGroup != -1 {
+			continue // an ancestor is already failing: this group is never entered at all (H4)
+		}
+		gs.entered[g] = true
+		group := &plan.Groups[g]
+		message, output, failed := runGroupHookSequence(backend, group.BeforeAll, joinSubtestPath(group.Path, hookCaseName(hookKindBeforeAll)), true)
+		if failed {
+			gs.failingGroup = g
+			reportHookCase(rep, group.Path, hookKindBeforeAll, message, output)
+		}
+	}
+}
+
+// runGroupExit processes plan.GroupExit[i]: every group whose last runnable spec is i. It reads
+// the list FORWARD — GroupExit is built inner-scope-first, which already is the inner-to-outer
+// teardown order H2 requires. A group that was never entered (skipped by an ancestor's failure)
+// runs no AfterAll at all (H4/H5: the guarantee is scoped to a group that was actually entered).
+// An entered group's AfterAll always runs, even if its own BeforeAll failed (H5) — every hook in
+// its own list runs regardless of an earlier one failing (H6) — and once i is the group that
+// introduced the current failure, that failure is cleared here: sibling groups after this point
+// run normally again.
+func runGroupExit(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, gs *groupState, i int) {
+	if i >= len(plan.GroupExit) {
+		return
+	}
+	for _, g := range plan.GroupExit[i] {
+		if gs.entered[g] {
+			group := &plan.Groups[g]
+			message, output, failed := runGroupHookSequence(backend, group.AfterAll, joinSubtestPath(group.Path, hookCaseName(hookKindAfterAll)), false)
+			if failed {
+				reportHookCase(rep, group.Path, hookKindAfterAll, message, output)
+			}
+		}
+		if gs.failingGroup == g {
+			gs.failingGroup = -1
+		}
+	}
+}
+
+// reportGroupSuppressedSpec reports spec i as skipped (H4: "reports every spec of the group ...
+// as skipped, with a message naming the failing group"), without opening a subtest for it at all —
+// the same convention the Builder engine already uses for a compile-time-skipped spec (see
+// program.go's reportSkipped): only identity is reported, nothing runs.
+func reportGroupSuppressedSpec(rep report.EventReporter, plan *ExecutionPlan, i, failingGroup int) {
+	if rep == nil {
+		return
+	}
+	name := specEventName(plan, i)
+	path := specEventPath(plan, i)
+	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	rep.SpecStarted(started)
+	groupName := groupDisplayName(plan, failingGroup)
+	rep.SpecFinished(report.SpecResultEvent{
+		SpecStartEvent: started,
+		Skipped:        true,
+		Message:        fmt.Sprintf("skipped: BeforeAll failed for group %q", groupName),
+	})
+}
+
+// groupDisplayName renders a group's Path the same way a spec's own breadcrumb reads, for the
+// skipped-spec message above.
+func groupDisplayName(plan *ExecutionPlan, g int) string {
+	if g < 0 || g >= len(plan.Groups) {
+		return ""
+	}
+	return joinSubtestPath(plan.Groups[g].Path, "")
+}
+
+const (
+	hookKindBeforeAll = report.HookBeforeAll
+	hookKindAfterAll  = report.HookAfterAll
+)
+
+// hookCaseName is the synthetic case's display name (docs/SUITE_HOOKS_CONTRACT.md H4/H6):
+// "[BeforeAll]"/"[AfterAll]". The structural marker a consumer should actually switch on is
+// report.SpecResultEvent.Hook / report.Case.Hook, not this string (H8).
+func hookCaseName(kind report.HookKind) string { return "[" + kind.String() + "]" }
+
+// reportHookCase emits the single synthetic case a failed group hook produces (H4/H6/H8): one
+// SpecStarted/SpecFinished pair whose Path is the group's own declared scope chain (the same Path
+// a real spec declared directly in that group would carry, plus this hook's bracketed name as the
+// leaf — the same shape specEventPath already gives a real spec). Its Hook field is set only on
+// the SpecFinished event, never SpecStarted (report.SpecStartEvent carries no Hook field at all —
+// see report/events.go's HookKind doc), so it marks the result structurally distinct from a real
+// spec. Duration is always 0 — group hooks are not timed today, only whether they failed; only a
+// failed hook produces a case at all (H8), which is why every call site above only reaches this
+// when failed is true.
+func reportHookCase(rep report.EventReporter, groupPath []string, kind report.HookKind, message, output string) {
+	if rep == nil {
+		return
+	}
+	name := hookCaseName(kind)
+	path := append(append([]string(nil), groupPath...), name)
+	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	rep.SpecStarted(started)
+	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Failed: true, Message: message, Output: output, Hook: kind})
+}
+
+// runGroupHookSequence runs hooks (one group's own BeforeAll or AfterAll list) in registration
+// order, each isolated in its own subtest when backend wraps a real *testing.T — the same
+// isolation a real spec body already gets (runSpecProgramIsolated) — so that ANY failure in one
+// hook (an assertion via ctx, a panic, or Fatal/FailNow, i.e. runtime.Goexit) unwinds only that
+// hook's own subtest goroutine, never a sibling group or the rest of the suite (H7).
+//
+// Isolation is deliberately per HOOK, not per whole list: an ordinary ctx.Expect(...) failure ends
+// in backend.Fatalf, exactly like Fatal/FailNow, so it triggers runtime.Goexit too — which unwinds
+// its goroutine immediately and never returns to a loop. Running the whole list in one shared
+// subtest would therefore silently stop every hook after the first failing one, which is exactly
+// right for H4 (BeforeAll) but exactly wrong for H6 ("the remaining AfterAlls ... still run").
+// Giving every hook its own subtest is what makes both rules achievable from the same function.
+//
+// stopOnFailure selects H4 (BeforeAll: stop at the first failing hook in this group's own list) vs
+// H6 (AfterAll: every hook in this group's own list still runs regardless of an earlier failure).
+// message/output are the first failing hook's recovered panic pair; they stay "" for a plain
+// ctx-assertion or Fatal/FailNow failure, exactly like a real spec's SpecResultEvent.Message does
+// today (see events.go) — Goexit unwinds the goroutine before any such pair would be built. failed
+// is true whenever any hook failed, read from that hook's own ctx.hasFailed() (see
+// runGroupHookIsolated), which stays correct even when message/output are empty.
+func runGroupHookSequence(backend testBackend, hooks []func(*Context), subtestName string, stopOnFailure bool) (message, output string, failed bool) {
+	for _, h := range hooks {
+		if h == nil {
+			continue
+		}
+		m, o, hookFailed := runGroupHookIsolated(backend, h, subtestName)
+		if hookFailed {
+			failed = true
+			if message == "" {
+				message, output = m, o
+			}
+			if stopOnFailure {
+				break
+			}
+		}
+	}
+	return
+}
+
+// runGroupHookIsolated runs one group hook, isolated in its own subtest when backend wraps a real
+// *testing.T (same fallback runSpecProgram already takes for anything else — a fake/controlled
+// backend in a unit test, or a *testing.B). failed is read from ctx.hasFailed() after the subtest
+// returns rather than from the closure's own return path, because a Fatal/FailNow-triggered
+// runtime.Goexit inside it never reaches a return statement at all: ctx.failure is set before the
+// Fatalf call that triggers Goexit, and that write survives past the subtest closure because ctx is
+// a pointer shared across the isolation boundary — the same trick runSpecProgramIsolated relies on.
+func runGroupHookIsolated(backend testBackend, fn func(*Context), subtestName string) (message, output string, failed bool) {
+	real, ok := backend.(*runnableBackend)
+	if !ok {
+		return runGroupHookDirect(backend, fn)
+	}
+	t, ok := real.tb.(*testing.T)
+	if !ok {
+		return runGroupHookDirect(backend, fn)
+	}
+	ctx, release := acquireContext(nil)
+	defer release()
+	_, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+		subBackend := asTestBackend(subT)
+		defer putTestBackend(subBackend)
+		ctx.Reset(subBackend)
+		message, output = runGroupHookOnce(ctx, fn)
+	})
+	if parked {
+		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
+	}
+	failed = ctx.hasFailed()
+	return
+}
+
+// runGroupHookDirect runs fn against a fresh Context for backend, with no *testing.T subtest to
+// isolate into (a fake/controlled backend, or a *testing.B).
+func runGroupHookDirect(backend testBackend, fn func(*Context)) (message, output string, failed bool) {
+	ctx, release := acquireContext(backend)
+	defer release()
+	message, output = runGroupHookOnce(ctx, fn)
+	failed = ctx.hasFailed()
+	return
+}
+
+// runGroupHookOnce runs one hook, recovering a panic through the same single authority every other
+// execution path in this engine uses (H7). A plain ctx-assertion failure or Fatal/FailNow leaves
+// message/output empty here (recover() sees nothing to recover) — see runGroupHookSequence's doc
+// comment for why that is still correctly reflected in ctx.hasFailed().
+func runGroupHookOnce(ctx *Context, fn func(*Context)) (message, output string) {
+	defer func() { message, output = recoverSpecFailure(ctx, recover(), "panic in group hook") }()
+	fn(ctx)
+	return
 }
 
 func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) {

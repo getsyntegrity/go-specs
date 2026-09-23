@@ -67,16 +67,20 @@ const initialArenaCap = 4096
 
 func newRegistry() *registry {
 	arena := &NodeArena{
-		Nodes:       make([]ArenaNode, 0, initialArenaCap),
-		Children:    make([][]int, 0, initialArenaCap),
-		BeforeHooks: make([][]func(*Context), 0, initialArenaCap),
-		AfterHooks:  make([][]func(*Context), 0, initialArenaCap),
+		Nodes:          make([]ArenaNode, 0, initialArenaCap),
+		Children:       make([][]int, 0, initialArenaCap),
+		BeforeHooks:    make([][]func(*Context), 0, initialArenaCap),
+		AfterHooks:     make([][]func(*Context), 0, initialArenaCap),
+		BeforeAllHooks: make([][]func(*Context), 0, initialArenaCap),
+		AfterAllHooks:  make([][]func(*Context), 0, initialArenaCap),
 	}
 	// Root node: suite, index 0
 	arena.Nodes = append(arena.Nodes, ArenaNode{Name: "suite", Type: SuiteNode, Parent: -1})
 	arena.Children = append(arena.Children, nil)
 	arena.BeforeHooks = append(arena.BeforeHooks, nil)
 	arena.AfterHooks = append(arena.AfterHooks, nil)
+	arena.BeforeAllHooks = append(arena.BeforeAllHooks, nil)
+	arena.AfterAllHooks = append(arena.AfterAllHooks, nil)
 	return &registry{arena: arena, stack: []int{0}}
 }
 
@@ -116,6 +120,8 @@ func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn 
 	r.arena.Children = append(r.arena.Children, nil)
 	r.arena.BeforeHooks = append(r.arena.BeforeHooks, nil)
 	r.arena.AfterHooks = append(r.arena.AfterHooks, nil)
+	r.arena.BeforeAllHooks = append(r.arena.BeforeAllHooks, nil)
+	r.arena.AfterAllHooks = append(r.arena.AfterAllHooks, nil)
 	r.arena.Children[parentID] = append(r.arena.Children[parentID], id)
 	r.stack = append(r.stack, id)
 	r.mu.Unlock()
@@ -140,6 +146,24 @@ func (r *registry) appendAfterHook(fn func(*Context)) {
 	defer r.mu.Unlock()
 	id := r.currentNodeIDLocked()
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
+}
+
+// appendBeforeAllHook adds a once-per-group setup hook to the current node (issue #207). Unlike
+// appendBeforeHook, this hook is never flattened onto descendant It nodes — see NodeArena's doc
+// comment.
+func (r *registry) appendBeforeAllHook(fn func(*Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.currentNodeIDLocked()
+	r.arena.BeforeAllHooks[id] = append(r.arena.BeforeAllHooks[id], fn)
+}
+
+// appendAfterAllHook adds a once-per-group teardown hook to the current node (issue #207).
+func (r *registry) appendAfterAllHook(fn func(*Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.currentNodeIDLocked()
+	r.arena.AfterAllHooks[id] = append(r.arena.AfterAllHooks[id], fn)
 }
 
 func pushRegistry(r *registry) func() {
