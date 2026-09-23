@@ -341,6 +341,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- `MatchErrorAs` and `MatchError` reported a nil error as a non-error actual. Their
+  `FailureMessage` asserted `actual.(error)` before checking for nil, and a type assertion rejects an
+  untyped nil, so the dedicated "got a nil error" branch was unreachable: the common case of a
+  function that returned no error read "got <nil> (<nil>) — errors.As needs an error actual". The
+  nil check now runs first. Every `FailureMessage` branch of both matchers is pinned by exact-text
+  tests, and `SKILLS.md` now asks new matchers to test every failure message.
+  ([#200](https://github.com/getsyntegrity/go-specs/issues/200))
 - A parallel group with several failing specs showed only one of them, and reporting it silently
   turned on fail-fast. `reportFailures` stopped at the first failed record and reported it with
   `Fatalf`, which ends in `runtime.Goexit` on a real `*testing.T`: the loop could not continue past
