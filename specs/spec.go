@@ -82,9 +82,11 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 	if fn != nil {
 		fn(s)
 	}
-	s.plan = c.TakePlan()
+	var groups *planGroups
+	s.plan, groups = c.takePlanAndGroups()
 	if tb != nil {
 		s.Compile()
+		s.suite.groups = groups
 		s.suite.Run(tb)
 	}
 }
@@ -100,8 +102,10 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		if fn != nil {
 			fn(s)
 		}
-		s.plan = c.TakePlan()
+		var groups *planGroups
+		s.plan, groups = c.takePlanAndGroups()
 		s.Compile()
+		s.suite.groups = groups
 		return s.suite
 	}
 	defer ensureRegistry()()
@@ -250,8 +254,8 @@ func (s *Spec) Compile() {
 		scratch := planScratchPool.Get().(*planScratch)
 		defer planScratchPool.Put(scratch)
 		plan := newExecutionPlan(countSpecsArena(s.arena, s.rootID))
-		buildExecutionPlanFromArena(s.arena, s.rootID, plan, scratch)
-		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter}
+		groups := buildExecutionPlanFromArenaGroups(s.arena, s.rootID, plan, scratch, s.registry.groupHooksOf())
+		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter, groups: groups}
 	})
 }
 

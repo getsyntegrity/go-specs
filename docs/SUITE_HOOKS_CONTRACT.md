@@ -208,8 +208,23 @@ the Builder/Runner engine, which implements it in a follow-up change, not in the
 
 A suite that registers no `BeforeAll`/`AfterAll` anywhere keeps its current allocation counts
 (pinned by `specs/allocation_contract_test.go`) and its current report output, byte for byte. Group
-hook bookkeeping exists only in the compiled plan of a suite that actually uses `BeforeAll`/
+hook bookkeeping is allocated only for a suite that actually uses `BeforeAll`/
 `AfterAll`; a suite that does not pays nothing for a feature it never asked for.
+
+Allocation *counts* are not enough to prove that, because a struct can grow without allocating
+more often. The first draft of #207 added five slice headers to `ExecutionPlan` and `NodeArena`,
+kept `BenchmarkDescribeVariant_Describe` at exactly 426 allocs/op, and still cost every suite about
+96 B/op: `ExecutionPlan` grew from 192 to 264 bytes and moved up an allocation size class. The rule
+is therefore pinned in bytes, by `specs/group_hook_cost_test.go`:
+
+- `ExecutionPlan` (192 bytes) and `NodeArena` (96 bytes) keep their exact pre-#207 sizes. Both sit
+  exactly on a size-class boundary, so they carry no group-hook field at all.
+- Group-hook storage hangs off one pointer on `CompiledSuite` and one on the Analyze registry, both
+  of which had 8 bytes of slack in their size class. The pointer stays nil, and nothing behind it is
+  allocated, until a `BeforeAll`/`AfterAll` is registered.
+
+With that layout, `BenchmarkDescribeVariant_Describe/_DescribeFlat/_DescribeFast` report the same
+B/op and allocs/op as before the feature (57,180–57,188 B/op and 426 allocs/op on both trees).
 
 The per-spec event is part of this rule. `report.SpecResultEvent` is built and copied by value for
 every spec on every engine, so any field this feature adds to it is a cost every suite pays, hook

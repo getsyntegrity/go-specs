@@ -14,7 +14,7 @@ import (
 // AfterAll hook, which — same as a deliberately failing spec anywhere else in this package's test
 // suite (see execution_plan_recovery_test.go) — must not itself mark the outer `go test` function
 // failed just for exercising the failure path. So these run the compiled plan directly through
-// runPlanSpecsInOrder against a controlledBackend (this package's established fake backend, see
+// runCompiledSuiteWith against a controlledBackend (this package's established fake backend, see
 // execution_plan_test.go), not through Describe/DescribeWithReporter against the real *testing.T:
 // a controlledBackend's Fatal/FailNow panics with the local isolatedCaseAbort sentinel and never
 // touches the real test, exactly like every other recovery test in this package already does. The
@@ -24,11 +24,11 @@ import (
 //
 // Happy-path ordering (no failures) lives in before_after_all_test.go.
 
-// buildGroupHookPlan compiles fn (without running it) via BuildSuite(nil, ...) and returns its
-// ExecutionPlan, ready to run directly through runPlanSpecsInOrder against a fake backend — the
-// same technique spec_concurrency_test.go already uses for BuildSuite(nil, ...).
-func buildGroupHookPlan(name string, fn func(*Spec)) *ExecutionPlan {
-	return BuildSuite(nil, name, fn).Plan
+// buildGroupHookSuite compiles fn (without running it) via BuildSuite(nil, ...), ready to run
+// directly through runCompiledSuiteWith against a fake backend — the same technique
+// spec_concurrency_test.go already uses for BuildSuite(nil, ...).
+func buildGroupHookSuite(name string, fn func(*Spec)) *CompiledSuite {
+	return BuildSuite(nil, name, fn)
 }
 
 // TestBeforeAllFailureSkipsDescendantsReportsOneCaseAndRunsAfterAll covers H4 and H5 together: a
@@ -37,7 +37,7 @@ func buildGroupHookPlan(name string, fn func(*Spec)) *ExecutionPlan {
 // runs, and the group's own AfterAll still runs.
 func TestBeforeAllFailureSkipsDescendantsReportsOneCaseAndRunsAfterAll(t *testing.T) {
 	var specRan, afterAllRan bool
-	plan := buildGroupHookPlan("FailingGroup", func(s *Spec) {
+	suite := buildGroupHookSuite("FailingGroup", func(s *Spec) {
 		s.When("broken", func(w *Spec) {
 			w.BeforeAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 			w.AfterAll(func(*Context) { afterAllRan = true })
@@ -49,7 +49,7 @@ func TestBeforeAllFailureSkipsDescendantsReportsOneCaseAndRunsAfterAll(t *testin
 		})
 	})
 	rep := &recordingReporter{}
-	runPlanSpecsInOrder(&controlledBackend{}, rep, plan)
+	runCompiledSuiteWith(&controlledBackend{}, rep, suite)
 
 	if specRan {
 		t.Fatal("a descendant spec or its BeforeEach ran after the group's BeforeAll failed")
@@ -90,12 +90,12 @@ func TestBeforeAllFailureSkipsDescendantsReportsOneCaseAndRunsAfterAll(t *testin
 // BeforeAlls of that group": a second BeforeAll registered after a failing one never runs.
 func TestBeforeAllFailureStopsRemainingBeforeAllsInSameGroup(t *testing.T) {
 	var secondRan bool
-	plan := buildGroupHookPlan("TwoBeforeAlls", func(s *Spec) {
+	suite := buildGroupHookSuite("TwoBeforeAlls", func(s *Spec) {
 		s.BeforeAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 		s.BeforeAll(func(*Context) { secondRan = true })
 		s.It("spec", func(*Context) {})
 	})
-	runPlanSpecsInOrder(&controlledBackend{}, nil, plan)
+	runCompiledSuiteWith(&controlledBackend{}, nil, suite)
 	if secondRan {
 		t.Fatal("a second BeforeAll ran after the first one in the same group already failed")
 	}
@@ -106,7 +106,7 @@ func TestBeforeAllFailureStopsRemainingBeforeAllsInSameGroup(t *testing.T) {
 // because the nested group is never entered at all.
 func TestBeforeAllFailureStopsNestedGroupHooks(t *testing.T) {
 	var nestedBeforeRan, nestedAfterRan bool
-	plan := buildGroupHookPlan("Outer", func(s *Spec) {
+	suite := buildGroupHookSuite("Outer", func(s *Spec) {
 		s.BeforeAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 		s.When("inner", func(w *Spec) {
 			w.BeforeAll(func(*Context) { nestedBeforeRan = true })
@@ -114,7 +114,7 @@ func TestBeforeAllFailureStopsNestedGroupHooks(t *testing.T) {
 			w.It("spec", func(*Context) {})
 		})
 	})
-	runPlanSpecsInOrder(&controlledBackend{}, nil, plan)
+	runCompiledSuiteWith(&controlledBackend{}, nil, suite)
 	if nestedBeforeRan || nestedAfterRan {
 		t.Fatalf("a nested group's hooks ran after its ancestor's BeforeAll failed: before=%v after=%v",
 			nestedBeforeRan, nestedAfterRan)
@@ -126,7 +126,7 @@ func TestBeforeAllFailureStopsNestedGroupHooks(t *testing.T) {
 // failed and that sibling's own AfterAll has run.
 func TestBeforeAllFailureDoesNotAffectSiblingGroup(t *testing.T) {
 	var order []string
-	plan := buildGroupHookPlan("Siblings", func(s *Spec) {
+	suite := buildGroupHookSuite("Siblings", func(s *Spec) {
 		s.When("broken", func(w *Spec) {
 			w.BeforeAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 			w.AfterAll(func(*Context) { order = append(order, "broken:after") })
@@ -138,7 +138,7 @@ func TestBeforeAllFailureDoesNotAffectSiblingGroup(t *testing.T) {
 			w.It("spec", func(*Context) { order = append(order, "healthy:spec") })
 		})
 	})
-	runPlanSpecsInOrder(&controlledBackend{}, nil, plan)
+	runCompiledSuiteWith(&controlledBackend{}, nil, suite)
 	want := []string{"broken:after", "healthy:before", "healthy:spec", "healthy:after"}
 	assertOrder(t, order, want)
 }
@@ -147,12 +147,12 @@ func TestBeforeAllFailureDoesNotAffectSiblingGroup(t *testing.T) {
 // authority every other execution path uses (H7) instead of crashing the process, and is reported
 // as the [BeforeAll] case's failure with a stack trace.
 func TestBeforeAllPanicRecoveredAsFailure(t *testing.T) {
-	plan := buildGroupHookPlan("PanicGroup", func(s *Spec) {
+	suite := buildGroupHookSuite("PanicGroup", func(s *Spec) {
 		s.BeforeAll(func(*Context) { panic("boom") })
 		s.It("skipped", func(*Context) {})
 	})
 	rep := &recordingReporter{}
-	runPlanSpecsInOrder(&controlledBackend{}, rep, plan)
+	runCompiledSuiteWith(&controlledBackend{}, rep, suite)
 
 	var found bool
 	for _, e := range rep.specFinished {
@@ -175,12 +175,12 @@ func TestBeforeAllPanicRecoveredAsFailure(t *testing.T) {
 // reported once as an [AfterAll] case, and does not retroactively change the status of a spec that
 // already passed.
 func TestAfterAllFailureReportsOneCaseAndKeepsPassingSpecStatus(t *testing.T) {
-	plan := buildGroupHookPlan("AfterAllFails", func(s *Spec) {
+	suite := buildGroupHookSuite("AfterAllFails", func(s *Spec) {
 		s.AfterAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 		s.It("already passed", func(*Context) {})
 	})
 	rep := &recordingReporter{}
-	runPlanSpecsInOrder(&controlledBackend{}, rep, plan)
+	runCompiledSuiteWith(&controlledBackend{}, rep, suite)
 
 	var passedSpec *report.SpecResultEvent
 	var hookCases int
@@ -204,7 +204,7 @@ func TestAfterAllFailureReportsOneCaseAndKeepsPassingSpecStatus(t *testing.T) {
 // both run after the first AfterAll in an inner group fails.
 func TestAfterAllFailureDoesNotStopRemainingAfterAlls(t *testing.T) {
 	var order []string
-	plan := buildGroupHookPlan("AfterAllChain", func(s *Spec) {
+	suite := buildGroupHookSuite("AfterAllChain", func(s *Spec) {
 		s.AfterAll(func(*Context) { order = append(order, "outer:after") })
 		s.When("inner", func(w *Spec) {
 			w.AfterAll(func(ctx *Context) {
@@ -215,7 +215,7 @@ func TestAfterAllFailureDoesNotStopRemainingAfterAlls(t *testing.T) {
 			w.It("spec", func(*Context) { order = append(order, "spec") })
 		})
 	})
-	runPlanSpecsInOrder(&controlledBackend{}, nil, plan)
+	runCompiledSuiteWith(&controlledBackend{}, nil, suite)
 	want := []string{"spec", "inner:after1", "inner:after2", "outer:after"}
 	assertOrder(t, order, want)
 }
@@ -223,9 +223,9 @@ func TestAfterAllFailureDoesNotStopRemainingAfterAlls(t *testing.T) {
 // TestGroupHookFailuresCountInTotals proves BeforeAll/AfterAll failures reach
 // report.Collector's totals like any other failed case (H8), end to end through the exact event
 // shapes DescribeWithReporter/CompiledSuite.Run emit (SuiteStarted/SuiteFinished built by hand
-// here since runPlanSpecsInOrder itself only emits spec-level events).
+// here since runCompiledSuiteWith itself only emits spec-level events).
 func TestGroupHookFailuresCountInTotals(t *testing.T) {
-	plan := buildGroupHookPlan("TotalsCheck", func(s *Spec) {
+	suite := buildGroupHookSuite("TotalsCheck", func(s *Spec) {
 		s.When("broken", func(w *Spec) {
 			w.BeforeAll(func(ctx *Context) { ctx.Expect(false).To(BeTrue()) })
 			w.It("skipped", func(*Context) {})
@@ -233,7 +233,7 @@ func TestGroupHookFailuresCountInTotals(t *testing.T) {
 	})
 	c := report.NewCollector()
 	c.SuiteStarted(report.SuiteStartEvent{Name: "TotalsCheck"})
-	runPlanSpecsInOrder(&controlledBackend{}, c, plan)
+	runCompiledSuiteWith(&controlledBackend{}, c, suite)
 	c.SuiteFinished(report.SuiteEndEvent{Name: "TotalsCheck"})
 	got := c.Report()
 

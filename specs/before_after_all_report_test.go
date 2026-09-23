@@ -127,5 +127,5 @@ func TestHookCaseRendersWithGroupIdentity(t *testing.T) {
 // runCompiledSuiteWith runs a BuildSuite(nil, ...) result against backend/rep without the
 // SuiteStarted/SuiteFinished pair CompiledSuite.Run adds, so a test can drive a fake backend.
 func runCompiledSuiteWith(backend testBackend, rep report.EventReporter, s *CompiledSuite) {
-	runPlanSpecsInOrder(backend, rep, s.Plan)
+	s.runSpecs(backend, rep)
 }

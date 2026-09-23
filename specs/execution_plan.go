@@ -43,22 +43,28 @@ type ExecutionPlan struct {
 	PathScopes     []string
 	PathScopeStart []int
 	PathScopeLen   []int
+}
 
-	// Groups holds one entry per Describe/When (or root) scope that registered at least one
-	// BeforeAll/AfterAll hook and has at least one runnable spec in its subtree (issue #207,
-	// docs/SUITE_HOOKS_CONTRACT.md). Nil for a suite that registers neither hook anywhere — H10:
-	// the runtime skips every bit of group-lifecycle bookkeeping below in that case, so such a
-	// suite's allocation counts and report output are exactly what they were before this feature.
-	Groups []hookGroup
-	// GroupEnter[i] lists indices into Groups entered immediately before spec i runs; GroupEnter[i]
-	// is built by appending at each scope's close (innermost scope first), so it holds inner-to-
-	// outer order and must be read in REVERSE to get the outer-to-inner order H2 requires (outer
-	// BeforeAll before inner BeforeAll). GroupExit[i] lists indices exited immediately after spec i
-	// runs, built the same way but read FORWARD, which already is inner-to-outer (H2's teardown
-	// order). Both are nil, or shorter than len(Names), whenever no group targets a given spec or
-	// any later one — every reader must bounds-check before indexing.
-	GroupEnter [][]int
-	GroupExit  [][]int
+// planGroups is a compiled suite's once-per-group hook bookkeeping (issue #207,
+// docs/SUITE_HOOKS_CONTRACT.md). It is deliberately not a field of ExecutionPlan: ExecutionPlan is
+// allocated for every suite and is exactly 192 bytes, the top of its allocation size class, so even
+// one extra pointer there would cost every suite 16 bytes it never asked for (H10). It hangs off
+// CompiledSuite instead, behind one pointer that stays nil — nothing behind it is allocated — for a
+// suite that registers neither BeforeAll nor AfterAll anywhere. group_hook_cost_test.go pins both
+// sizes.
+type planGroups struct {
+	// groups holds one entry per Describe/When (or root) scope that registered at least one
+	// BeforeAll/AfterAll hook and has at least one runnable spec in its subtree.
+	groups []hookGroup
+	// enter[i] lists indices into groups entered immediately before spec i runs; enter[i] is built
+	// by appending at each scope's close (innermost scope first), so it holds inner-to-outer order
+	// and must be read in REVERSE to get the outer-to-inner order H2 requires (outer BeforeAll
+	// before inner BeforeAll). exit[i] lists indices exited immediately after spec i runs, built the
+	// same way but read FORWARD, which already is inner-to-outer (H2's teardown order). Both are
+	// shorter than the spec count whenever no group targets a given spec or any later one — every
+	// reader must bounds-check before indexing.
+	enter [][]int
+	exit  [][]int
 }
 
 // hookGroup is one Describe/When (or root) scope's once-per-group hooks, plus the declared scope
@@ -70,30 +76,34 @@ type hookGroup struct {
 	AfterAll  []func(*Context)
 }
 
-// registerHookGroup attaches one scope's own BeforeAll/AfterAll hooks to plan, entered right
-// before spec startIdx runs and exited right after spec endIdx runs. Both compile paths
-// (bytecodeCompiler.closeGroupHooksAtTop and buildExecutionPlanFromArenaRec) call this at the
-// exact point they close a Describe/When/root scope, mirroring how BeforeEach/AfterEach are
-// attributed but never flattened onto child specs (H1).
+// registerHookGroup attaches one scope's own BeforeAll/AfterAll hooks to *pg, entered right before
+// spec startIdx runs and exited right after spec endIdx runs, allocating *pg on first use — the
+// only point group-hook storage is ever allocated (H10). Both compile paths
+// (bytecodeCompiler.closeGroupHooksAtTop and buildExecutionPlanFromArenaRec) call this at the exact
+// point they close a Describe/When/root scope, mirroring how BeforeEach/AfterEach are attributed but
+// never flattened onto child specs (H1).
 //
 // startIdx > endIdx means the scope's subtree contributed zero specs to the plan — H3's "a group
 // with zero runnable specs is never entered": nothing is registered, so the hooks are silently
 // discarded along with the scope itself, and the case where neither hook was registered at all is
 // already filtered by both callers before this is reached.
-func registerHookGroup(plan *ExecutionPlan, path []string, before, after []func(*Context), startIdx, endIdx int) {
-	if plan == nil || startIdx < 0 || startIdx > endIdx {
+func registerHookGroup(pg **planGroups, path []string, before, after []func(*Context), startIdx, endIdx int) {
+	if pg == nil || startIdx < 0 || startIdx > endIdx {
 		return
 	}
 	if len(before) == 0 && len(after) == 0 {
 		return
 	}
-	g := hookGroup{Path: append([]string(nil), path...), BeforeAll: before, AfterAll: after}
-	idx := len(plan.Groups)
-	plan.Groups = append(plan.Groups, g)
-	growGroupSlots(&plan.GroupEnter, startIdx)
-	growGroupSlots(&plan.GroupExit, endIdx)
-	plan.GroupEnter[startIdx] = append(plan.GroupEnter[startIdx], idx)
-	plan.GroupExit[endIdx] = append(plan.GroupExit[endIdx], idx)
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	g := *pg
+	idx := len(g.groups)
+	g.groups = append(g.groups, hookGroup{Path: append([]string(nil), path...), BeforeAll: before, AfterAll: after})
+	growGroupSlots(&g.enter, startIdx)
+	growGroupSlots(&g.exit, endIdx)
+	g.enter[startIdx] = append(g.enter[startIdx], idx)
+	g.exit[endIdx] = append(g.exit[endIdx], idx)
 }
 
 // growGroupSlots grows *s so index idx is valid, preserving existing entries. Only ever called
@@ -131,6 +141,12 @@ type planScratch struct {
 	afterFlat  []func(*Context)
 	program    []Instruction
 	path       []string
+	// hooks and groups carry the arena path's once-per-group hooks in and its compiled planGroups
+	// out for the duration of one buildExecutionPlanFromArenaGroups call (issue #207). They live on
+	// the pooled scratch rather than as extra recursion parameters or plan fields, so a suite
+	// without group hooks pays nothing for them (H10); both are cleared before the call returns.
+	hooks  *arenaGroupHooks
+	groups *planGroups
 }
 
 var planScratchPool = sync.Pool{
@@ -159,11 +175,24 @@ func countSpecsArena(arena *NodeArena, rootID int) int {
 }
 
 func buildExecutionPlanFromArena(arena *NodeArena, rootID int, plan *ExecutionPlan, scratch *planScratch) {
+	buildExecutionPlanFromArenaGroups(arena, rootID, plan, scratch, nil)
+}
+
+// buildExecutionPlanFromArenaGroups is buildExecutionPlanFromArena for an arena whose scopes may
+// carry once-per-group hooks (hooks, owned by the registry that built the arena — see
+// arenaGroupHooks). It returns the compiled group bookkeeping, or nil when no scope registered a
+// BeforeAll/AfterAll.
+func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *ExecutionPlan, scratch *planScratch, hooks *arenaGroupHooks) *planGroups {
 	if arena == nil || plan == nil || scratch == nil {
-		return
+		return nil
 	}
 	scratch.path = scratch.path[:0]
+	scratch.hooks = hooks
+	scratch.groups = nil
 	buildExecutionPlanFromArenaRec(arena, rootID, plan, scratch)
+	groups := scratch.groups
+	scratch.hooks, scratch.groups = nil, nil
+	return groups
 }
 
 func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *ExecutionPlan, scratch *planScratch) {
@@ -225,19 +254,8 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	// never registered on a leaf spec), and the SuiteNode root is never exposed to the public
 	// BeforeAll/AfterAll DSL surface, so both are skipped here defensively.
 	if node.Type != ItNode && node.Type != SuiteNode {
-		// Bounds-checked, not a direct index: NodeArena is exported with exported fields, and a
-		// hand-built arena that predates this feature (e.g. a test fixture) may carry
-		// BeforeHooks/AfterHooks but no BeforeAllHooks/AfterAllHooks at all — nil is the correct
-		// "no group hooks declared" answer for it, not a panic.
-		var before, after []func(*Context)
-		if nodeID < len(arena.BeforeAllHooks) {
-			before = arena.BeforeAllHooks[nodeID]
-		}
-		if nodeID < len(arena.AfterAllHooks) {
-			after = arena.AfterAllHooks[nodeID]
-		}
-		if len(before) > 0 || len(after) > 0 {
-			registerHookGroup(plan, scratch.path, before, after, groupStart, len(plan.Names)-1)
+		if before, after := scratch.hooks.of(nodeID); len(before) > 0 || len(after) > 0 {
+			registerHookGroup(&scratch.groups, scratch.path, before, after, groupStart, len(plan.Names)-1)
 		}
 	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
@@ -267,6 +285,10 @@ type CompiledSuite struct {
 	RootID   int
 	Name     string // suite name for SuiteStartEvent/SuiteEndEvent; falls back to the backend's name if empty
 	Reporter report.EventReporter
+	// groups is the suite's BeforeAll/AfterAll bookkeeping, nil when it registers neither (see
+	// planGroups for why it lives here rather than on ExecutionPlan). Unexported: a CompiledSuite
+	// built by hand has no group hooks, which is exactly what nil means.
+	groups *planGroups
 }
 
 // Run executes all specs in the plan. Uses one context from the pool per spec.
@@ -278,7 +300,7 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		runPlanSpecsInOrder(backend, nil, s.Plan)
+		s.runSpecs(backend, nil)
 		return
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
@@ -290,7 +312,7 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	runPlanSpecsInOrder(backend, counter, s.Plan)
+	s.runSpecs(backend, counter)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:          name,
 		Time:          time.Now(),
@@ -330,30 +352,39 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	c.EventReporter.SpecFinished(e)
 }
 
-// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. Each spec's own
-// before/body/after hooks are already flat — compiled into its own instruction range — so there is
-// no group nesting to walk for those. Group hooks (BeforeAll/AfterAll, issue #207) are the one
-// exception: plan.Groups is nil for a suite that registers neither (H10), and the fast path below
-// (no groupState at all) is then exactly runPlanSpecsInOrder's pre-#207 body — same calls, same
-// allocations. A suite that does register a group hook pays for groupState, sized once to
-// len(plan.Groups), and this loop additionally opens/closes groups around the spec index they were
-// attached to; see runGroupEnter/runGroupExit.
-func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
-	if len(plan.Groups) == 0 {
-		for i := 0; i < len(plan.ProgramStart); i++ {
-			runExecution(backend, rep, plan, i)
-		}
+// runSpecs runs every spec of the suite once: through runPlanSpecsInOrder, unchanged from before
+// issue #207, for a suite without group hooks (H10), or through runPlanWithGroups otherwise.
+func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) {
+	if s.groups == nil {
+		runPlanSpecsInOrder(backend, rep, s.Plan)
 		return
 	}
-	gs := &groupState{entered: make([]bool, len(plan.Groups)), failingGroup: -1}
+	runPlanWithGroups(backend, rep, s.Plan, s.groups)
+}
+
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. Each spec's own
+// before/body/after hooks are already flat — compiled into its own instruction range — so there is
+// no group nesting to walk. A suite with BeforeAll/AfterAll never reaches here; see
+// runPlanWithGroups.
+func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
 	for i := 0; i < len(plan.ProgramStart); i++ {
-		runGroupEnter(backend, rep, plan, gs, i)
+		runExecution(backend, rep, plan, i)
+	}
+}
+
+// runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook: it
+// additionally opens/closes groups around the spec index they were attached to, with groupState
+// sized once to len(pg.groups); see runGroupEnter/runGroupExit.
+func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, pg *planGroups) {
+	gs := &groupState{entered: make([]bool, len(pg.groups)), failingGroup: -1}
+	for i := 0; i < len(plan.ProgramStart); i++ {
+		runGroupEnter(backend, rep, pg, gs, i)
 		if gs.failingGroup != -1 {
-			reportGroupSuppressedSpec(rep, plan, i, gs.failingGroup)
+			reportGroupSuppressedSpec(rep, plan, pg, i, gs.failingGroup)
 		} else {
 			runExecution(backend, rep, plan, i)
 		}
-		runGroupExit(backend, rep, plan, gs, i)
+		runGroupExit(backend, rep, pg, gs, i)
 	}
 }
 
@@ -368,24 +399,24 @@ type groupState struct {
 	failingGroup int
 }
 
-// runGroupEnter processes plan.GroupEnter[i]: every group whose first runnable spec is i. It reads
-// the list in REVERSE — GroupEnter is built inner-scope-first (see ExecutionPlan.GroupEnter's doc
+// runGroupEnter processes pg.enter[i]: every group whose first runnable spec is i. It reads
+// the list in REVERSE — enter is built inner-scope-first (see planGroups.enter's doc
 // comment) — so groups are entered outer-to-inner, per H2. A group is skipped entirely (never
 // entered, its entered[g] left false) when an ancestor is already failing (H4: "every nested
 // group's hooks" stay unentered); otherwise its BeforeAll hooks run, and a failure there makes it
 // the new failingGroup for its own descendants.
-func runGroupEnter(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, gs *groupState, i int) {
-	if i >= len(plan.GroupEnter) {
+func runGroupEnter(backend testBackend, rep report.EventReporter, pg *planGroups, gs *groupState, i int) {
+	if i >= len(pg.enter) {
 		return
 	}
-	entries := plan.GroupEnter[i]
+	entries := pg.enter[i]
 	for k := len(entries) - 1; k >= 0; k-- {
 		g := entries[k]
 		if gs.failingGroup != -1 {
 			continue // an ancestor is already failing: this group is never entered at all (H4)
 		}
 		gs.entered[g] = true
-		group := &plan.Groups[g]
+		group := &pg.groups[g]
 		message, output, failed := runGroupHookSequence(backend, group.BeforeAll, joinSubtestPath(group.Path, hookCaseName(hookKindBeforeAll)), true)
 		if failed {
 			gs.failingGroup = g
@@ -394,21 +425,21 @@ func runGroupEnter(backend testBackend, rep report.EventReporter, plan *Executio
 	}
 }
 
-// runGroupExit processes plan.GroupExit[i]: every group whose last runnable spec is i. It reads
-// the list FORWARD — GroupExit is built inner-scope-first, which already is the inner-to-outer
+// runGroupExit processes pg.exit[i]: every group whose last runnable spec is i. It reads
+// the list FORWARD — exit is built inner-scope-first, which already is the inner-to-outer
 // teardown order H2 requires. A group that was never entered (skipped by an ancestor's failure)
 // runs no AfterAll at all (H4/H5: the guarantee is scoped to a group that was actually entered).
 // An entered group's AfterAll always runs, even if its own BeforeAll failed (H5) — every hook in
 // its own list runs regardless of an earlier one failing (H6) — and once i is the group that
 // introduced the current failure, that failure is cleared here: sibling groups after this point
 // run normally again.
-func runGroupExit(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, gs *groupState, i int) {
-	if i >= len(plan.GroupExit) {
+func runGroupExit(backend testBackend, rep report.EventReporter, pg *planGroups, gs *groupState, i int) {
+	if i >= len(pg.exit) {
 		return
 	}
-	for _, g := range plan.GroupExit[i] {
+	for _, g := range pg.exit[i] {
 		if gs.entered[g] {
-			group := &plan.Groups[g]
+			group := &pg.groups[g]
 			message, output, failed := runGroupHookSequence(backend, group.AfterAll, joinSubtestPath(group.Path, hookCaseName(hookKindAfterAll)), false)
 			if failed {
 				reportHookCase(rep, group.Path, hookKindAfterAll, message, output)
@@ -424,7 +455,7 @@ func runGroupExit(backend testBackend, rep report.EventReporter, plan *Execution
 // as skipped, with a message naming the failing group"), without opening a subtest for it at all —
 // the same convention the Builder engine already uses for a compile-time-skipped spec (see
 // program.go's reportSkipped): only identity is reported, nothing runs.
-func reportGroupSuppressedSpec(rep report.EventReporter, plan *ExecutionPlan, i, failingGroup int) {
+func reportGroupSuppressedSpec(rep report.EventReporter, plan *ExecutionPlan, pg *planGroups, i, failingGroup int) {
 	if rep == nil {
 		return
 	}
@@ -432,7 +463,7 @@ func reportGroupSuppressedSpec(rep report.EventReporter, plan *ExecutionPlan, i,
 	path := specEventPath(plan, i)
 	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
 	rep.SpecStarted(started)
-	groupName := groupDisplayName(plan, failingGroup)
+	groupName := groupDisplayName(pg, failingGroup)
 	rep.SpecFinished(report.SpecResultEvent{
 		SpecStartEvent: started,
 		Skipped:        true,
@@ -442,11 +473,11 @@ func reportGroupSuppressedSpec(rep report.EventReporter, plan *ExecutionPlan, i,
 
 // groupDisplayName renders a group's Path the same way a spec's own breadcrumb reads, for the
 // skipped-spec message above.
-func groupDisplayName(plan *ExecutionPlan, g int) string {
-	if g < 0 || g >= len(plan.Groups) {
+func groupDisplayName(pg *planGroups, g int) string {
+	if pg == nil || g < 0 || g >= len(pg.groups) {
 		return ""
 	}
-	return joinSubtestPath(plan.Groups[g].Path, "")
+	return joinSubtestPath(pg.groups[g].Path, "")
 }
 
 const (
