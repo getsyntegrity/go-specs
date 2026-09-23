@@ -52,7 +52,12 @@ type Case struct {
 	// schema-version change — see SchemaVersion's doc comment: a new field never bumps it, only a
 	// new value in a closed vocabulary such as Status would. A report with no group hooks never sets
 	// it, and every renderer keeps its existing byte-for-byte output for that case (issue #207 H10).
-	Hook string
+	//
+	// Tagged omitempty because Case itself gets serialized directly (not through a renderer's own
+	// DTO) by report/coordination/writer.go's shard envelope: without the tag, every ordinary case
+	// in every shard would carry a spurious `"Hook": ""`, which is exactly the per-suite cost H10
+	// forbids for a suite that never registers a group hook.
+	Hook string `json:"Hook,omitempty"`
 }
 
 // Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
