@@ -202,6 +202,36 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   that reused the run id. Shards carry execution data only: coverage belongs exclusively to the
   finalizer. See [docs/REPORTING.md](docs/REPORTING.md), "Multi-package reporting".
   ([#145](https://github.com/getsyntegrity/go-specs/issues/145))
+- `coordination.Finalize`, the consuming half of multi-package reporting: after `go test ./...`
+  returns, it reads the completed per-package shards of one run, verifies each against `run.json`
+  and the invoker-supplied, required `ExpectedProducers` list, merges the accepted ones into one
+  deterministic `report.NormalizedReport`, attaches coverage from the single combined
+  `-coverprofile` (via the new block-deduplicating parser below), and renders every requested
+  `Target` through the existing `RenderXML`/`RenderHTML`/`RenderTXT`/`RenderJSON`. It is the only
+  code path allowed to read shard files. A present `config-error.json` short-circuits it: it
+  returns `FinalizeResult.ConfigError` with nothing merged or rendered. Every other shard problem
+  is reported, never silently dropped — `FinalizeResult.PackagesMissing` for an expected producer
+  with no valid shard, `FinalizeResult.Rejected` for a shard rejected as `corrupt`,
+  `duplicate-package`, `unexpected-package`, `schema-version-mismatch`, `wrong-run-id`,
+  `ownership-mismatch`, `filename-hash-mismatch` or `stale` (a shard produced before its own
+  `run.json`). Two shards claiming the same package are both rejected, never one silently picked.
+  Rendered files are written atomically (temp file alongside the target, then renamed); the run
+  directory is pruned only when `FinalizeOptions.Cleanup` is set and the finalize fully succeeded,
+  so an operator can always inspect a failed run afterwards. The new `coordination.ExitCode(res,
+  err)` maps an outcome to a process exit code per contract v1.2.8 §8: `78` (`EX_CONFIG`) for a
+  run-ownership or `FinalizeOptions` validation failure, or a recorded config error; `1` for any
+  other reporting failure, including a missing or rejected producer; `0` otherwise — independent of
+  whether the tests themselves passed. See [docs/REPORTING.md](docs/REPORTING.md), step 3.
+  ([#146](https://github.com/getsyntegrity/go-specs/issues/146))
+- `report.ParseCoverageProfileMerged`, additive alongside `report.ParseCoverageProfile`: it
+  deduplicates coverage-profile blocks by `(file, startLine.startCol, endLine.endCol, numStmt)`
+  before computing `Covered`/`Total`, combining execution with OR for `mode: set` and by summation
+  for `mode: count`/`atomic` — matching `go tool cover`'s own semantics. `go test -coverpkg`
+  legitimately writes more than one raw entry for the same instrumented block, one per contributing
+  test binary; `ParseCoverageProfile` does not merge those and double-counts `Total` on such a
+  profile. `ParseCoverageProfile`'s own documented behavior for its existing callers is unchanged.
+  `coordination.Finalize` uses the new parser exclusively.
+  ([#146](https://github.com/getsyntegrity/go-specs/issues/146))
 - `docs/145-runtime-claims-inventory.md`, which enumerates every normative claim in the coordination
   contract that rests on runtime, toolchain or platform behaviour, and marks each one pinned,
   required or deliberately untested. It was written **before** the implementation, on the reasoning

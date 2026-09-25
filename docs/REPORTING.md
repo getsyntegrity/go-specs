@@ -207,6 +207,39 @@ is not installed until `m.Run()` starts. Always pass `-count=1` for a reporting 
 3. **Finalize** (issue #146), always — including on cancellation and timeout, which is exactly
    where the missing-producer list is most informative.
 
+   ```go
+   res, err := coordination.Finalize(ctx, coordination.FinalizeOptions{
+   	RunID: "ci-42-1-test-0", Token: token, BaseDir: own.BaseDir,
+   	CoverProfile:      "coverage.out", // "" if the run had no -coverprofile
+   	ExpectedProducers: expectedProducers, // required; never derived with `go list`
+   	Targets: []report.Target{
+   		{Format: report.FormatXML, Path: "artifacts/report.xml"},
+   		{Format: report.FormatJSON, Path: "artifacts/report.json"},
+   	},
+   	Cleanup: true, // prune the run directory, but only once finalize fully succeeds
+   })
+   os.Exit(coordination.ExitCode(res, err))
+   ```
+
+   `Finalize` is the only code path that reads shard files, merges them, and renders module-wide
+   reports. It verifies run ownership first and fails closed on any mismatch; a present
+   `config-error.json` short-circuits it entirely (`res.ConfigError` set, nothing merged or
+   rendered); otherwise every shard is checked against `ExpectedProducers`, and every problem is
+   reported rather than silently dropped — `res.PackagesMissing` for an expected producer with no
+   valid shard, `res.Rejected` for a shard rejected with its reason (`corrupt`,
+   `duplicate-package`, `unexpected-package`, `schema-version-mismatch`, `wrong-run-id`,
+   `ownership-mismatch`, `filename-hash-mismatch`, `stale`). Coverage, when `CoverProfile` is set,
+   is parsed and merged through `report.ParseCoverageProfileMerged` (below) — never averaged, never
+   double-counted under `-coverpkg` overlap.
+
+   `coordination.ExitCode(res, err)` maps the outcome to the process exit code (contract v1.2.8
+   §8): `78` (`EX_CONFIG`) for a run-ownership failure, an invalid `FinalizeOptions` (such as a
+   missing `ExpectedProducers`), or a recorded `config-error.json`; `1` for any other reporting
+   failure, including a missing or rejected producer; `0` otherwise — this is independent of
+   whether the tests themselves passed, which is exactly why finalize is always run as its own
+   step (issue #146; the full CI wiring — GitHub Actions, generic, Shipwright — lands in the
+   follow-up documentation issue).
+
 Deriving a conforming `GO_SPECS_RUN_ID` is CI-specific and easy to get wrong. On GitHub Actions
 `GITHUB_RUN_ID` is stable across re-runs and shared by every matrix leg, so the conforming shape is
 `${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}` — all
