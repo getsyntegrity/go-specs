@@ -115,9 +115,28 @@ Runner: `go test ./...` (targeted runs with `go test -count=1 -run <Name> ./spec
   match declaration order — see the feature doc's semantics section and the test file's header
   comment. `BeforeAll`/`AfterAll` are out of this table: they exist only on `*Spec`
   (`docs/EXECUTION_ENGINES.md`), so Builder has nothing to compare them against.
-- [ ] **T4 — Performance evidence.** Allocation contract tests pass unchanged; benchmark of the
+- [x] **T4 — Performance evidence.** Allocation contract tests pass unchanged; benchmark of the
   flat `Describe` path on `origin/develop` vs this branch recorded here. Check:
   `go test -count=1 -run Alloc ./specs/` and the recorded benchmark.
+  Done: `go test -count=1 -run Alloc ./specs/` — all 12 allocation-contract tests PASS, including
+  `TestGroupHookStorageAddsNoBytesToAlwaysAllocatedStructs` (pins `ExecutionPlan`/`NodeArena` at
+  their exact develop byte sizes and `CompiledSuite`/`registry` within their size class — unchanged
+  by this feature, since skip/pending/focus bookkeeping reuses the existing `planGroups` pointer and
+  a new `ArenaNode.Kind` element field, never a new `CompiledSuite`/`ExecutionPlan`/`registry`
+  field) and `TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath`.
+  Benchmark: `BenchmarkDescribeVariant_Describe` (`benchmarks/describe_variants_bench_test.go`, 200
+  flat specs, no hooks/skip/pending/focus — this branch's own H10 target), `-count=6`, `origin/develop`
+  (`c810233`) via a temporary detached worktree vs this branch, compared with `benchstat`:
+
+  | Metric | develop (`c810233`) | this branch | benchstat |
+  | --- | --- | --- | --- |
+  | B/op | 52.71 KiB ± 0% | 52.71 KiB ± 0% | `~` (p=1.000, all samples equal) |
+  | allocs/op | 226.0 ± 0% | 226.0 ± 0% | `~` (p=1.000, all samples equal) |
+  | sec/op | 59.14µs ± 21% | 65.33µs ± 7% | `~` (p=0.065, not significant) |
+
+  B/op and allocs/op are byte-for-byte identical across 6 runs each; sec/op shows no statistically
+  significant difference (noisy shared machine, high develop-side variance). H10 holds: an unused
+  suite pays nothing for this feature.
 - [ ] **T5 — Docs.** README DSL section, `docs/EXECUTION_ENGINES.md` Stage 4 item 1 marked done,
   CHANGELOG entry referencing #245. Check: `make fmt-check`, `go vet ./...`.
 
@@ -141,8 +160,9 @@ Worktree `.claude/worktrees/issue-245-spec-focus-skip-pending`, based on `origin
 | T1 | delegated writer | 2+ non-trivial files (spec.go, compiler.go, execution_plan.go, group_hooks.go, arena.go, registry.go, tests) | d0ff646 | RED: compile failure (`s.SkipIt undefined`) on `spec_skip_pending_test.go`. GREEN: `go test -count=1 -run 'TestSpecSkipIt\|TestSpecPendingIt' ./specs/` all PASS. `make fmt-check`: clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
 | T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | 4caa637 | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
 | T3 | delegated writer | spec_builder_equivalence_test.go (new, 2 non-trivial trees across 3 engines) | (pending commit) | RED (test-authoring bug, not implementation): first draft's `want` maps used bare leaf names instead of full breadcrumbs (`"a"` instead of `"suite/a"`); `go test -count=1 -run Equivalence -v ./specs/` failed identically on all 3 engines with "missing outcome for a, want passed" / "unexpected outcome for suite/a". GREEN: fixed `want` keys, same command all PASS. `make fmt-check` (after `make fmt`): clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
-| T4–T5 | delegated writer | same files, continuing | — | pending |
+| T4 | delegated writer | benchmark evidence, no source change | (pending commit) | `go test -count=1 -run Alloc ./specs/`: all PASS. `go test ./benchmarks -run='^$' -bench='^BenchmarkDescribeVariant_Describe$' -benchmem -count=6` on this branch and on `origin/develop` (temporary detached worktree, removed after): B/op and allocs/op identical; see table above. |
+| T5 | delegated writer | docs | — | pending |
 
 ## Next step
 
-T1, T2, T3 done. Continue with T4 (performance evidence).
+T1–T4 done. Continue with T5 (docs).
