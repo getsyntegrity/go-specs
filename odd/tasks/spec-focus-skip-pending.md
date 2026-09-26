@@ -167,11 +167,21 @@ Worktree `.claude/worktrees/issue-245-spec-focus-skip-pending`, based on `origin
 | --- | --- | --- | --- | --- |
 | T1 | delegated writer | 2+ non-trivial files (spec.go, compiler.go, execution_plan.go, group_hooks.go, arena.go, registry.go, tests) | d0ff646 | RED: compile failure (`s.SkipIt undefined`) on `spec_skip_pending_test.go`. GREEN: `go test -count=1 -run 'TestSpecSkipIt\|TestSpecPendingIt' ./specs/` all PASS. `make fmt-check`: clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
 | T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | 4caa637 | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
-| T3 | delegated writer | spec_builder_equivalence_test.go (new, 2 non-trivial trees across 3 engines) | (pending commit) | RED (test-authoring bug, not implementation): first draft's `want` maps used bare leaf names instead of full breadcrumbs (`"a"` instead of `"suite/a"`); `go test -count=1 -run Equivalence -v ./specs/` failed identically on all 3 engines with "missing outcome for a, want passed" / "unexpected outcome for suite/a". GREEN: fixed `want` keys, same command all PASS. `make fmt-check` (after `make fmt`): clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
-| T4 | delegated writer | benchmark evidence, no source change | (pending commit) | `go test -count=1 -run Alloc ./specs/`: all PASS. `go test ./benchmarks -run='^$' -bench='^BenchmarkDescribeVariant_Describe$' -benchmem -count=6` on this branch and on `origin/develop` (temporary detached worktree, removed after): B/op and allocs/op identical; see table above. |
-| T5 | delegated writer | docs/DSL.md, docs/EXECUTION_ENGINES.md, CHANGELOG.md | (pending commit) | `make fmt-check`: clean. `go vet ./...`: clean. |
+| T3 | delegated writer | spec_builder_equivalence_test.go (new, 2 non-trivial trees across 3 engines) | 57b66e4 | RED (test-authoring bug, not implementation): first draft's `want` maps used bare leaf names instead of full breadcrumbs (`"a"` instead of `"suite/a"`); `go test -count=1 -run Equivalence -v ./specs/` failed identically on all 3 engines with "missing outcome for a, want passed" / "unexpected outcome for suite/a". GREEN: fixed `want` keys, same command all PASS. `make fmt-check` (after `make fmt`): clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
+| T4 | delegated writer | benchmark evidence, no source change | cb2ff46 | `go test -count=1 -run Alloc ./specs/`: all PASS. `go test ./benchmarks -run='^$' -bench='^BenchmarkDescribeVariant_Describe$' -benchmem -count=6` on this branch and on `origin/develop` (temporary detached worktree, removed after): B/op and allocs/op identical; see table above. |
+| T5 | delegated writer, then inline README follow-up | docs/DSL.md, docs/EXECUTION_ENGINES.md, CHANGELOG.md; README.md pointer added afterwards | fa72371 + README follow-up | `make fmt-check`: clean. `go vet ./...`: clean. |
+
+Parent verification: `gentle-ai review assess --base-ref origin/develop --committed-only` returned
+risk `medium` (`executable_change`, `slice_budget_reached`); RDD is off for this clone, so no
+native review ran. The writer self-verified and the parent re-ran `go test -count=1 ./...`: all
+packages ok. `-race` not run locally (user rule); CI runs it.
+
+Known history wart: `Spec.FIt` and its focus plumbing landed in `d0ff646` together with
+`SkipIt`/`PendingIt`, so `4caa637` carries only FIt's tests and doc. The repository squash-merges,
+so this does not reach `develop`'s history.
 
 ## Next step
 
-All tasks T1-T5 done. Final `go test ./...` full-suite pass remains before closing out; ready for
-review/PR (user decision — spec 2 closes #245, this PR only references it).
+Spec 1 is done. Push and PR (base `develop`, references #245 without closing it) are the user's
+decision. Then spec 2: `ItParallel` on `*Spec`, whose PR closes #245. Proposed separately: an
+issue for `FailFast`/`RunShard` parity (not opened without confirmation).

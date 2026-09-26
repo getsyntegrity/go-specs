@@ -72,6 +72,10 @@ group shares; a suite that breaks this is rejected while it is built. See
 [docs/DSL.md](docs/DSL.md#beforeall--afterall) and
 [docs/SUITE_HOOKS_CONTRACT.md](docs/SUITE_HOOKS_CONTRACT.md) for the full contract.
 
+`s.FIt` focuses a spec: once one is declared, only focused specs in that `Describe` run. `s.SkipIt`
+and `s.PendingIt` keep a spec's name in the report as skipped or pending without running its body.
+See [docs/DSL.md](docs/DSL.md#specfit-skipit-and-pendingit).
+
 See [examples/basic](examples/basic), [examples/hooks](examples/hooks) and
 [examples/suite_hooks](examples/suite_hooks) for runnable examples.
 
