@@ -87,6 +87,25 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `Spec.FIt(name, fn)`, `Spec.SkipIt(name, fn)` and `Spec.PendingIt(name, fn)` on the canonical
+  `Describe`/`Spec` engine, with the same signatures and observable behavior `Builder` already had.
+  `SkipIt`/`PendingIt`'s `fn` is never compiled or run (it may be `nil`), but the spec's name is
+  kept and reported as `report.StatusSkipped`/`StatusPending` — `SkipIt` means "intentionally not
+  executed", `PendingIt` means "the specification exists, the implementation does not." `FIt` with
+  a `nil` `fn` is a no-op; if a `Describe`/`BuildSuite` call registers at least one `FIt` anywhere
+  in its tree, only focused specs compile and every other `It`/`SkipIt`/`PendingIt` in that call is
+  dropped, not merely skipped — focus is scoped to that one top-level call, never process-wide.
+  Hooks (`BeforeEach`/`AfterEach`, `BeforeAll`/`AfterAll`) around a focused spec still run; a
+  `BeforeAll`/`AfterAll` group left with zero runnable specs after focus filtering is never entered,
+  the same rule (H3, `docs/SUITE_HOOKS_CONTRACT.md`) that already applies to a group declaring no
+  `It` at all. Both the bytecode-compiler path and the `Analyze`/registry path implement this
+  identically, and produce the same (full name, status) outcomes as `Builder` for the same declared
+  tree. A suite that registers none of the three allocates nothing extra, byte for byte
+  (`ExecutionPlan`/`NodeArena`/`CompiledSuite`/`registry` are all unchanged in size). This closes
+  item 1 of [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md)'s Stage 4; `ItParallel` is a
+  separate follow-up change, since it carries the determinism and concurrency risk this change
+  deliberately kept out. See [docs/DSL.md](docs/DSL.md#specfit-skipit-and-pendingit) for the DSL
+  summary. ([#245](https://github.com/getsyntegrity/go-specs/issues/245))
 - `Spec.BeforeAll(fn)` and `Spec.AfterAll(fn)` on the canonical `Describe`/`Spec` engine: once-per-
   group setup and teardown, instead of once per spec the way `BeforeEach`/`AfterEach` already work.
   A group (the root `Describe` body, a nested `Describe`, or a `When`) is entered right before its

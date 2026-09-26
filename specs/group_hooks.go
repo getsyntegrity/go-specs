@@ -62,6 +62,58 @@ type planGroups struct {
 	// BeforeAll/AfterAll hook and has at least one spec in its subtree, in the order the scopes
 	// closed (innermost first).
 	groups []hookGroup
+	// skipped/pending hold this suite's compile-time SkipIt/PendingIt registrations (issue #245),
+	// in declaration order. They live here — behind the same lazily allocated pointer as groups —
+	// rather than as new ExecutionPlan/CompiledSuite fields, so a suite that registers none of
+	// SkipIt/PendingIt/BeforeAll/AfterAll still allocates nothing for any of them (H10). Unlike a
+	// hookGroup, a mark is not tied to a spec-index range: it never compiles into a plan entry at
+	// all (no before/body/after, no subtest), so it is reported once per suite run, independently
+	// of which group (if any) it was declared inside — see CompiledSuite.runSpecs.
+	skipped []specMark
+	pending []specMark
+}
+
+// specMark is one compile-time-only spec registration (SkipIt/PendingIt, issue #245): it never
+// compiles into a runnable plan entry, so only its name and enclosing scopes are kept, the same
+// information Builder.finalize buffers for its own kindSkip/kindPending specItem (builder.go).
+type specMark struct {
+	name string
+	path []string // enclosing scopes, own name not included — matches ExecutionPlan.PathScopes' convention
+}
+
+// registerSkipMark buffers one compile-time SkipIt registration into *pg (issue #245), allocating
+// *pg on first use — the same lazy-allocation rule registerHookGroup already uses (H10).
+func registerSkipMark(pg **planGroups, name string, scopes []string) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).skipped = append((*pg).skipped, specMark{name: name, path: append([]string(nil), scopes...)})
+}
+
+// registerPendingMark is registerSkipMark for PendingIt.
+func registerPendingMark(pg **planGroups, name string, scopes []string) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).pending = append((*pg).pending, specMark{name: name, path: append([]string(nil), scopes...)})
+}
+
+// reportMarks emits SpecStarted immediately followed by SpecFinished{Skipped: true} (or
+// {Pending: true}) for every buffered mark, mirroring runner.go's reportSkipped/reportPending for
+// the Builder engine exactly: a mark carries no before/body/after and never opens a subtest, only
+// its identity is reported — and only when a Reporter is attached, the same "nothing to report
+// without one" rule every other compile-time-only report in this package already follows (see
+// reportGroupSuppressedSpec).
+func reportMarks(rep report.EventReporter, marks []specMark, pending bool) {
+	if rep == nil {
+		return
+	}
+	for _, m := range marks {
+		path := append(append([]string(nil), m.path...), m.name)
+		started := report.SpecStartEvent{Name: m.name, Path: path, Time: time.Now()}
+		rep.SpecStarted(started)
+		rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Skipped: !pending, Pending: pending})
+	}
 }
 
 // hookGroup is one Describe/When (or root) scope's once-per-group hooks. Path is the declared
@@ -107,6 +159,45 @@ func registerHookGroup(pg **planGroups, path []string, name string, before, afte
 		Start:     startIdx,
 		End:       endIdx,
 	})
+}
+
+// remapHookGroups rebuilds pg's Start/End spec-index ranges after bytecodeCompiler.applyFocusFilter
+// removed some plan entries (issue #245): oldToNew[i] is the new index of old plan index i, or -1
+// when i was dropped. A group whose range contains no surviving index had zero runnable specs left
+// after focus filtering and is dropped entirely — extending H3's existing rule ("a group with zero
+// runnable specs is never entered", today decided by "does this scope declare at least one It") to
+// specs a focus filter removed instead of specs that were never declared. The arena/registry build
+// path never needs this: it pre-scans for a focus before emitting anything (see arenaHasFocus), so
+// a filtered-out spec simply never contributes to a group's Start/End in the first place.
+func remapHookGroups(pg *planGroups, oldToNew []int) *planGroups {
+	if pg == nil {
+		return nil
+	}
+	var kept []hookGroup
+	for _, g := range pg.groups {
+		newStart, newEnd := -1, -1
+		for old := g.Start; old <= g.End; old++ {
+			if old < 0 || old >= len(oldToNew) {
+				continue
+			}
+			if nu := oldToNew[old]; nu >= 0 {
+				if newStart == -1 {
+					newStart = nu
+				}
+				newEnd = nu
+			}
+		}
+		if newStart == -1 {
+			continue
+		}
+		g.Start, g.End = newStart, newEnd
+		kept = append(kept, g)
+	}
+	pg.groups = kept
+	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 {
+		return nil
+	}
+	return pg
 }
 
 // groupRun is the state of one hooked CompiledSuite.Run.

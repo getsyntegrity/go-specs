@@ -132,6 +132,38 @@ s.It("adds numbers", func(ctx *specs.Context) {
 
 Each `It` is compiled into a step sequence: before hooks (outer to inner), then the spec body, then after hooks (inner to outer).
 
+## Spec.FIt, SkipIt and PendingIt
+
+`*Spec` — the `Describe`/`It` path — has the same `FIt`, `SkipIt` and `PendingIt` `Builder` already
+had ([#245](https://github.com/getsyntegrity/go-specs/issues/245)), with the same signatures and
+the same observable behavior; there is no `SpecFn`/`ItWith` indirection here, since `*Spec` never
+had that dispatch to begin with.
+
+```go
+specs.Describe(t, "checkout", func(s *specs.Spec) {
+    s.It("charges the card", func(ctx *specs.Context) { /* ... */ })
+    s.SkipIt("refunds in a currency we don't support yet", func(ctx *specs.Context) { /* ... */ })
+    s.PendingIt("splits a payment across two cards", nil) // not implemented yet
+})
+```
+
+`SkipIt`/`PendingIt`'s `fn` is never compiled or run — it may be `nil` — but the spec's name is kept
+and reported as `StatusSkipped`/`StatusPending` (`report/model.go`), the same distinction described
+above for `Builder.PendingIt`/`Pending`: `SkipIt` means "intentionally not executed", `PendingIt`
+means "the specification exists, the implementation does not."
+
+`FIt` with a `nil` `fn` is a no-op. If a `Describe`/`BuildSuite` call registers at least one `FIt`
+anywhere in its tree, only focused specs compile — every other `It`, `SkipIt` and `PendingIt` in
+that same call is dropped, not merely skipped, exactly like `Builder.FIt`/`finalize`'s focus filter.
+Focus is scoped to that one top-level call, never process-wide. `BeforeEach`/`AfterEach` and
+`BeforeAll`/`AfterAll` around a focused spec still run; a `BeforeAll`/`AfterAll` group left with
+zero runnable specs after focus filtering is never entered — the same H3 rule
+(`docs/SUITE_HOOKS_CONTRACT.md`) that already applies to a group declaring no `It` at all.
+
+Both `Spec` build paths agree: the bytecode compiler (the default, top-level `Describe`/
+`BuildSuite`) and the `Analyze`/registry path produce the same outcomes for the same declared tree
+— see `specs/spec_builder_equivalence_test.go` for the table proving `Spec` and `Builder` agree too.
+
 ## ItParallel
 
 `ItParallel` registers a spec that runs in parallel with adjacent `ItParallel` specs. It is available on the **Builder** API, not on the top-level `Describe` path.
@@ -207,7 +239,9 @@ b.ItWith("charges a late fee", specs.Pending(func(ctx *specs.Context) {
 
 When any spec in the suite is focused (`FIt`/`Focus`), a pending spec is dropped by the same filter that drops skipped and plain specs — a suite mid-TDD with both a focused spec and a pending one does not still report the pending spec. `RunShard`/`RunShardWithReporter` carry a group's pending specs to whichever shard that group lands on, exactly like skipped specs.
 
-`Pending` is only on the Builder/`ItWith` path today, alongside `Skip`/`Focus` — see `docs/EXECUTION_ENGINES.md` for why `Spec`/`Describe` has none of the three.
+`Pending`/`Skip`/`Focus` (the `SpecFn`/`ItWith` wrapper style) remain Builder-only. `*Spec` has the
+same three capabilities directly as `FIt`/`SkipIt`/`PendingIt` ([#245](https://github.com/getsyntegrity/go-specs/issues/245); see "Spec.FIt, SkipIt and PendingIt" above) — it never had `ItWith`'s
+dispatch-on-`SpecFn` shape to begin with, so there is no `Spec.ItWith` to route through.
 
 ## Expect and EqualTo
 

@@ -133,6 +133,18 @@ func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn 
 	}
 }
 
+// setItKind marks the ItNode at id as kind (issue #245): FIt/SkipIt/PendingIt call this right
+// after enterNode, before its pop, to classify a leaf node enterNode itself doesn't need to know
+// about — Describe/When and plain It never call it, so their nodes keep ArenaNode.Kind's zero
+// value, itNormal.
+func (r *registry) setItKind(id int, kind itKind) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id >= 0 && id < len(r.arena.Nodes) {
+		r.arena.Nodes[id].Kind = kind
+	}
+}
+
 func (r *registry) appendBeforeHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -22,7 +22,23 @@ type ArenaNode struct {
 	Fn     func(*Context)
 	File   string
 	Line   int
+	// Kind classifies an ItNode as normal, focused, skipped or pending (issue #245); zero value
+	// itNormal for every Describe/When node and every plain It, so existing callers of enterNode
+	// need no change. See buildExecutionPlanFromArenaRec for how each kind compiles.
+	Kind itKind
 }
+
+// itKind classifies how an ItNode was registered (issue #245): normal It, focused FIt, compile-time
+// SkipIt, or compile-time PendingIt. Mirrors Builder's specKind (builder.go) for the registry/arena
+// build path, so both compile paths agree on the same four cases.
+type itKind uint8
+
+const (
+	itNormal itKind = iota
+	itFocus
+	itSkip
+	itPending
+)
 
 // arenaGroupHooks holds the once-per-group hooks registered on arena nodes, indexed by node ID
 // (issue #207). Unlike NodeArena.BeforeHooks/AfterHooks these are never flattened onto descendant
