@@ -525,7 +525,7 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 		return
 	}
 	name, groupPrefix := groupSubtestName(prefix, group)
-	ran, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
+	ran, _, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
 		r.runGroupBody(gt, groupPrefix, g)
 	})
 	if parked {
@@ -699,8 +699,8 @@ func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 		}
 	}()
 	started := reportSpecStarted(r.rep, specEventName(r.plan, i), r.reportPath(i))
-	message, output, ran := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
-	reportSpecFinished(r.rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})
+	message, output, ran, failed := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
+	reportSpecFinished(r.rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 }
 
 // reportPath is specEventPath(plan, i) when there is a reporter, and nil otherwise, so the
@@ -821,21 +821,16 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	}
 	ctx := acquireContext(r.backend)
 	var message, output string
-	var subTFailed bool
-	ran, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
-		// Captured by defer, not read after t.Run returns: a body that fails only through
-		// ctx.T.Fatal/FailNow ends this closure with runtime.Goexit, never a normal return, so
-		// subT.Failed() must be read while this goroutine is still unwinding it, the same reason
-		// runProgram's own recover below is a defer rather than a plain call (issue #245 review,
-		// Codex P1 "Include direct testing.T failures in parallel outcomes"). ctx.hasFailed() alone
-		// only sees a failure that went through ctx.Expect/ctx assertions; a direct ctx.T.Error,
-		// ctx.T.Fatal or ctx.T.FailNow fails the Go subtest without ever touching ctx, so
-		// SpecFinished.Failed and SuiteFinished.FailedSpecs disagreed with the subtest's own
-		// PASS/FAIL line until this was added.
-		defer func() { subTFailed = subT.Failed() }()
-		subBackend := asTestBackend(subT)
-		defer putTestBackend(subBackend)
-		ctx.Reset(subBackend)
+	// subTFailed is the subtest's own Failed(), which runSubtestGuardingParallel reads after t.Run has
+	// returned, so it also sees a failure raised from a Cleanup the body registered (#253).
+	// ctx.hasFailed() alone only sees a failure that went through ctx.Expect/ctx assertions; a direct
+	// ctx.T.Error, ctx.T.Fatal or ctx.T.FailNow fails the Go subtest without ever touching ctx.
+	ran, subTFailed, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+		// The backend is not handed back to its pool here: testing runs the subtest's cleanups after
+		// this closure returns, and a cleanup may still assert through ctx. It goes back below, once
+		// t.Run has returned (see runSpecProgramIsolated). Doing it in a defer here raced with the
+		// other specs of this range, which acquire backends from the same pool concurrently.
+		ctx.Reset(asTestBackend(subT))
 		// runProgram's deferred recover is the ONLY panic containment on this path, and the same
 		// defer is what runs AfterEach after a failing body. runSubtestGuardingParallel does not
 		// recover, and a panic on this goroutine is fatal to the whole test binary (the testing
@@ -852,6 +847,9 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 		// spec the pool hands it to next.
 		ctx.poison()
 	} else {
+		if ran {
+			putTestBackend(ctx.backend)
+		}
 		releaseContext(ctx)
 	}
 	return parallelSpecOutcome{

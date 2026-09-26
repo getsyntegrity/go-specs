@@ -462,6 +462,23 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** A spec that failed only through `ctx.T` (`Error`, `Fatal`, `Fail`,
+  `FailNow`, or from a `Cleanup` it registered) failed its Go subtest but was reported to the
+  `EventReporter` as passed, so `SpecResultEvent.Failed` was `false` and
+  `SuiteEndEvent.FailedSpecs` left it out. Every structured output built on the reporter (JSON,
+  JUnit, multi-package report coordination) marked it passed while `go test` printed `--- FAIL`.
+  Such specs are now reported failed and counted in `FailedSpecs`, on `Describe` with and without
+  `BeforeAll`/`AfterAll`, on `ItParallel`, and on `Runner`. `Runner`'s `FailFast` reads the same
+  outcome, so it now also stops the run after such a spec; before, the next spec still ran.
+  ([#253](https://github.com/getsyntegrity/go-specs/issues/253))
+- A spec's `Context` now stays bound to the spec's own subtest until the subtest's `Cleanup`
+  functions have run, so the idiomatic `ctx.T.Cleanup(func() { ctx.T.Error(...) })` and
+  `ctx.T.Cleanup(func() { ctx.Expect(...)... })` work. Before, the Context was unbound as soon as
+  the spec body returned: on `Runner` the cleanup's `ctx.T` was the parent test, which then failed
+  in the spec's place; on `Describe` and `ItParallel` a `ctx.Expect` in a cleanup went through a
+  backend already handed back to its pool, which crashed the test binary with a nil pointer
+  dereference, and on `ItParallel` raced with the specs running concurrently.
+  ([#253](https://github.com/getsyntegrity/go-specs/issues/253))
 - **Behavior change.** `ctx.Expect(x).To(nil)` and `specs.ExpectT(ctx, x).To(nil)` passed
   silently: both `To` methods returned early on a nil matcher, while `assert.Evaluate` and the
   `Not`/`All`/`Any` composites have always treated a nil matcher as never matching. A matcher

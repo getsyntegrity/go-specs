@@ -47,8 +47,8 @@ import (
 //
 // On detection the runner poisons the Context (see Context.poison) and fails immediately.
 
-// runSubtestGuardingParallel runs body as a subtest of t and reports whether the subtest ran at all
-// and whether it is still parked when t.Run returns.
+// runSubtestGuardingParallel runs body as a subtest of t and reports whether the subtest ran at all,
+// whether it failed, and whether it is still parked when t.Run returns.
 //
 // ran is set from inside the closure rather than read from t.Run's bool return, which is true for a
 // filtered-out subtest too — the same reason runSpecIsolated and runSpecProgramIsolated already set
@@ -58,6 +58,15 @@ import (
 // parked reports a body that called t.Parallel(). done is stored by a defer, so a body that
 // returned, called Fatal/FailNow (runtime.Goexit) or panicked all count as finished; only a parked
 // goroutine leaves it unset.
+//
+// failed is subT.Failed(), read after t.Run returns rather than by a defer inside the closure:
+// testing runs the subtest's Cleanup functions only after that closure has returned, so a defer
+// would miss a failure raised from a Cleanup. t.Run does not return until the subtest and its
+// cleanups have finished, so the read sees every failure, Fatal/FailNow (runtime.Goexit) included.
+// It is read only when the subtest ran and is not parked: a filtered subtest never ran, and a parked
+// one has not finished, so its state is still being written on its own goroutine. It is what lets a
+// caller report a spec that failed only through ctx.T (Error, Fatal, Fail, FailNow, or from a
+// Cleanup), which never touches the Context's own failure record, as failed (#253).
 //
 // done is an atomic.Bool rather than a plain bool, and deliberately so. A plain bool would in
 // practice be ordered — testing.T.Parallel signals the parent over a channel that t.Run receives —
@@ -70,15 +79,27 @@ import (
 //
 // The cost is nil in context: this path already starts a goroutine via t.Run, and the hot assertion
 // path never reaches it.
-func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, parked bool) {
-	var started, done atomic.Bool
+//
+// sub is written before started is stored and read only after started loads true, so the atomic
+// orders it too. The three live in one struct because the closure's capture moves them to the heap:
+// as separate variables that is one allocation each, per spec, on the real *testing.T path.
+func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, parked bool) {
+	var st struct {
+		started, done atomic.Bool
+		sub           *testing.T
+	}
 	t.Run(name, func(subT *testing.T) {
-		started.Store(true)
-		defer done.Store(true)
+		st.sub = subT
+		st.started.Store(true)
+		defer st.done.Store(true)
 		body(subT)
 	})
-	ran = started.Load()
-	return ran, ran && !done.Load()
+	ran = st.started.Load()
+	parked = ran && !st.done.Load()
+	if ran && !parked {
+		failed = st.sub.Failed()
+	}
+	return ran, failed, parked
 }
 
 // unsupportedSpecBodyParallelMessage builds the diagnostic for a spec body that called
