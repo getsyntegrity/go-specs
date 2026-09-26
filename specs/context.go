@@ -236,7 +236,7 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		c.tb.Helper()
 	}
 	if incomparable {
-		c.failf(incomparableNotEqualFormat, actual, expected)
+		c.failf(incomparableNotEqualFormat(actual, expected), actual, expected)
 		return
 	}
 	c.failf("expected %v to equal %v", actual, expected)
@@ -275,12 +275,28 @@ func interfaceEqual[T comparable](a, b T) (equal, incomparable bool) {
 	return a == b, false
 }
 
-// incomparableNotEqualFormat is the failure message when interfaceEqual could not compare the two
-// values. == never looks inside a slice, map or func, so the typed path cannot say whether they are
-// equal; ctx.Expect(...).ToEqual compares them with reflect.DeepEqual. %[1]T names actual's type, so the
-// format takes the same two operands as the plain one.
-const incomparableNotEqualFormat = "expected %v to equal %v, but dynamic type %[1]T is not comparable with ==; " +
-	"use ctx.Expect(...).ToEqual for a deep comparison"
+// incomparableNotEqualFormat returns the failure message for when interfaceEqual could not compare
+// the two values. == never looks inside a slice, map or func, so the typed path cannot say whether
+// they are equal. For most values ctx.Expect(...).ToEqual is the remedy, since it compares them with
+// reflect.DeepEqual. Not for errors: ctx.Expect asks errors.Is for those as well, and errors.Is has
+// already said no by the time this runs, so the hint names the fix that does work — an Is method
+// that defines the type's equality. %[1]T names actual's type, so both formats take the same two
+// operands as the plain one.
+//
+// It runs only on the failure path, where converting the operands to any costs nothing that
+// matters, and like reportNotEqual it is one free function shared by every instantiation.
+//
+//go:noinline
+func incomparableNotEqualFormat(actual, expected any) string {
+	if _, ok := actual.(error); ok {
+		if _, ok := expected.(error); ok {
+			return "expected %v to equal %v, but dynamic type %[1]T is not comparable with == " +
+				"and errors.Is found no match; give %[1]T an Is method to define its equality"
+		}
+	}
+	return "expected %v to equal %v, but dynamic type %[1]T is not comparable with ==; " +
+		"use ctx.Expect(...).ToEqual for a deep comparison"
+}
 
 // errorsFallbackIsFree reports whether T is an interface or a pointer type — the kinds whose values
 // convert to an interface without allocating. Only for those does the typed path ask
@@ -392,7 +408,7 @@ func (x expectT[T]) ToEqual(expected T) {
 			s.ctx.tb.Helper()
 		}
 		if incomparable {
-			reportNotEqual(s.ctx, incomparableNotEqualFormat, s.actual, expected)
+			reportNotEqual(s.ctx, incomparableNotEqualFormat(s.actual, expected), s.actual, expected)
 			return
 		}
 		reportNotEqual(s.ctx, "expected %v to equal %v", s.actual, expected)
