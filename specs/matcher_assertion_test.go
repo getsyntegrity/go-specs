@@ -3,6 +3,8 @@ package specs
 import (
 	"fmt"
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/assert"
 )
 
 // The matcher assertion path — Expect(x).To(m), ExpectT(ctx, x).To(m), and the specs.* matcher
@@ -57,17 +59,26 @@ func TestExpectToMarksTheContextFailedSoFailFastAndReportersSeeIt(t *testing.T) 
 	}
 }
 
-// The guards are what keep a misuse from panicking mid-suite; each one spends the Expectation and
-// returns without reporting.
-func TestExpectToIgnoresANilMatcher(t *testing.T) {
+// A nil matcher never matches (issue #236), matching assert.Evaluate and the composites: it fails
+// the assertion with the same message instead of passing silently, and it still never panics.
+func TestExpectToFailsOnANilMatcher(t *testing.T) {
 	ctx, b := newCapturedContext()
 
 	ctx.Expect(42).To(nil)
 
-	if b.failed {
-		t.Fatalf("expected a nil matcher to be ignored, got %q", b.message)
+	if !b.failed {
+		t.Fatal("expected a nil matcher to fail the assertion, not be ignored")
+	}
+	if b.message != nilMatcherMessage {
+		t.Fatalf("got %q, want %q", b.message, nilMatcherMessage)
+	}
+	if !ctx.hasFailed() {
+		t.Fatal("expected the context to be marked failed so FailFast and reporters see it")
 	}
 }
+
+// The context guards are what keep a misconfigured Expectation from panicking mid-suite; with no
+// context or backend there is nowhere to report to, so each one spends the Expectation and returns.
 
 func TestExpectToIgnoresAnExpectationWithoutAContext(t *testing.T) {
 	var e *Expectation
@@ -113,13 +124,32 @@ func TestExpectTToMarksTheContextFailedLikeTheUntypedPath(t *testing.T) {
 	}
 }
 
-func TestExpectTToIgnoresANilMatcher(t *testing.T) {
+func TestExpectTToFailsOnANilMatcher(t *testing.T) {
 	ctx, b := newCapturedContext()
 
 	ExpectT(ctx, 42).To(nil)
 
-	if b.failed {
-		t.Fatalf("expected a nil matcher to be ignored, got %q", b.message)
+	if !b.failed {
+		t.Fatal("expected a nil matcher to fail the assertion, not be ignored")
+	}
+	if b.message != nilMatcherMessage {
+		t.Fatalf("got %q, want %q", b.message, nilMatcherMessage)
+	}
+	if !ctx.hasFailed() {
+		t.Fatal("expected the context to be marked failed like the untyped path")
+	}
+}
+
+// nilMatcherMessage is the text assert.Evaluate reports for a nil matcher; To must report the same.
+var nilMatcherMessage = func() string {
+	_, msg := assert.Evaluate(nil, 42)
+	return msg
+}()
+
+// A nil matcher must read identically when passed directly and when found inside a composite.
+func TestNilMatcherMessageMatchesAssertEvaluate(t *testing.T) {
+	if nilMatcherMessage != "nil matcher (never matches)" {
+		t.Fatalf("assert.Evaluate(nil) message changed to %q; update To's tests deliberately", nilMatcherMessage)
 	}
 }
 

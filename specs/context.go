@@ -322,7 +322,18 @@ func (x expectT[T]) To(m Matcher) {
 	// The backend guard matches EqualTo and ExpectT.ToEqual: with no backend there is nowhere to
 	// report to, and reportMatcherFailure would dereference a nil interface. An assertion must
 	// never turn a misconfigured context into a panic at an unrelated line.
-	if s.ctx == nil || s.ctx.backend == nil || m == nil {
+	if s.ctx == nil || s.ctx.backend == nil {
+		return
+	}
+	// A nil matcher is a failed assertion, not a skipped one (issue #236): returning here used to let
+	// ExpectT(ctx, x).To(nil) pass silently, while assert.Evaluate and the composites have always
+	// documented a nil matcher as never matching. It is still reported rather than called into, so a
+	// misuse fails the spec at this line instead of panicking inside a nil Match.
+	if m == nil {
+		if s.ctx.tb != nil {
+			s.ctx.tb.Helper()
+		}
+		reportNilMatcher(s.ctx)
 		return
 	}
 	boxed := any(s.actual)
@@ -446,8 +457,16 @@ func (e *Expectation) To(m Matcher) {
 		panicReused()
 	}
 	defer e.release()
-	// See expectT.To for why the backend is guarded alongside the context and the matcher.
-	if e.ctx == nil || e.ctx.backend == nil || m == nil {
+	// See expectT.To for why the backend is guarded alongside the context.
+	if e.ctx == nil || e.ctx.backend == nil {
+		return
+	}
+	// See expectT.To: a nil matcher fails the assertion (issue #236).
+	if m == nil {
+		if e.ctx.tb != nil {
+			e.ctx.tb.Helper()
+		}
+		reportNilMatcher(e.ctx)
 		return
 	}
 	// See expectT.To for why the composite branch is spelled out here instead of going through
@@ -470,6 +489,21 @@ func (e *Expectation) To(m Matcher) {
 		e.ctx.tb.Helper()
 	}
 	reportMatcherFailure(e.ctx, m.FailureMessage(e.actual))
+}
+
+// reportNilMatcher reports a nil matcher with the exact text assert.Evaluate uses for one, so a nil
+// matcher reads the same whether it is passed to To directly or found inside Not/All/Any. Asking
+// assert.Evaluate for the message keeps that text defined in one place without exporting it; with a
+// nil matcher it returns before looking at the actual value, so passing nil for it costs nothing.
+// Kept out of line so the To fast paths stay small.
+//
+//go:noinline
+func reportNilMatcher(c *Context) {
+	if c.tb != nil {
+		c.tb.Helper()
+	}
+	_, failure := assert.Evaluate(nil, nil)
+	reportMatcherFailure(c, failure)
 }
 
 // reportMatcherFailure hands a matcher's already-built failure message to Context.failf, the one path

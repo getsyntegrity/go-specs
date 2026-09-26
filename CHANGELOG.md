@@ -423,6 +423,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** `ctx.Expect(x).To(nil)` and `specs.ExpectT(ctx, x).To(nil)` passed
+  silently: both `To` methods returned early on a nil matcher, while `assert.Evaluate` and the
+  `Not`/`All`/`Any` composites have always treated a nil matcher as never matching. A matcher
+  variable left nil by mistake turned the assertion into a false green. Both now fail the spec with
+  the same message `assert.Evaluate` uses, `nil matcher (never matches)`, attributed to the
+  assertion's own line and still without panicking. A test that was passing only because its
+  matcher was nil now fails, which is the point. Typed-nil matchers are unchanged: they reach
+  `Match` and fail loudly there. ([#236](https://github.com/getsyntegrity/go-specs/issues/236))
 - **Behavior change.** `mock.Equal` compared errors with `reflect.DeepEqual`, the structural
   comparison [#183](https://github.com/getsyntegrity/go-specs/issues/183) removed from `assert`: an
   unrelated error carrying the same message matched, and an argument wrapping the expected sentinel
