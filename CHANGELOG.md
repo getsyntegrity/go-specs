@@ -468,7 +468,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   ctx.Expect(...).ToEqual for a deep comparison`. Such a `T` satisfies `comparable`, so it compiles,
   but `==` cannot compare the values; the typed path already reported that as not equal rather than
   panicking (#259), with a message that contradicted itself. When both values are errors, the
-  message instead suggests giving the type an `Is` method, since `ctx.Expect(...).ToEqual` asks
+  message instead suggests giving the type an `Is` method (or, when it already has one, says that
+  method found no match), since `ctx.Expect(...).ToEqual` asks
   `errors.Is` for errors and would fail the same way. The verdict is unchanged, and the message for
   every other failure is untouched.
   ([#238](https://github.com/getsyntegrity/go-specs/issues/238))

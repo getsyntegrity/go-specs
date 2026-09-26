@@ -391,7 +391,7 @@ specs.EqualTo(ctx, a, b)
 // use ctx.Expect(...).ToEqual for a deep comparison
 ```
 
-The `errors.Is` rule below still applies first, so an incomparable error whose `Is` method matches passes. When it does not, the message does not point at `ctx.Expect(...).ToEqual`, because that asks `errors.Is` for errors too and would fail the same way; it suggests giving the type an `Is` method that defines its equality instead. For structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
+The `errors.Is` rule below still applies first, so an incomparable error whose `Is` method matches passes. When it does not, the message does not point at `ctx.Expect(...).ToEqual`, because that asks `errors.Is` for errors too and would fail the same way; it suggests giving the type an `Is` method that defines its equality instead, or, when the type already has one, says that method found no match. For structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
 
 ```go
 type withPtr struct{ N *int }

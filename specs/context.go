@@ -280,8 +280,9 @@ func interfaceEqual[T comparable](a, b T) (equal, incomparable bool) {
 // they are equal. For most values ctx.Expect(...).ToEqual is the remedy, since it compares them with
 // reflect.DeepEqual. Not for errors: ctx.Expect asks errors.Is for those as well, and errors.Is has
 // already said no by the time this runs, so the hint names the fix that does work — an Is method
-// that defines the type's equality. %[1]T names actual's type, so both formats take the same two
-// operands as the plain one.
+// that defines the type's equality. If actual's type already has one, errors.Is has asked it and it
+// said no; that is a real mismatch, so the message reports it rather than asking for a method that
+// exists. %[1]T names actual's type, so every format takes the same two operands as the plain one.
 //
 // It runs only on the failure path, where converting the operands to any costs nothing that
 // matters, and like reportNotEqual it is one free function shared by every instantiation.
@@ -290,6 +291,10 @@ func interfaceEqual[T comparable](a, b T) (equal, incomparable bool) {
 func incomparableNotEqualFormat(actual, expected any) string {
 	if _, ok := actual.(error); ok {
 		if _, ok := expected.(error); ok {
+			if _, hasIs := actual.(interface{ Is(error) bool }); hasIs {
+				return "expected %v to equal %v, but dynamic type %[1]T is not comparable with == " +
+					"and its Is method found no match"
+			}
 			return "expected %v to equal %v, but dynamic type %[1]T is not comparable with == " +
 				"and errors.Is found no match; give %[1]T an Is method to define its equality"
 		}

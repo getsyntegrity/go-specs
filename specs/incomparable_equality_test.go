@@ -94,6 +94,23 @@ func TestIncomparableErrorFailureDoesNotRecommendCtxExpect(t *testing.T) {
 	}
 }
 
+// Codex review on #262: an incomparable error that already has an Is method, which said no to this
+// target, must not be told to add one. The message says its Is method found no match instead.
+func TestIncomparableErrorWithIsMethodIsNotToldToAddOne(t *testing.T) {
+	var a, e error = dslCodesError{7}, dslCodesError{8}
+	const want = "expected [7] to equal [8], but dynamic type specs.dslCodesError is not comparable with == " +
+		"and its Is method found no match"
+	probes := map[string]func(*Context){
+		"EqualTo":         func(c *Context) { EqualTo(c, a, e) },
+		"ExpectT.ToEqual": func(c *Context) { ExpectT(c, a).ToEqual(e) },
+	}
+	for label, probe := range probes {
+		if _, got := failureOf(t, label, probe); got != want {
+			t.Errorf("%s message = %q, want %q", label, got, want)
+		}
+	}
+}
+
 // docs/DSL.md and CHANGELOG.md quote this message verbatim; keep them in step with it.
 func TestIncomparableFailureMessageIsTheDocumentedOne(t *testing.T) {
 	const want = "expected [1] to equal [1], but dynamic type []int is not comparable with ==; " +
