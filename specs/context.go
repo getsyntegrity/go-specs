@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -235,21 +234,24 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 // (#237). Anything that is not an error on both sides — including a nil error, which boxes to a nil
 // any — keeps the plain == verdict.
 //
+// The error comparison itself is delegated to assert.ValuesEqual rather than written out again, so
+// the typed path cannot drift from ctx.Expect and the matchers — including how a typed nil pointer
+// is kept away from errors.Is (see assert's errorsMatch). Both values are known to be errors here,
+// and ValuesEqual's primitive fast path never claims an error, so it goes straight to that rule.
+//
 // It is only reached on the failure branch, so the boxing its any parameters cost never touches the
 // passing fast path. Like reportNotEqual it is a free, un-inlined function so that one copy serves
 // every instantiation instead of each T carrying its own.
 //
 //go:noinline
 func typedErrorsMatch(actual, expected any) bool {
-	errActual, ok := actual.(error)
-	if !ok {
+	if _, ok := actual.(error); !ok {
 		return false
 	}
-	errExpected, ok := expected.(error)
-	if !ok {
+	if _, ok := expected.(error); !ok {
 		return false
 	}
-	return errors.Is(errActual, errExpected)
+	return assert.ValuesEqual(expected, actual)
 }
 
 // ExpectT returns a typed expectation for comparable types. ToEqual(expected) is a direct

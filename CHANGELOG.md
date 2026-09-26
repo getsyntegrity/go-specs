@@ -470,6 +470,12 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   since [#183](https://github.com/getsyntegrity/go-specs/issues/183). The check runs only on the
   failure branch, so the passing path is still a single `==` that allocates nothing.
   ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
+- An error comparison whose actual or expected value was a typed nil pointer (a nil `*MyErr` held in
+  an `error`) panicked the spec when the error type's `Is` or `Unwrap` read a field of its receiver,
+  because `errors.Is` calls those methods. `Equal`, `NotEqual`, `MatchError`, `Contain`, `assert.EqualValues`,
+  `ctx.Expect(...).ToEqual`, `EqualTo` and `ExpectT(...).ToEqual` now compare a typed nil with `==`
+  alone, so the assertion fails instead of panicking; a typed nil still equals itself and never a
+  nil `error`. ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
 - **Behavior change.** A spec that failed only through `ctx.T` (`Error`, `Fatal`, `Fail`,
   `FailNow`, or from a `Cleanup` it registered) failed its Go subtest but was reported to the
   `EventReporter` as passed, so `SpecResultEvent.Failed` was `false` and

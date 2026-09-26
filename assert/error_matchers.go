@@ -34,7 +34,17 @@ func errorOperands(expected, actual any) (expectedErr, actualErr error, ok bool)
 }
 
 // errorsMatch applies the oriented semantics: does actual carry expected's identity?
+//
+// A typed nil pointer — a nil *MyErr stored in an error — is answered by == alone, never handed to
+// errors.Is. errors.Is calls the actual's Is and Unwrap methods and passes the target into every Is
+// in the chain, and a method that reads a field of its receiver or of that target dereferences nil
+// and panics the spec instead of failing the assertion. == still says a typed nil equals itself, and
+// nothing else: it has no identity to carry. The interface comparison cannot panic here, because a
+// pointer type is comparable and == only compares the values when both dynamic types are equal.
 func errorsMatch(expected, actual error) bool {
+	if IsNilValue(actual) || IsNilValue(expected) {
+		return actual == expected
+	}
 	return errors.Is(actual, expected)
 }
 
