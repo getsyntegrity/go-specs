@@ -414,6 +414,12 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `b.It("x", specs.Focus(fn))` to `b.ItWith("x", specs.Skip(fn))` / `b.ItWith("x", specs.Focus(fn))`.
   The dead internal helper `parseItArgs`, which nothing called, is also removed; internal only, no
   public API change. ([#210](https://github.com/getsyntegrity/go-specs/issues/210))
+- Lowered go.mod's `go` directive from `1.25.14` to `1.25.0`, so consumers importing go-specs are no
+  longer forced onto that specific patch release just to satisfy the declared minimum. The repository
+  itself is unaffected: it still builds and tests on the exact toolchain pinned in `.go-version`
+  (`1.25.14`), and `.github/scripts/check-go-version.sh` now enforces that `go.mod` tracks the pinned
+  minor's `.0` floor rather than the pinned patch itself. See `CONTRIBUTING.md`'s "Supported Go version
+  policy" section for the bump procedure. ([#212](https://github.com/getsyntegrity/go-specs/issues/212))
 
 ### Fixed
 

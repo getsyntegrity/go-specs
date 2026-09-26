@@ -1,26 +1,45 @@
 #!/usr/bin/env bash
 #
-# check-go-version.sh -- fail when any go.mod's `go` directive differs from
-# .go-version.
+# check-go-version.sh -- fail when any go.mod's `go` directive is not the
+# MAJOR.MINOR.0 floor derived from .go-version.
 #
-# Contract:
-#   .go-version                  -- single source of truth for the Go version
-#                                   (e.g. "1.25.14"). CI installs it via
+# Contract -- two files, two different jobs:
+#   .go-version                  -- the exact toolchain patch CI and
+#                                   contributors build and test with (e.g.
+#                                   "1.25.14"). CI installs it via
 #                                   actions/setup-go's `go-version-file`, and
 #                                   asdf/mise/goenv/gvm pick it up for
-#                                   contributors.
-#   every go.mod `go` directive  -- must match .go-version exactly, patch
-#                                   component included.
+#                                   contributors. Must be a full
+#                                   MAJOR.MINOR.PATCH; it is the pin, not a
+#                                   floor, so a bare MAJOR.MINOR is rejected.
+#   every go.mod `go` directive  -- the minimum language version every
+#                                   downstream consumer of go-specs inherits.
+#                                   Must equal MAJOR.MINOR.0 of .go-version --
+#                                   the first release of the pinned minor --
+#                                   never the pinned patch and never the bare
+#                                   MAJOR.MINOR form.
 #
-# Exact match is deliberate: one version, one place to bump. The cost is that
-# the declared minimum language version -- the floor every downstream consumer
-# of go-specs inherits -- moves with the toolchain patch, so consumers must
-# install at least that patch release to build. Bump .go-version, then run
-# this script's companion fix:
+# Why the floor is MAJOR.MINOR.0 and not lower: CI only ever builds on the
+# single toolchain pinned in .go-version (see ci.yml's header for why a
+# version matrix is deliberately not run), so a floor below the pinned minor
+# would be an untested claim -- nothing exercises it. MAJOR.MINOR.0 is also
+# usually the lowest floor actually achievable: dependencies commonly
+# declare their own `go` directive at MAJOR.MINOR.0 of a recent minor, and
+# `go mod tidy` on the pinned toolchain raises anything lower to match.
 #
-#   go mod edit -go="$(tr -d '[:space:]' <.go-version)"
+# Why the floor is not the pinned patch: patch releases within a minor are
+# API-identical by Go's compatibility policy, so testing on the pinned patch
+# already validates every consumer on that minor, including ones on an older
+# or newer patch. Pinning the floor to the exact patch would force every
+# downstream consumer onto that one patch release for no correctness reason.
 #
-# for every module, and commit both.
+# Bump procedure:
+#   patch bump (e.g. 1.25.14 -> 1.25.20): edit .go-version only. The floor
+#     (MAJOR.MINOR.0) is unchanged, so no go.mod edit is needed.
+#   minor bump (e.g. 1.25.14 -> 1.26.1): edit .go-version, then run this
+#     script's companion fix for every module:
+#
+#   go mod edit -go="<new MAJOR>.<new MINOR>.0" <go.mod>
 #
 # All modules are checked, not just the root one, so this keeps working if the
 # repository ever grows beyond a single module. Directories Go itself ignores
@@ -52,13 +71,18 @@ if [[ -z "$GOVERSION_RAW" ]]; then
     exit 1
 fi
 
-# Reject anything that is not a plain version: .go-version is consumed
-# verbatim by actions/setup-go and by version managers, so a stray "go"
-# prefix or a range would only fail much further downstream.
-if ! [[ "$GOVERSION_RAW" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-    echo "::error::check-go-version.sh: $GOVERSION_FILE contains an unexpected value: '$GOVERSION_RAW' (expected MAJOR.MINOR[.PATCH])" >&2
+# .go-version is the exact toolchain pin, consumed verbatim by
+# actions/setup-go and by version managers, so it must be a full
+# MAJOR.MINOR.PATCH -- a bare MAJOR.MINOR would leave the pinned patch
+# ambiguous, and a stray "go" prefix or a range would only fail much further
+# downstream.
+if ! [[ "$GOVERSION_RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "::error::check-go-version.sh: $GOVERSION_FILE contains an unexpected value: '$GOVERSION_RAW' (expected MAJOR.MINOR.PATCH)" >&2
     exit 1
 fi
+
+# The floor every go.mod must declare: MAJOR.MINOR.0 of the pinned patch.
+GOFLOOR="${GOVERSION_RAW%.*}.0"
 
 # Collect every module manifest that belongs to this repository. `find` rather
 # than a shell glob so nested modules are covered, pruned so that vendored
@@ -92,24 +116,25 @@ for GOMOD_FILE in "${GOMOD_FILES[@]}"; do
         continue
     fi
 
-    if [[ "$GOMOD_RAW" != "$GOVERSION_RAW" ]]; then
+    if [[ "$GOMOD_RAW" != "$GOFLOOR" ]]; then
         cat >&2 <<MSG
 ::error file=$GOMOD_FILE::check-go-version.sh: Go version drift between $GOMOD_FILE and $GOVERSION_FILE.
   $GOMOD_FILE     : go $GOMOD_RAW
-  $GOVERSION_FILE : $GOVERSION_RAW
+  $GOVERSION_FILE : $GOVERSION_RAW (floor: $GOFLOOR)
 
-They must match exactly, patch component included. Fix with:
-  go mod edit -go="$GOVERSION_RAW" $GOMOD_FILE
+$GOMOD_FILE's 'go' directive must be the MAJOR.MINOR.0 floor derived from
+$GOVERSION_FILE, not the pinned patch and not a bare MAJOR.MINOR. Fix with:
+  go mod edit -go="$GOFLOOR" $GOMOD_FILE
 MSG
         FAILED=1
         continue
     fi
 
-    echo "check-go-version.sh: OK $GOMOD_FILE (go $GOMOD_RAW == $GOVERSION_FILE $GOVERSION_RAW)"
+    echo "check-go-version.sh: OK $GOMOD_FILE (go $GOMOD_RAW == $GOVERSION_FILE floor $GOFLOOR)"
 done
 
 if [[ $FAILED -ne 0 ]]; then
     exit 1
 fi
 
-echo "check-go-version.sh: OK (${#GOMOD_FILES[@]} module(s) match $GOVERSION_FILE $GOVERSION_RAW)"
+echo "check-go-version.sh: OK (${#GOMOD_FILES[@]} module(s) match $GOVERSION_FILE floor $GOFLOOR)"

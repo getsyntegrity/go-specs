@@ -13,27 +13,45 @@ Requirements:
   managers (`asdf`, `mise`, `goenv`, `gvm`) read it automatically.
 * make (optional)
 
-## Go version pinning
+## Supported Go version policy
 
-`.go-version` is the single source of truth for the Go version. CI installs it
-through `actions/setup-go`'s `go-version-file`, version managers read it
-automatically, and every `go.mod` in the repository must declare the **exact**
-same version in its `go` directive — patch component included.
+`.go-version` and every `go.mod`'s `go` directive answer two different
+questions, so they deliberately hold two different values:
 
-| File | Meaning |
-| --- | --- |
-| `.go-version` | The Go version. Bump this one. |
-| every `go.mod`'s `go` directive | Must equal `.go-version` exactly. Generated from it, never edited by hand. |
+- `.go-version` is the exact toolchain patch CI and contributors build and
+  test with. CI installs it through `actions/setup-go`'s `go-version-file`,
+  and version managers (`asdf`, `mise`, `goenv`, `gvm`) read it automatically.
+- every `go.mod`'s `go` directive is the minimum language version every
+  downstream consumer of go-specs must have installed to build against it —
+  the floor, not the pin.
 
-The tradeoff is deliberate: one version, one place to bump. Because the `go`
-directive is also the minimum language version downstream consumers inherit,
-raising `.go-version` to a new patch release raises that floor too — anyone
-importing go-specs must install at least that patch to build.
+go-specs supports **Go >= MAJOR.MINOR.0 of the pinned toolchain** — currently
+**1.25.0**. The floor is the `.0` release of the pinned minor, never the
+pinned patch and never a bare `MAJOR.MINOR`:
 
-To bump, edit `.go-version`, propagate it to every module, and verify:
+| File | Role | Current value |
+| --- | --- | --- |
+| `.go-version` | Exact toolchain CI builds and tests with. Bump this for every patch or minor update. | `1.25.14` |
+| every `go.mod`'s `go` directive | Minimum Go version consumers need. Always `MAJOR.MINOR.0` of `.go-version`, generated from it, never edited by hand. | `1.25.0` |
+
+The floor is not lower than the pinned minor because CI only ever builds on
+that one toolchain (see `ci.yml`'s header for why a version matrix is
+deliberately not run) — a lower floor would be an untested claim nothing
+exercises. It is also usually the lowest floor actually achievable: dependencies commonly declare their own `go` directive at `MAJOR.MINOR.0` of a
+recent minor, and `go mod tidy` on the pinned toolchain raises anything lower
+to match. Patch releases within a minor are API-identical by Go's
+compatibility policy, so testing on the pinned patch already validates every
+consumer on that minor, whichever patch they run.
+
+Bump procedure:
+
+- **Patch bump** (e.g. `1.25.14` -> `1.25.20`): edit `.go-version` only. The
+  floor (`MAJOR.MINOR.0`) is unchanged, so no `go.mod` edit is needed.
+- **Minor bump** (e.g. `1.25.14` -> `1.26.1`): edit `.go-version`, then
+  propagate the new floor to every module and verify:
 
 ```
-go mod edit -go="$(tr -d '[:space:]' <.go-version)"
+go mod edit -go="<MAJOR>.<MINOR>.0" go.mod
 make check-go-version
 ```
 

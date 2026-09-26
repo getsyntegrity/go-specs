@@ -26,12 +26,12 @@ help:
 	@echo "  make build         Build all packages in the module"
 	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove coverage.* and benchmark results"
-	@echo "  make check-go-version  Verify every go.mod matches .go-version exactly"
+	@echo "  make check-go-version  Verify every go.mod matches the MAJOR.MINOR.0 floor derived from .go-version"
 	@echo ""
 
-# Fail when any go.mod's `go` directive differs from .go-version, patch
-# component included. Same script CI runs, so a bad bump is caught before
-# pushing.
+# Fail when any go.mod's `go` directive is not MAJOR.MINOR.0 of .go-version
+# (the exact toolchain patch pin). Same script CI runs, so a bad bump is
+# caught before pushing.
 check-go-version:
 	./.github/scripts/check-go-version.sh
 
