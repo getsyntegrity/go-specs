@@ -462,6 +462,12 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- `GO_SPECS_UPDATE_SNAPSHOTS=1` now repairs a snapshot file that is not valid JSON, such as one left
+  with merge-conflict markers. Update mode used to stop on the parse error before it could rewrite
+  anything, so the documented way to regenerate snapshots failed after exactly the bad merge that
+  needs it. The file is now treated as empty and rewritten, and a warning on stderr names it,
+  because any snapshot in it that the run does not regenerate is discarded. Outside update mode a
+  corrupt file still fails, and a file that cannot be read still fails in both modes (#242).
 - `EqualTo` and `ExpectT(...).ToEqual` with an interface `T` (such as `any` or `error`) holding a
   slice, map or func now fail with a message that says why:
   `expected [1] to equal [1], but dynamic type []int is not comparable with ==; use
