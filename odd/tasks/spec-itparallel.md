@@ -283,7 +283,7 @@ if accidentally, picked the wrong spec on this build.)
 
 GREEN: same test, `first=20 second=0`.
 
-Commit: `<pending>` — `fix(specs): assign duplicate ItParallel subtest names in declaration order
+Commit: `d0a24e5` — `fix(specs): assign duplicate ItParallel subtest names in declaration order
 (#245)`.
 
 ### Final verification (both fixes)
