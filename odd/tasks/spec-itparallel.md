@@ -190,7 +190,112 @@ path, and that the same defer is what runs `AfterEach`.
 Also renamed the four specs of `TestSpecItParallel_SpecsOverlapInTime` from a shared `"spec"`
 (which Go de-duplicates as `spec#01`…) to `spec-0`…`spec-3`.
 
+## Review fixes (Codex P1)
+
+Two Codex P1 findings against PR #252 were fixed after the spec above was marked done.
+
+### Fix 1 — direct `testing.T` failures were invisible to the reporter
+
+`runParallelSpec` (`specs/group_hooks.go`) derived `Failed` only from `ctx.hasFailed()`. A body that
+failed only through `ctx.T.Error`/`Errorf`/`Fail` or `ctx.T.Fatal`/`FailNow` — never touching `ctx` —
+still failed the Go subtest, but `SpecFinished.Failed` stayed `false` and
+`SuiteFinished.FailedSpecs` never counted it, so the reporter and `go test`'s own PASS/FAIL line
+disagreed.
+
+Fix: capture `subT.Failed()` with a `defer` inside the subtest closure (so it also runs on
+Fatal/FailNow's `runtime.Goexit`) and OR it into the outcome's failed flag: `failed :=
+ctx.hasFailed() || subTFailed`.
+
+The sequential `*Spec` path (`runSpecProgramIsolated` in `specs/execution_plan.go`, via its caller in
+`execution_plan.go:434`) has the **same gap**: `Failed: ctx.hasFailed()`, no `subT.Failed()` fold-in.
+Per this task's scope, the sequential path was left unchanged — this is a pre-existing, separate
+divergence, not something Fix 1 introduced or corrected.
+
+RED (`specs/spec_itparallel_direct_failure_test.go`,
+`TestSpecItParallel_DirectTestingTFailuresCountInOutcomes`, subprocess-based since a real
+`ctx.T.Error`/`FailNow` would fail the outer test too):
+
+```
+expected SpecFinished for "bravo-errors" to report Failed=true:
+    SPEC_FINISHED name=alpha-passes failed=false
+    SPEC_FINISHED name=bravo-errors failed=false
+    SPEC_FINISHED name=charlie-failnow failed=false
+    SUITE_FINISHED failed=0
+    --- FAIL: .../suite/charlie-failnow (0.00s)
+    --- FAIL: .../suite/bravo-errors (0.00s)
+```
+
+GREEN: same test passes after the fix (`SUITE_FINISHED failed=2`).
+
+Commit: `76f3183` — `fix(specs): count testing.T failures in Spec ItParallel outcomes (#245)`.
+
+### Fix 2 — duplicate ItParallel subtest names raced
+
+`runParallelGroup` launches one goroutine per spec, each calling `testing.T.Run(name, ...)`
+concurrently. Two adjacent `ItParallel` specs sharing a (normalized) name passed the **same**
+un-deduplicated name from every goroutine; whichever goroutine's call reached testing's internal
+name-dedup mutex (`matcher.fullName`/`unique`, `testing/match.go`) first won the unsuffixed name, so
+`-test.run` selecting that unsuffixed name picked a nondeterministic body. Observed RED was not even
+flaky — it deterministically picked the second-declared spec every time on this machine, which is
+itself evidence the "first declared wins" contract was accidental, not designed.
+
+Investigation into `testing/match.go` (Go 1.26.6, `/home/pablog/sdk/go1.26.6/src/testing/match.go`):
+`matcher.unique(parent, subname)` keys a `subNames map[string]int32` by `parent + "/" + subname`;
+first occurrence of a base returns it unchanged, each further occurrence gets `#01`, `#02`, ...
+Passing an explicitly pre-suffixed name (e.g. literally `"x#01"`) is stable and is **not**
+re-suffixed by `unique`, provided the bare prefix's own count (`subNames["x"]`) has not itself
+already advanced past that number — which holds by construction whenever a batch contains at most
+one bare (unsuffixed) occurrence of that name, and does not depend on which goroutine's call
+happens first (see the doc comments on `uniqueSubtestName`/`computeParallelSubtestNames`).
+
+Chosen approach: precompute every ItParallel spec's exact subtest name **before** launching any
+goroutine, on the single goroutine that already walks the whole plan (`buildTree`, called from
+`runPlanWithGroups` before any parallel range runs). `computeParallelSubtestNames`
+(`specs/group_hooks.go`) walks the plan exactly the way `runRange`/`runGroup` do at runtime (same
+recursion over `children`/`top`, same per-scope prefix), maintaining a local `map[string]int32`
+counter scoped fresh per Describe/When (or root) — mirroring `testing`'s own per-parent `subNames`
+map — and feeding every item in that scope (nested group names, ordinary spec names, and
+`ItParallel` spec names) through `uniqueSubtestName`, a direct behavioral port of
+`matcher.unique`/`parseSubtestNumber` restricted to one parent (no path-prefix concatenation needed,
+since the simulation is already scoped per parent). The result for every `ItParallel` spec is stored
+in `groupRun.parallelNames map[int]string`; `runParallelSpec` passes that name straight to `t.Run`
+instead of the raw (un-deduplicated) breadcrumb slice.
+
+This is not an approximation restricted to the specs within one parallel range: it also accounts for
+a same-named **sequential** sibling declared earlier in the same scope, because the walk processes
+every item of the scope, in declaration order, before reaching the parallel range — so the local
+counter already reflects that sibling's registration by the time it resolves the range's names.
+Evidence this matches Go's own naming exactly, order-independent: `go test -race -count=20 -run
+'ItParallel' ./specs/...` (20 iterations of every `ItParallel` test in the package) — `ok`, 0
+`--- FAIL`, 0 `WARNING: DATA RACE`, 0 `panic:` lines.
+
+RED (`specs/spec_itparallel_dup_name_test.go`,
+`TestSpecItParallel_DuplicateNameSubtestSelectionIsDeterministic`; subprocess with
+`-test.run=^TestX$/^suite$/^dup$ -test.count=20`, since the outcome depends on goroutine scheduling):
+
+```
+expected -test.run selecting the unsuffixed name "suite/dup" to run only the first declared
+spec, all 20 times; got first=0 second=20
+```
+
+(All 20 iterations ran `RAN:second`, none ran `RAN:first` — the unsuffixed name deterministically,
+if accidentally, picked the wrong spec on this build.)
+
+GREEN: same test, `first=20 second=0`.
+
+Commit: `<pending>` — `fix(specs): assign duplicate ItParallel subtest names in declaration order
+(#245)`.
+
+### Final verification (both fixes)
+
+- `go test -count=1 ./...`: all packages `ok`, no FAIL.
+- `make fmt-check`: clean.
+- `go vet ./...`: clean.
+- `golangci-lint run ./specs/...`: `0 issues`.
+- `go test -race -count=20 -run 'ItParallel' ./specs/...`: `ok`, 0 `--- FAIL`, 0 `WARNING: DATA
+  RACE`, 0 `panic:` (explicitly requested by the user; no other `-race` use).
+
 ## Next step
 
-Spec 2 is done. Push and PR (`Closes #245`, base `feat/245-spec-focus-skip-pending` until #250
-merges) are the user's decision.
+Spec 2 and both Codex P1 review fixes are done. Push and PR (`Closes #245`, base
+`feat/245-spec-focus-skip-pending` until #250 merges) are the user's decision.

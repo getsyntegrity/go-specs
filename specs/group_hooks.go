@@ -266,6 +266,13 @@ type groupRun struct {
 	// O(1) at each step of its flat index walk, the same way it already recognizes a hookGroup start
 	// via children. nil when the suite registers no ItParallel.
 	parallelByStart map[int]int
+	// parallelNames maps a plan index inside an ItParallel range to the exact Go subtest name
+	// runParallelSpec must pass to t.Run for it (issue #245 review, Codex P1 "Serialize duplicate
+	// subtest-name assignment"). Computed once by buildTree, on the single goroutine that walks the
+	// whole plan before any parallel goroutine is spawned, so two specs sharing a name are assigned
+	// their "#01"/"#02" suffixes deterministically, in declaration order — see
+	// computeParallelSubtestNames. nil when the suite registers no ItParallel.
+	parallelNames map[int]string
 	// real is true when backend wraps a real *testing.T, i.e. when groups get subtests.
 	real bool
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
@@ -324,7 +331,146 @@ func (r *groupRun) buildTree() {
 		for i := range r.pg.parallel {
 			r.parallelByStart[r.pg.parallel[i].Start] = i
 		}
+		r.parallelNames = computeParallelSubtestNames(r.pg, r.plan, r.children, r.top)
 	}
+}
+
+// computeParallelSubtestNames precomputes, for every ItParallel spec, the exact Go subtest name
+// runParallelSpec must pass to t.Run (issue #245 review, Codex P1 "Serialize duplicate subtest-name
+// assignment").
+//
+// The problem: runParallelGroup launches one goroutine per spec in a range, each of which calls
+// testing.T.Run with that spec's *own* name — so two adjacent ItParallel specs sharing a name race
+// to register it, and whichever goroutine's call reaches testing's internal dedup mutex
+// (matcher.fullName/unique, match.go) first wins the unsuffixed name. `-test.run` selecting that
+// unsuffixed name would then pick a nondeterministic body.
+//
+// The fix does not try to influence that race; it removes the need to. Nothing outside this
+// package's own runRange/runGroup/runSpec/runParallelGroup ever registers a subtest under one of
+// its own scopes, and all of that happens on a single goroutine except for the concurrent t.Run
+// calls a parallel range itself launches — so, walking the plan once here, before any goroutine is
+// spawned, this function already knows every name that scope will ever see, in the exact order
+// testing would see it if every spec and group ran sequentially. It simulates matcher.unique itself
+// (see uniqueSubtestName) over that sequence, scoped fresh per Describe/When (or root), the same way
+// testing.T's own subNames map is fresh per parent, and records the simulated result for every
+// ItParallel spec.
+//
+// Each simulated name is therefore already the unique string testing's own dedup would produce for
+// it — accounting for both its parallel siblings (declaration order breaks the intra-batch tie) and
+// any sequential sibling earlier in the same scope with the same name (its registration already
+// advanced the count this simulation started from). Passed to the real t.Run, whichever goroutine's
+// call happens to run first, testing's matcher.unique sees each of these strings for the first time
+// ever and returns it unchanged (see the doc comment on uniqueSubtestName for why explicitly
+// pre-suffixed names cannot collide with each other here), so the result no longer depends on
+// goroutine scheduling.
+//
+// Group subtest names are never actually re-suffixed by testing in a suite that passes
+// validateHookGroups (it already rejects any that would collide), but a group's own leaf name still
+// occupies a slot in this scope's simulated counter, exactly as calling the real t.Run for it would
+// occupy one in testing's real subNames map — so an ItParallel spec that happens to share a group's
+// text is still deduplicated against it correctly.
+func computeParallelSubtestNames(pg *planGroups, plan *ExecutionPlan, children [][]int, top []int) map[int]string {
+	if pg == nil || len(pg.parallel) == 0 {
+		return nil
+	}
+	byStart := make(map[int]int, len(pg.parallel))
+	for i := range pg.parallel {
+		byStart[pg.parallel[i].Start] = i
+	}
+	names := make(map[int]string, 2*len(pg.parallel))
+	leafName := func(prefix string, i int) string {
+		full := specSubtestName(plan, i)
+		if len(full) >= len(prefix) {
+			full = full[len(prefix):]
+		}
+		return normalizeSubtestName(full)
+	}
+	var walk func(prefix string, lo, hi int, kids []int)
+	walk = func(prefix string, lo, hi int, kids []int) {
+		counts := make(map[string]int32)
+		k := 0
+		for i := lo; i <= hi; {
+			if k < len(kids) && pg.groups[kids[k]].Start == i {
+				g := kids[k]
+				k++
+				group := &pg.groups[g]
+				name, groupPrefix := groupSubtestName(prefix, group)
+				uniqueSubtestName(counts, normalizeSubtestName(name))
+				walk(groupPrefix, group.Start, group.End, children[g])
+				i = group.End + 1
+				continue
+			}
+			if pi, ok := byStart[i]; ok {
+				rng := pg.parallel[pi]
+				for j := rng.Start; j <= rng.End; j++ {
+					names[j] = uniqueSubtestName(counts, leafName(prefix, j))
+				}
+				i = rng.End + 1
+				continue
+			}
+			uniqueSubtestName(counts, leafName(prefix, i))
+			i++
+		}
+	}
+	walk("", 0, len(plan.ProgramStart)-1, top)
+	return names
+}
+
+// uniqueSubtestName mirrors the standard library's matcher.unique (testing/match.go), restricted to
+// one *testing.T's own subtests: counts plays the role of testing's subNames map, but keyed only by
+// the leaf name, without a parent-path prefix, because computeParallelSubtestNames already gives it
+// a fresh map per parent scope, so every name it ever compares shares the same (omitted) prefix.
+// name must already be normalizeSubtestName'd, matching what testing's own unexported rewrite would
+// have done to it.
+//
+// Two distinct literal names this function ever returns cannot later collide with each other when
+// passed to testing's real t.Run, whatever order the calls happen in: each is a unique key the first
+// time counts sees it (n == 0 on this local simulation, and only ever this local one instance of it
+// is ever produced), and the one case testing's own unique() would otherwise treat as a possible
+// collision — a name that already carries an explicit "#NN" suffix — cannot fire against a sibling
+// this same function assigned, because sibling names only ever gain that suffix by this function's
+// own counting, in order, over a batch containing at most one bare (unsuffixed) occurrence.
+func uniqueSubtestName(counts map[string]int32, name string) string {
+	for {
+		n := counts[name]
+		counts[name] = n + 1
+		if n == 0 && name != "" {
+			prefix, nn := parseTrailingSubtestNumber(name)
+			if len(prefix) < len(name) && nn < counts[prefix] {
+				continue
+			}
+			return name
+		}
+		suffixed := fmt.Sprintf("%s#%02d", name, n)
+		if counts[suffixed] != 0 {
+			continue
+		}
+		return suffixed
+	}
+}
+
+// parseTrailingSubtestNumber splits a subtest name into a "#%02d"-formatted int32 suffix (if
+// present) and the prefix preceding it (always). It is a direct port of the standard library's
+// unexported parseSubtestNumber (testing/match.go), which uniqueSubtestName needs for the same
+// reason testing's own matcher.unique does: an explicitly named "x#01" must not silently collide
+// with the auto-generated suffix testing would give a second "x".
+func parseTrailingSubtestNumber(s string) (prefix string, nn int32) {
+	i := strings.LastIndex(s, "#")
+	if i < 0 {
+		return s, 0
+	}
+	prefix, suffix := s[:i], s[i+1:]
+	if len(suffix) < 2 || (len(suffix) > 2 && suffix[0] == '0') {
+		return s, 0
+	}
+	if suffix == "00" && !strings.HasSuffix(prefix, "/") {
+		return s, 0
+	}
+	n, err := strconv.ParseInt(suffix, 10, 32)
+	if err != nil || n < 0 {
+		return s, 0
+	}
+	return prefix, int32(n)
 }
 
 // runRange runs specs lo..hi, which all sit in the same scope: children are the hooked groups
@@ -654,9 +800,19 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	name := specEventName(r.plan, i)
 	path := r.reportPath(i)
 	startTime := time.Now()
-	subtestName := specSubtestName(r.plan, i)
-	if len(subtestName) >= len(prefix) {
-		subtestName = subtestName[len(prefix):]
+	// The precomputed name (issue #245 review, Codex P1 "Serialize duplicate subtest-name
+	// assignment") is what every one of this range's goroutines must pass to t.Run: it is already
+	// the unique, Go-identical name computeParallelSubtestNames simulated for this exact spec, so two
+	// specs sharing a leaf name no longer race for which one gets the unsuffixed slot. r.parallelNames
+	// is nil only for a groupRun a test constructs directly without going through buildTree; the
+	// slice fallback below preserves that path's old (racy only when names collide) behavior rather
+	// than panicking on a missing entry.
+	subtestName, ok := r.parallelNames[i]
+	if !ok {
+		subtestName = specSubtestName(r.plan, i)
+		if len(subtestName) >= len(prefix) {
+			subtestName = subtestName[len(prefix):]
+		}
 	}
 	start, length := r.plan.ProgramStart[i], r.plan.ProgramLen[i]
 	var program []Instruction
