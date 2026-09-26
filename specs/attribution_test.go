@@ -25,16 +25,20 @@ import (
 // The fixture lives in testdata/attribution so `go test ./...` never runs it directly; every spec
 // in it fails on purpose.
 //
-// SCOPE: the fixture covers the sequential backends only. ItParallel is deliberately absent — not
-// because it has no source attribution at all, but because the mechanism this file pins
-// (testing.T.Helper's frame bookkeeping) never applies there: Context.tb is nil on the parallel
-// path and parallelBackend.Helper is a no-op, since the worker goroutine that ran the assertion is
-// gone by the time the failure is reported from a different goroutine and frame. ItParallel's own
-// attribution is proved separately, by parallel_attribution_test.go: the user's file:line is
-// captured while the worker's frame is still live (parallelCallerLocation in scheduler.go) and
-// embedded in the failure message text, since there is no live frame left to mark for testing to
-// find — see #108. Go's own primary-decorated location still names an internal go-specs frame
-// there, unlike here; that file documents it as a known, accepted limitation.
+// SCOPE: the fixture covers the sequential backends, plus Spec.ItParallel (issue #245), which is a
+// sequential-attribution case despite its name: every ItParallel spec runs as its own real Go
+// subtest with a live, non-nil ctx.T, so testing.T.Helper's frame bookkeeping applies to it exactly
+// as it does to an ordinary It — see TestItParallel below.
+//
+// Builder.ItParallel is deliberately absent — not because it has no source attribution at all, but
+// because the mechanism this file pins (testing.T.Helper's frame bookkeeping) never applies there:
+// Context.tb is nil on that path and parallelBackend.Helper is a no-op, since the worker goroutine
+// that ran the assertion is gone by the time the failure is reported from a different goroutine and
+// frame. Builder.ItParallel's own attribution is proved separately, by parallel_attribution_test.go:
+// the user's file:line is captured while the worker's frame is still live (parallelCallerLocation in
+// scheduler.go) and embedded in the failure message text, since there is no live frame left to mark
+// for testing to find — see #108. Go's own primary-decorated location still names an internal
+// go-specs frame there, unlike here; that file documents it as a known, accepted limitation.
 
 const (
 	attributionFixtureDir  = "testdata/attribution"
