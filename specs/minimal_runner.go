@@ -74,8 +74,8 @@ func (r *MinimalRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	runMinimalSpecs(ctx, r.specs)
 }

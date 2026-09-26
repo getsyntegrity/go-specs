@@ -18,24 +18,31 @@ var contextPool = sync.Pool{
 	},
 }
 
-// acquireContext gets a Context from contextPool, resets it for backend, and returns it along
-// with a release func that resets it again (to drop references) and returns it to the pool.
-// Callers should `defer release()` immediately.
-func acquireContext(backend testBackend) (*Context, func()) {
+// acquireContext gets a Context from contextPool and resets it for backend. Callers should
+// `defer releaseContext(ctx)` immediately.
+//
+// It returns the Context alone rather than a (ctx, release func) pair: a release closure capturing
+// ctx escapes to the heap, which cost one 16-byte allocation per call — once per Run on the flat
+// runners and, on the default Describe/ExecutionPlan engine, once per spec.
+func acquireContext(backend testBackend) *Context {
 	ctx := contextPool.Get().(*Context)
 	ctx.Reset(backend)
-	return ctx, func() {
-		// A poisoned Context is deliberately neither reset nor pooled: a spec body called
-		// ctx.T.Parallel() and is still parked on a subtest goroutine that holds this pointer, so
-		// recycling it here is what turns that body's later assertions into silent no-ops or, worse,
-		// into failures charged to whichever unrelated spec next took the Context out of the pool.
-		// Abandoning it costs one Context on a run that is already failing. See spec_body_parallel.go.
-		if ctx.poisoned {
-			return
-		}
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
+	return ctx
+}
+
+// releaseContext resets ctx (to drop references) and returns it to contextPool.
+//
+// A poisoned Context is deliberately neither reset nor pooled: a spec body called ctx.T.Parallel()
+// and is still parked on a subtest goroutine that holds this pointer, so recycling it here is what
+// turns that body's later assertions into silent no-ops or, worse, into failures charged to
+// whichever unrelated spec next took the Context out of the pool. Abandoning it costs one Context on
+// a run that is already failing. See spec_body_parallel.go.
+func releaseContext(ctx *Context) {
+	if ctx.poisoned {
+		return
 	}
+	ctx.Reset(nil)
+	contextPool.Put(ctx)
 }
 
 // expectationReusedMessage is the panic raised when an assertion handle is used twice. An

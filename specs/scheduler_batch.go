@@ -20,8 +20,8 @@ const DefaultChunkSize = 16
 // raised it (see runWorkerSpec) — the chunk loop continues to the next spec. No allocations in
 // the loop.
 func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]failureRecord, chunkSize uint32) {
-	ctx, release := acquireContext(backend)
-	defer release()
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	n := uint32(len(specs))
 	if chunkSize == 0 {

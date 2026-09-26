@@ -7,7 +7,7 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-smoke bench-report bench-compare fmt fmt-check lint build tidy clean check-go-version
+.PHONY: help test test-race coverage bench bench-smoke bench-report bench-e2e bench-compare fmt fmt-check lint build tidy clean check-go-version
 
 # Default target: show all tasks with short descriptions
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make bench-smoke   Run every benchmark once (path coverage, no timings) -- what CI runs"
 	@echo "  make bench-report  Benchmarks with 10 iterations → benchmarks/results/current.txt"
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
+	@echo "  make bench-e2e     End-to-end cost on the real *testing.T path (every spec a subtest)"
 	@echo "  make fmt           Rewrite tracked Go files with gofmt"
 	@echo "  make fmt-check     Fail when any tracked Go file is not gofmt-clean"
 	@echo "  make lint          Lint with golangci-lint (go vet only when it is not installed)"
@@ -72,6 +73,12 @@ bench-report:
 	@mkdir -p $(BENCH_RESULTS)
 	go test ./benchmarks -run='^$$' -bench=. -benchmem -count=10 2>&1 | tee $(BENCH_RESULTS)/current.txt
 	@echo "Report written to $(BENCH_RESULTS)/current.txt"
+
+# End-to-end cost of a suite on the real *testing.T path, where every spec is a t.Run subtest.
+# The Benchmark* functions run on *testing.B, which skips the per-spec subtest; this is the number
+# a user's `go test` run actually pays. Observational only -- see benchmarks/e2e_test.go.
+bench-e2e:
+	GOSPECS_E2E=1 GOSPECS_E2E_RUNS=31 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$$' ./benchmarks | grep '^E2E'
 
 # Compare previous vs current benchmark report (requires: go install golang.org/x/perf/cmd/benchstat@latest)
 bench-compare:

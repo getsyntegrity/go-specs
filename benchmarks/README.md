@@ -25,6 +25,20 @@ cd benchmarks
 go test -bench=. -benchmem
 ```
 
+## End-to-end: the real `go test` path
+
+Every `Benchmark*` function here runs on a `*testing.B`, and on that backend the go-specs runner
+skips its per-spec `t.Run` subtest. That isolates framework overhead, but it is not what a user's
+suite costs. `e2e_test.go` measures that path instead: 1000 specs, every one a `*testing.T`
+subtest, for go-specs, Testify, Gomega and a bare `t.Run` baseline.
+
+```bash
+make bench-e2e
+# or: GOSPECS_E2E=1 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$' ./benchmarks | grep '^E2E'
+```
+
+`GOSPECS_E2E_SPECS` and `GOSPECS_E2E_RUNS` override the suite size and the number of timed runs.
+
 ## Run by category
 
 ```bash

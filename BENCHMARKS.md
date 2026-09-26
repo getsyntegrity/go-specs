@@ -118,9 +118,14 @@ These are true today and worth knowing. None of them fails a build.
   can remove it — only a generic `Matcher[T]` would — so it is measured by
   `TestAssertionAllocationsByValueShape` rather than pinned. `ToEqual` is the
   allocation-free route for equality, at any width.
-- **A run of the compiled `Program` runner costs a small, fixed number of allocations**
-  (about 2 for a one-spec suite, 7 for a large one) for pooled setup. The contract is
-  that this number does not grow with spec count, not that it is zero.
+- **A run of a compiled runner costs a small, fixed number of allocations** for pooled
+  setup (0 on the current toolchain for both the Builder `Program` runner and the `Describe`
+  engine). The contract is that this number does not grow with spec count, not that it is
+  zero; both engines are pinned by `specs/allocation_contract_test.go`.
+- **End-to-end wall clock on the `*testing.T` path.** `make bench-e2e` runs the same 1000
+  specs through go-specs, Testify, Gomega and a bare `t.Run` loop, every spec a subtest. It
+  is the number an ordinary `go test` run pays, and the one the README leads with; the
+  `*testing.B` benchmarks exclude the subtest and so measure framework overhead only.
 - **The `*testing.T` path allocates per spec.** When the runner is handed a real
   `*testing.T` it opens a `t.Run` subtest per spec, which costs tens of allocations each
   inside the standard library. That is the deliberate price of per-spec test identity in

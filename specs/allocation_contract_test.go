@@ -149,9 +149,11 @@ type flatTB struct {
 
 func (flatTB) Helper() {}
 
-// TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath pins the same contract for the compiled
-// execution plan, the runner the public Describe/It DSL builds. See flatTB for why the subtest path
-// is excluded.
+// TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath pins the same contract for the
+// Builder -> Program -> Runner engine. Note that this is NOT the engine the public Describe/It DSL
+// runs on (see docs/EXECUTION_ENGINES.md); that one is pinned separately by
+// TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath below. See flatTB for why the subtest
+// path is excluded.
 func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 	assertRunnerLoopDoesNotAllocatePerSpec(t, "compiled Program runner", func(n int) func(testing.TB) {
 		b := NewBuilder()
@@ -162,5 +164,28 @@ func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 			}
 		})
 		return NewRunner(b.Build()).Run
+	}, flatTB{TB: t})
+}
+
+// TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath pins the contract for the engine that
+// specs.Describe actually runs on: the bytecode compiler's ExecutionPlan, executed by CompiledSuite.
+// It exists because the Program runner test above was the only runner-level guard, and it covers a
+// different engine: acquireContext used to return a release closure that escaped to the heap, and
+// the Describe engine acquires a Context once per spec, so every spec cost one allocation there
+// while every existing contract stayed green.
+func TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
+	if raceEnabled {
+		// Unlike the runners above, this engine acquires a pooled Context once per spec, so the
+		// race detector's random sync.Pool drops surface here as ~0.25 allocations per spec.
+		t.Skip("sync.Pool drops Puts at random under -race; the contract is enforced by the non-race run")
+	}
+	assertRunnerLoopDoesNotAllocatePerSpec(t, "Describe/CompiledSuite engine", func(n int) func(testing.TB) {
+		suite := BuildSuite(nil, "suite", func(s *Spec) {
+			s.BeforeEach(func(*Context) {})
+			for i := 0; i < n; i++ {
+				s.It("spec", func(ctx *Context) { EqualTo(ctx, 1, 1) })
+			}
+		})
+		return suite.Run
 	}, flatTB{TB: t})
 }

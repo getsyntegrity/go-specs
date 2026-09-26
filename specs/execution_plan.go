@@ -329,8 +329,8 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 	if rep != nil {
 		path = specEventPath(plan, i)
 	}
-	ctx, release := acquireContext(backend)
-	defer release()
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 	started := reportSpecStarted(rep, name, path)
 	message, output, ran := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})

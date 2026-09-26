@@ -349,8 +349,8 @@ func (r *groupRun) runHook(gt *testing.T, h func(*Context)) (message, output str
 		defer putTestBackend(b)
 		backend = b
 	}
-	ctx, release := acquireContext(backend)
-	defer release()
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 	message, output = runGroupHookOnce(ctx, h)
 	return message, output, ctx.hasFailed()
 }
@@ -375,8 +375,8 @@ func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 		return
 	}
 	program := r.plan.Instructions[start : start+length]
-	ctx, release := acquireContext(r.backend)
-	defer release()
+	ctx := acquireContext(r.backend)
+	defer releaseContext(ctx)
 	// Registered after release so it runs first: when the body called the unsupported
 	// ctx.T.Parallel(), runSpecProgramIsolated poisons ctx and ends this goroutine with t.Fatalf; the
 	// stop must reach every enclosing group subtest too.

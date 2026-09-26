@@ -243,7 +243,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 			go func() {
 				defer wg.Done()
 				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
-				child, release := acquireContext(backend)
+				child := acquireContext(backend)
 				var started report.SpecStartEvent
 				if obs != nil {
 					var scopes []string
@@ -262,7 +262,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 					if obs != nil {
 						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message})
 					}
-					release()
+					releaseContext(child)
 				}()
 				s(child)
 			}()
