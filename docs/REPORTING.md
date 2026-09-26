@@ -94,7 +94,9 @@ Every case is normalized to exactly one of:
 - **Failed** — an assertion or hook failure
 - **Error** — a recovered panic (or other infrastructure failure); distinguished from Failed by
   the presence of output (a stack trace)
-- **Skipped** — a compile-time `Skip`/`SkipIt` spec; its body never ran
+- **Skipped** — a compile-time `Skip`/`SkipIt` spec (body never ran), or a spec whose own subtest
+  skipped at runtime via `ctx.T.Skip`/`Skipf`/`SkipNow` ([#254](https://github.com/getsyntegrity/go-specs/issues/254)), where the body did start
+  running; a spec that fails and then calls `SkipNow` is Failed instead, matching `go test` itself
 - **Filtered** — excluded by external test selection (e.g. `go test -run`) before its body ran
 - **Pending** — a compile-time `Pending`/`PendingIt` spec ([#208](https://github.com/getsyntegrity/go-specs/issues/208)); its body never ran either, but the spec is declared and not yet implemented, distinct from a spec that is intentionally excluded (Skipped)
 

@@ -486,6 +486,18 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   asserting with `ctx.Expect` in the cleanup passed silently. A failure raised only from such a
   cleanup now fails the group and is reported as the group's `[AfterAll]` case.
   ([#256](https://github.com/getsyntegrity/go-specs/issues/256))
+- **Behavior change.** A spec whose own subtest skipped at runtime (`ctx.T.Skip`, `Skipf` or
+  `SkipNow`) showed `--- SKIP` in `go test`, but was reported to the `EventReporter` as passed:
+  `SpecResultEvent.Skipped` was `false` and `SuiteEndEvent.SkippedSpecs` left it out. Every
+  structured output built on the reporter (JSON, JUnit, multi-package report coordination) marked
+  it passed while `go test` printed `--- SKIP`. Such specs are now reported skipped and counted in
+  `SkippedSpecs`, on `Describe` with and without `BeforeAll`/`AfterAll`, on `ItParallel`, and on
+  `Runner` — the skip counterpart of #253. A spec that fails and then calls `SkipNow` still stays
+  `Failed`, matching `go test` itself, and `Runner`'s `FailFast` does not stop the run on a skip: a
+  skip is not a failure. `SpecResultEvent.Skipped` covers both a compile-time `SkipIt`/`Skip` and this
+  runtime case; its doc comment is widened accordingly, since for a runtime skip the body did start,
+  so `Duration` may now be non-zero for a Skipped spec.
+  ([#254](https://github.com/getsyntegrity/go-specs/issues/254))
 - **Behavior change.** `ctx.Expect(x).To(nil)` and `specs.ExpectT(ctx, x).To(nil)` passed
   silently: both `To` methods returned early on a nil matcher, while `assert.Evaluate` and the
   `Not`/`All`/`Any` composites have always treated a nil matcher as never matching. A matcher

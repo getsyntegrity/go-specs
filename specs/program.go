@@ -137,13 +137,20 @@ func specName(names []string, i int) string {
 // subtest goroutine — but Message/Output stay empty for it: Goexit unwinds past the point where
 // this struct would otherwise be filled in; see runStepRecovered.
 //
-// Filtered is true when external test selection (e.g. `go test -run`) discarded the spec's subtest
-// before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc
+// Filtered is true when external test selection (e.g. `go test -run` pattern) discarded the spec's
+// subtest before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc
 // comments for why this can't be read from testing.T.Run's own bool return. Message/Output stay
 // empty for it, same as when nothing failed: nothing ran to produce either.
+//
+// Skipped is true when the spec's own subtest skipped at runtime (ctx.T.Skip, Skipf or SkipNow) and
+// the spec did not also fail — a failure followed by SkipNow stays Failed, matching go test itself
+// (#254). It is distinct from the suite's compile-time SkipIt/Skip marks, which never reach this
+// struct at all: they carry no before/body/after and are reported directly (specSkipped/reportMarks)
+// without ever running, so there is no specResult to build for them.
 type specResult struct {
 	Failed   bool
 	Filtered bool
+	Skipped  bool
 	Message  string
 	Output   string
 }

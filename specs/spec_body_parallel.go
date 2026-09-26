@@ -48,7 +48,7 @@ import (
 // On detection the runner poisons the Context (see Context.poison) and fails immediately.
 
 // runSubtestGuardingParallel runs body as a subtest of t and reports whether the subtest ran at all,
-// whether it failed, and whether it is still parked when t.Run returns.
+// whether it failed, whether it skipped, and whether it is still parked when t.Run returns.
 //
 // ran is set from inside the closure rather than read from t.Run's bool return, which is true for a
 // filtered-out subtest too — the same reason runSpecIsolated and runSpecProgramIsolated already set
@@ -68,6 +68,15 @@ import (
 // caller report a spec that failed only through ctx.T (Error, Fatal, Fail, FailNow, or from a
 // Cleanup), which never touches the Context's own failure record, as failed (#253).
 //
+// skipped is subT.Skipped(), read at the exact same point and under the same ran-and-not-parked
+// gate as failed, for the same reason: a runtime ctx.T.Skip/Skipf/SkipNow (#254) never touches the
+// Context either, only the subtest. It is not folded against failed here — a caller that also folds
+// in its own failure source (e.g. ctx.hasFailed()) must decide skipped && !failed itself, since only
+// the caller knows the final failed value. subT.Skipped() can be true at the same time as
+// subT.Failed(): a body that calls Error then SkipNow leaves both set, and go test itself reports
+// that as FAIL, not SKIP (see tRunner in the testing package) — callers reproduce that precedence by
+// checking their own final failed first.
+//
 // done is an atomic.Bool rather than a plain bool, and deliberately so. A plain bool would in
 // practice be ordered — testing.T.Parallel signals the parent over a channel that t.Run receives —
 // but that ordering is a property of testing's current internals, not of anything this package
@@ -83,7 +92,7 @@ import (
 // sub is written before started is stored and read only after started loads true, so the atomic
 // orders it too. The three live in one struct because the closure's capture moves them to the heap:
 // as separate variables that is one allocation each, per spec, on the real *testing.T path.
-func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, parked bool) {
+func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, skipped, parked bool) {
 	var st struct {
 		started, done atomic.Bool
 		sub           *testing.T
@@ -98,8 +107,9 @@ func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testi
 	parked = ran && !st.done.Load()
 	if ran && !parked {
 		failed = st.sub.Failed()
+		skipped = st.sub.Skipped()
 	}
-	return ran, failed, parked
+	return ran, failed, skipped, parked
 }
 
 // unsupportedSpecBodyParallelMessage builds the diagnostic for a spec body that called

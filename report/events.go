@@ -70,18 +70,27 @@ func (k HookKind) String() string {
 // SpecStartEvent here instead of reusing the original would silently corrupt Duration too.
 type SpecResultEvent struct {
 	SpecStartEvent
-	Failed  bool
-	Skipped bool // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
+	Failed bool
+	// Skipped is true for a compile-time SkipIt/Skip spec (body never ran, Duration is 0) or for a
+	// spec whose own subtest skipped at runtime via ctx.T.Skip/Skipf/SkipNow (issue #254): the body
+	// did start running there, so Duration may be non-zero. Failed is always false either way — a
+	// body that fails and then calls SkipNow is reported Failed instead, matching go test itself
+	// (a failed test that later skips still prints FAIL, not SKIP; see the testing package's
+	// tRunner). Both causes share this one field rather than a separate runtime-skip marker: nothing
+	// downstream (report.Status, JUnit's <skipped>) can distinguish them anyway, and no consumer
+	// depends on Duration being 0 for a skipped case.
+	Skipped bool
 	// Filtered is true when a runnable spec was excluded by external test selection — e.g. a `go test
 	// -run` pattern that does not match this spec's subtest name — so its body never ran either.
-	// Failed is always false and Duration is always 0, exactly as for Skipped, but the cause differs:
-	// Skipped is a decision the suite itself made (XIt/Skip), Filtered is a decision made outside it.
-	// A spec is never both Skipped and Filtered.
+	// Failed is always false and Duration is always 0, exactly as for a compile-time Skipped spec,
+	// but the cause differs: Skipped is a decision the suite itself made (XIt/Skip, or a runtime
+	// ctx.T.Skip), Filtered is a decision made outside it. A spec is never both Skipped and Filtered.
 	Filtered bool
 	// Pending is true for a compile-time PendingIt/Pending spec: the specification exists but its
 	// implementation does not. Body never ran, Duration is always 0, and Failed is always false —
-	// same shape as Skipped — but the cause differs: Skipped is "intentionally not executed",
-	// Pending is "not implemented yet". A spec is never more than one of Skipped/Filtered/Pending.
+	// same shape as a compile-time Skipped spec — but the cause differs: Skipped is "intentionally
+	// not executed", Pending is "not implemented yet". A spec is never more than one of
+	// Skipped/Filtered/Pending.
 	Pending bool
 	// Hook marks this result as a synthetic group hook case (issue #207, docs/SUITE_HOOKS_CONTRACT.md
 	// H8): HookBeforeAll or HookAfterAll, HookNone for a real spec. It lives only here, on the
@@ -95,8 +104,11 @@ type SpecResultEvent struct {
 	// SpecResultEvent's size is unchanged from before this field existed (H10) — see
 	// report/hook_case_test.go's TestSpecResultEventSizeUnchanged.
 	Hook     HookKind
-	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped, Filtered or Pending
-	Message  string        // short failure summary; empty when not Failed, and also empty for an
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when
+	// Filtered or Pending, and for a compile-time Skipped spec, since none of those ever ran a body.
+	// A runtime-Skipped spec (ctx.T.Skip/Skipf/SkipNow, issue #254) is the one Skipped case where
+	// Duration may be non-zero: its body did start running before it skipped.
+	Message string // short failure summary; empty when not Failed, and also empty for an
 	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the
 	// goroutine right there, before the message this event would carry is ever built (see
 	// specs.runStepRecovered). This event is still emitted for that spec — Failed reflects it — as
