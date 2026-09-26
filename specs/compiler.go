@@ -23,8 +23,13 @@ type bytecodeCompiler struct {
 	// pooled slice, so it allocates nothing per suite.
 	groupStartStack []int
 	// groups is the plan's compiled group bookkeeping, nil unless a scope with a group hook closed
-	// with at least one spec (see registerHookGroup); handed to the caller by takePlanAndGroups.
+	// with at least one spec (see registerHookGroup), or a SkipIt/PendingIt was registered
+	// somewhere in the suite (see registerSkipMark/registerPendingMark, issue #245); handed to the
+	// caller by takePlanAndGroups.
 	groups *planGroups
+	// focusIndices holds plan.Names indices emitted by FIt (issue #245); nil unless the suite
+	// registers at least one. Non-empty at TakePlan time means applyFocusFilter must run.
+	focusIndices []int
 	// scratch for flattening hooks and building program
 	beforeFlat []func(*Context)
 	afterFlat  []func(*Context)
@@ -58,6 +63,7 @@ func newBytecodeCompiler() *bytecodeCompiler {
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
+	c.focusIndices = nil
 	return c
 }
 
@@ -69,6 +75,7 @@ func (c *bytecodeCompiler) reset() {
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
+	c.focusIndices = nil
 	bytecodeCompilerPool.Put(c)
 }
 
@@ -269,6 +276,77 @@ func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	appendSpecPath(c.plan, c.nameStack)
 }
 
+// EmitSkip buffers a compile-time SkipIt registration (issue #245): name and the current scope
+// chain are kept so it can still be reported skipped, but no instruction is ever emitted for it —
+// mirroring Builder.SkipIt's kindSkip buffering (builder.go) for this compile path. If the suite
+// later turns out to have a focus, applyFocusFilter drops every buffered skip/pending mark
+// wholesale, the same as Builder drops every unfocused It/SkipIt/PendingIt.
+func (c *bytecodeCompiler) EmitSkip(name string) {
+	registerSkipMark(&c.groups, name, c.nameStack)
+}
+
+// EmitPending is EmitSkip for PendingIt.
+func (c *bytecodeCompiler) EmitPending(name string) {
+	registerPendingMark(&c.groups, name, c.nameStack)
+}
+
+// EmitFocusedIt is EmitIt for FIt (issue #245): compiles the same instruction stream as a regular
+// It, and additionally records this spec's plan index so applyFocusFilter (run once at TakePlan)
+// can keep only focused specs when the suite registers at least one FIt — mirroring
+// Builder.FIt/finalize's focus filter for this compile path.
+func (c *bytecodeCompiler) EmitFocusedIt(name string, body func(*Context)) {
+	c.EmitIt(name, body)
+	c.focusIndices = append(c.focusIndices, len(c.plan.Names)-1)
+}
+
+// applyFocusFilter keeps only this suite's focused (FIt) specs when it registered at least one,
+// dropping every other It/SkipIt/PendingIt — Builder.finalize's focus filter (specKind kindFocus),
+// mirrored here for the bytecode-compiler path (issue #245). Unlike the arena/registry path
+// (buildExecutionPlanFromArenaRec), which can pre-scan its already-built tree for a focus before
+// emitting anything, this compiler emits directly as the DSL callbacks run, so filtering can only
+// happen here, once, after the whole suite tree has been declared — closeGroupHooksAtTop has
+// already registered every scope's BeforeAll/AfterAll range by the time TakePlan calls this.
+func (c *bytecodeCompiler) applyFocusFilter() {
+	if len(c.focusIndices) == 0 {
+		return
+	}
+	plan := c.plan
+	n := len(plan.Names)
+	oldToNew := make([]int, n)
+	for i := range oldToNew {
+		oldToNew[i] = -1
+	}
+	keep := c.focusIndices
+	names := make([]string, 0, len(keep))
+	fullNames := make([]string, 0, len(keep))
+	programStart := make([]int, 0, len(keep))
+	programLen := make([]int, 0, len(keep))
+	pathScopeStart := make([]int, 0, len(keep))
+	pathScopeLen := make([]int, 0, len(keep))
+	for newIdx, oldIdx := range keep {
+		if oldIdx < 0 || oldIdx >= n {
+			continue
+		}
+		oldToNew[oldIdx] = newIdx
+		names = append(names, plan.Names[oldIdx])
+		fullNames = append(fullNames, plan.FullNames[oldIdx])
+		programStart = append(programStart, plan.ProgramStart[oldIdx])
+		programLen = append(programLen, plan.ProgramLen[oldIdx])
+		pathScopeStart = append(pathScopeStart, plan.PathScopeStart[oldIdx])
+		pathScopeLen = append(pathScopeLen, plan.PathScopeLen[oldIdx])
+	}
+	plan.Names, plan.FullNames = names, fullNames
+	plan.ProgramStart, plan.ProgramLen = programStart, programLen
+	plan.PathScopeStart, plan.PathScopeLen = pathScopeStart, pathScopeLen
+
+	if c.groups != nil {
+		// Every unfocused SkipIt/PendingIt is dropped too, the same as every unfocused It.
+		c.groups.skipped = nil
+		c.groups.pending = nil
+		c.groups = remapHookGroups(c.groups, oldToNew)
+	}
+}
+
 // Plan returns the built ExecutionPlan. Caller owns it after TakePlan; compiler is reset.
 //
 // The root scope opened by describeWithCompiler/BuildSuite (a single PushScope with no matching
@@ -286,6 +364,7 @@ func (c *bytecodeCompiler) TakePlan() *ExecutionPlan {
 // planGroups.
 func (c *bytecodeCompiler) takePlanAndGroups() (*ExecutionPlan, *planGroups) {
 	c.closeGroupHooksAtTop()
+	c.applyFocusFilter()
 	plan, groups := c.plan, c.groups
 	c.reset()
 	return plan, groups

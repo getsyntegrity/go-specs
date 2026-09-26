@@ -325,6 +325,68 @@ func (s *Spec) It(name string, fn func(*Context)) {
 	pop()
 }
 
+// SkipIt registers a spec that is skipped at compile time (issue #245): fn is never compiled or
+// run — it may be nil — but name is kept so the suite still reports it, as StatusSkipped
+// (report/model.go), the same way Builder.SkipIt already does (specs/builder.go). If this
+// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is dropped
+// entirely instead, exactly like an unfocused It (see FIt).
+func (s *Spec) SkipIt(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.EmitSkip(name)
+		return
+	}
+	s.requireBuildTarget("SkipIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itSkip)
+	pop()
+}
+
+// PendingIt registers a spec that is pending at compile time (issue #245): the specification
+// exists but fn — which may be nil, and is never compiled or run either way — does not, or is not
+// wired up yet. name is kept so the suite still reports it, as StatusPending (report/model.go),
+// distinct from Skipped, the same way Builder.PendingIt already does. Dropped entirely by a
+// suite-wide FIt, exactly like SkipIt.
+func (s *Spec) PendingIt(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.EmitPending(name)
+		return
+	}
+	s.requireBuildTarget("PendingIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itPending)
+	pop()
+}
+
+// FIt registers a focused spec (issue #245): a nil fn is a no-op, exactly like Builder.FIt. If this
+// Describe/BuildSuite call registers at least one FIt anywhere in its tree, only focused specs
+// compile — every other It, SkipIt and PendingIt in the same call is dropped, never reported, the
+// same way Builder.finalize's focus filter already works. Hooks (BeforeEach/AfterEach,
+// BeforeAll/AfterAll) around a focused spec still run; a BeforeAll/AfterAll group left with zero
+// runnable specs after focus filtering is never entered, the same H3 rule that already applies to
+// a group declaring no It at all (docs/SUITE_HOOKS_CONTRACT.md).
+func (s *Spec) FIt(name string, fn func(*Context)) {
+	if s == nil || fn == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.EmitFocusedIt(name, fn)
+		return
+	}
+	s.requireBuildTarget("FIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itFocus)
+	pop()
+}
+
 // BeforeEach appends a before-each hook to the current node.
 func (s *Spec) BeforeEach(fn func(*Context)) {
 	if s == nil || fn == nil {

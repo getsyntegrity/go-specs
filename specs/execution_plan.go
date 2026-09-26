@@ -74,6 +74,13 @@ type planScratch struct {
 	// without group hooks pays nothing for them (H10); both are cleared before the call returns.
 	hooks  *arenaGroupHooks
 	groups *planGroups
+	// hasFocus is set once per buildExecutionPlanFromArenaGroups call (issue #245): whether the
+	// rootID subtree being built contains at least one FIt. Unlike the bytecode-compiler path,
+	// which only learns this after the whole suite has been declared (see
+	// bytecodeCompiler.applyFocusFilter), the arena is already a plain data tree with no side
+	// effects left to trigger by the time a plan is built from it, so arenaHasFocus can scan it
+	// first and let buildExecutionPlanFromArenaRec filter as it emits, in one pass.
+	hasFocus bool
 }
 
 var planScratchPool = sync.Pool{
@@ -116,10 +123,31 @@ func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *Execu
 	scratch.path = scratch.path[:0]
 	scratch.hooks = hooks
 	scratch.groups = nil
+	scratch.hasFocus = arenaHasFocus(arena, rootID)
 	buildExecutionPlanFromArenaRec(arena, rootID, plan, scratch)
 	groups := scratch.groups
 	scratch.hooks, scratch.groups = nil, nil
+	scratch.hasFocus = false
 	return groups
+}
+
+// arenaHasFocus reports whether any ItNode in the subtree rooted at nodeID is Kind itFocus (issue
+// #245), scanning the already-built arena tree once before buildExecutionPlanFromArenaRec starts
+// emitting — see planScratch.hasFocus for why this path can pre-scan while the bytecode compiler
+// cannot.
+func arenaHasFocus(arena *NodeArena, nodeID int) bool {
+	if arena == nil || nodeID < 0 || nodeID >= len(arena.Nodes) {
+		return false
+	}
+	if arena.Nodes[nodeID].Type == ItNode && arena.Nodes[nodeID].Kind == itFocus {
+		return true
+	}
+	for _, cid := range arena.Children[nodeID] {
+		if arenaHasFocus(arena, cid) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *ExecutionPlan, scratch *planScratch) {
@@ -135,43 +163,49 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
 	groupStart := len(plan.Names)
 	if node.Type == ItNode {
-		scratch.beforeFlat = scratch.beforeFlat[:0]
-		scratch.afterFlat = scratch.afterFlat[:0]
-		ancestorIDs := collectAncestorIDs(arena, node.Parent)
-		for _, id := range ancestorIDs {
-			scratch.beforeFlat = append(scratch.beforeFlat, arena.BeforeHooks[id]...)
-			scratch.afterFlat = append(scratch.afterFlat, arena.AfterHooks[id]...)
-		}
-		scratch.beforeFlat = append(scratch.beforeFlat, arena.BeforeHooks[nodeID]...)
-		scratch.afterFlat = append(scratch.afterFlat, arena.AfterHooks[nodeID]...)
-		scratch.program = scratch.program[:0]
-		for _, h := range scratch.beforeFlat {
-			if h != nil {
-				scratch.program = append(scratch.program, Instruction{Code: OpBeforeHook, Fn: h})
+		// A non-focused It/SkipIt/PendingIt is dropped entirely — no plan entry, no skip/pending
+		// mark — whenever this Describe call registered at least one FIt (issue #245,
+		// Builder.finalize's focus filter). A focused It runs exactly like a normal one below.
+		focusedOut := scratch.hasFocus && node.Kind != itFocus
+		switch {
+		case focusedOut:
+			// Nothing emitted; scratch.path is still popped below like any other node.
+		case node.Kind == itSkip:
+			registerSkipMark(&scratch.groups, name, markScopes(scratch.path, name))
+		case node.Kind == itPending:
+			registerPendingMark(&scratch.groups, name, markScopes(scratch.path, name))
+		default: // itNormal, or itFocus (already confirmed focused above)
+			scratch.beforeFlat = scratch.beforeFlat[:0]
+			scratch.afterFlat = scratch.afterFlat[:0]
+			ancestorIDs := collectAncestorIDs(arena, node.Parent)
+			for _, id := range ancestorIDs {
+				scratch.beforeFlat = append(scratch.beforeFlat, arena.BeforeHooks[id]...)
+				scratch.afterFlat = append(scratch.afterFlat, arena.AfterHooks[id]...)
 			}
-		}
-		if node.Fn != nil {
-			scratch.program = append(scratch.program, Instruction{Code: OpBody, Fn: node.Fn})
-		}
-		for i := len(scratch.afterFlat) - 1; i >= 0; i-- {
-			if h := scratch.afterFlat[i]; h != nil {
-				scratch.program = append(scratch.program, Instruction{Code: OpAfterHook, Fn: h})
+			scratch.beforeFlat = append(scratch.beforeFlat, arena.BeforeHooks[nodeID]...)
+			scratch.afterFlat = append(scratch.afterFlat, arena.AfterHooks[nodeID]...)
+			scratch.program = scratch.program[:0]
+			for _, h := range scratch.beforeFlat {
+				if h != nil {
+					scratch.program = append(scratch.program, Instruction{Code: OpBeforeHook, Fn: h})
+				}
 			}
+			if node.Fn != nil {
+				scratch.program = append(scratch.program, Instruction{Code: OpBody, Fn: node.Fn})
+			}
+			for i := len(scratch.afterFlat) - 1; i >= 0; i-- {
+				if h := scratch.afterFlat[i]; h != nil {
+					scratch.program = append(scratch.program, Instruction{Code: OpAfterHook, Fn: h})
+				}
+			}
+			start := len(plan.Instructions)
+			plan.Instructions = append(plan.Instructions, scratch.program...)
+			plan.ProgramStart = append(plan.ProgramStart, start)
+			plan.ProgramLen = append(plan.ProgramLen, len(scratch.program))
+			plan.Names = append(plan.Names, name)
+			plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
+			appendSpecPath(plan, markScopes(scratch.path, name))
 		}
-		start := len(plan.Instructions)
-		plan.Instructions = append(plan.Instructions, scratch.program...)
-		plan.ProgramStart = append(plan.ProgramStart, start)
-		plan.ProgramLen = append(plan.ProgramLen, len(scratch.program))
-		plan.Names = append(plan.Names, name)
-		plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
-		// scratch.path already has this spec's own name pushed as its last element (an ItNode is
-		// not a SuiteNode, so the push above applies to it too); the scopes are everything before
-		// it. An unnamed spec was never pushed, so for it the whole of scratch.path is scopes.
-		scopes := scratch.path
-		if name != "" {
-			scopes = scopes[:len(scopes)-1]
-		}
-		appendSpecPath(plan, scopes)
 	}
 	for _, cid := range arena.Children[nodeID] {
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
@@ -194,6 +228,18 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
 		scratch.path = scratch.path[:len(scratch.path)-1]
 	}
+}
+
+// markScopes returns path's enclosing-scope prefix for a spec named name: scratch.path already has
+// the spec's own name pushed as its last element (an ItNode is not a SuiteNode, so the push in
+// buildExecutionPlanFromArenaRec applies to it too), so the scopes are everything before it. An
+// unnamed spec was never pushed, so for it the whole of path is scopes. Shared by the real-spec
+// case and by SkipIt/PendingIt marks (issue #245), which need the same computation.
+func markScopes(path []string, name string) []string {
+	if name == "" {
+		return path
+	}
+	return path[:len(path)-1]
 }
 
 // collectAncestorIDs returns ancestor IDs from root to the given node (inclusive), so that hooks are in declaration order.
@@ -226,7 +272,10 @@ type CompiledSuite struct {
 
 // Run executes all specs in the plan. Uses one context from the pool per spec.
 func (s *CompiledSuite) Run(tb testing.TB) {
-	if s == nil || s.Plan == nil || tb == nil || len(s.Plan.ProgramStart) == 0 {
+	if s == nil || s.Plan == nil || tb == nil {
+		return
+	}
+	if len(s.Plan.ProgramStart) == 0 && !s.hasMarks() {
 		return
 	}
 	if observe := suiteRunObserver.Load(); observe != nil {
@@ -257,7 +306,15 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 		FailedSpecs:   counter.failed,
 		FilteredSpecs: counter.filtered,
 		SkippedSpecs:  counter.skipped,
+		PendingSpecs:  counter.pending,
 	})
+}
+
+// hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt (issue #245):
+// such a suite may have zero entries in Plan.ProgramStart (e.g. a suite made only of SkipIt calls)
+// yet still needs Run to report those marks instead of returning early as an empty suite.
+func (s *CompiledSuite) hasMarks() bool {
+	return s.groups != nil && (len(s.groups.skipped) > 0 || len(s.groups.pending) > 0)
 }
 
 // suiteRunObserver, when set, sees every CompiledSuite right before it runs. It exists only so this
@@ -273,11 +330,13 @@ type specCounter struct {
 	total    int
 	failed   int
 	filtered int
-	// skipped counts a spec reported Skipped: true — today that is only a spec suppressed by an
-	// ancestor group's failed BeforeAll (issue #207 H4); the canonical Describe engine has no
-	// compile-time Skip/Pending of its own (see docs/EXECUTION_ENGINES.md), so this field stays 0
-	// for every suite that predates that feature.
+	// skipped counts a spec reported Skipped: true — a spec suppressed by an ancestor group's
+	// failed BeforeAll (issue #207 H4), or a compile-time SkipIt/Skip mark (issue #245).
 	skipped int
+	// pending counts a spec reported Pending: true — a compile-time PendingIt/Pending mark (issue
+	// #245); SuiteEndEvent.PendingSpecs existed since #208 but this engine never populated it until
+	// this field did.
+	pending int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
@@ -291,13 +350,23 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 	if e.Skipped {
 		c.skipped++
 	}
+	if e.Pending {
+		c.pending++
+	}
 	c.EventReporter.SpecFinished(e)
 }
 
-// runSpecs runs every spec of the suite once: through runPlanSpecsInOrder, unchanged from before
-// issue #207, for a suite without group hooks (H10), or through runPlanWithGroups otherwise.
+// runSpecs runs every spec of the suite once: it first reports this suite's compile-time
+// SkipIt/PendingIt marks (issue #245), if any — they carry no before/body/after and never open a
+// subtest, so they are reported independently of whichever path runs the real specs below — then
+// runs the real specs through runPlanSpecsInOrder, unchanged from before issue #207, for a suite
+// without any BeforeAll/AfterAll group (H10), or through runPlanWithGroups otherwise.
 func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) {
-	if s.groups == nil {
+	if s.groups != nil {
+		reportMarks(rep, s.groups.skipped, false)
+		reportMarks(rep, s.groups.pending, true)
+	}
+	if s.groups == nil || len(s.groups.groups) == 0 {
 		runPlanSpecsInOrder(backend, rep, s.Plan)
 		return
 	}
