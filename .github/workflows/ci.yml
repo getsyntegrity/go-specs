@@ -12,8 +12,8 @@
 # adds what Shipwright cannot express today. It complements rather than
 # replaces the `test` job below: Dagger only runs Linux containers and pins
 # its own Go toolchain (not the one pinned in .go-version), so it can't stand
-# in for the native build/vet/test step that actually verifies the go.mod floor
-# compiles and passes. Both run in parallel, so the small overlap on `test` costs nothing.
+# in for the native build/vet/test step that actually builds and tests on the
+# exact patch pinned for the floor's minor. Both run in parallel, so the small overlap on `test` costs nothing.
 #
 # Build and vet stay native because Shipwright has no provider for either
 # on a library module: its only `build` provider compiles a single `main`
@@ -60,8 +60,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Catches a bump to go.mod's `go` directive without .go-version, or the
-      # reverse. Patch-level drift is allowed; minor-level drift fails.
+      # Catches go.mod's `go` directive drifting from the MAJOR.MINOR.0 floor
+      # derived from .go-version. A patch-only bump to .go-version (the
+      # pinned toolchain) needs no go.mod change; minor-level drift between
+      # the two fails.
       - name: Check Go version pin
         run: ./.github/scripts/check-go-version.sh
 
