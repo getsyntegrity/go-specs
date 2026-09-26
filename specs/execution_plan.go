@@ -430,8 +430,8 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 	ctx := acquireContext(backend)
 	defer releaseContext(ctx)
 	started := reportSpecStarted(rep, name, path)
-	message, output, ran := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
-	reportSpecFinished(rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})
+	message, output, ran, failed := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
+	reportSpecFinished(rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 }
 
 // runSpecProgram runs program for one ExecutionPlan spec against ctx, isolated in its own subtest
@@ -453,18 +453,23 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 // (a subtest that never ran vacuously "succeeded"), so runSpecProgramIsolated instead sets ran from
 // inside the closure itself — which only runs at all when the filter accepted the subtest. The two
 // fast paths above never go through t.Run at all, so they always ran.
-func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string, ran bool) {
+//
+// failed is the spec's outcome. On the fast paths it is the Context's own failure record, the only
+// place a failure can land there. On the isolation path it also folds in the subtest's own Failed(),
+// because a body that fails only through ctx.T (Error, Fatal, Fail, FailNow) marks the subtest
+// failed without touching the Context (#253).
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed bool) {
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true
+		return message, output, true, ctx.hasFailed()
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true
+		return message, output, true, ctx.hasFailed()
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
@@ -476,9 +481,9 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
-func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran bool) {
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed bool) {
 	var parked bool
-	ran, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
@@ -490,6 +495,7 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		// release ctx back to the pool underneath it (#172).
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
+	failed = failed || ctx.hasFailed()
 	return
 }
 

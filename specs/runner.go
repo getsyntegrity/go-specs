@@ -252,8 +252,7 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
-		message, output, ran := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
-		failed := ctx.hasFailed()
+		message, output, ran, failed := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 		}
@@ -284,16 +283,20 @@ func runSpecsRecovered(ctx *Context, g *group) {
 // (a subtest that never ran vacuously "succeeded"), so runSpecIsolated instead sets ran from inside
 // the closure itself — which only runs at all when the filter accepted the subtest. The two fast
 // paths above never go through t.Run at all, so they always ran.
-func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran bool) {
+//
+// failed is the spec's outcome: the Context's own failure record, plus, on the isolation path, the
+// subtest's own Failed() — a body that fails only through ctx.T (Error, Fatal, Fail, FailNow) marks
+// the subtest failed without touching the Context (#253). The same mirror as runSpecProgram.
+func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran, failed bool) {
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true
+		return message, output, true, ctx.hasFailed()
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true
+		return message, output, true, ctx.hasFailed()
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -309,9 +312,9 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // ran is set from inside the closure itself, not from t.Run's own bool return (see runSpecRecovered's
 // doc comment on why t.Run's return can't be trusted for this) — which only runs at all when the
 // filter accepted the subtest.
-func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran bool) {
+func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran, failed bool) {
 	var parked bool
-	ran, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
 	if parked {
@@ -320,6 +323,7 @@ func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []st
 		// subtest. Stop the run instead of letting the next spec swap over it (#172).
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
+	failed = failed || ctx.hasFailed()
 	return
 }
 

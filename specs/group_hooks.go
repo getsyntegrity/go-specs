@@ -525,7 +525,7 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 		return
 	}
 	name, groupPrefix := groupSubtestName(prefix, group)
-	ran, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
+	ran, _, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
 		r.runGroupBody(gt, groupPrefix, g)
 	})
 	if parked {
@@ -699,8 +699,8 @@ func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 		}
 	}()
 	started := reportSpecStarted(r.rep, specEventName(r.plan, i), r.reportPath(i))
-	message, output, ran := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
-	reportSpecFinished(r.rep, started, specResult{Failed: ctx.hasFailed(), Message: message, Output: output, Filtered: !ran})
+	message, output, ran, failed := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
+	reportSpecFinished(r.rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
 }
 
 // reportPath is specEventPath(plan, i) when there is a reporter, and nil otherwise, so the
