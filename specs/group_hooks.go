@@ -665,7 +665,18 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	}
 	ctx := acquireContext(r.backend)
 	var message, output string
+	var subTFailed bool
 	ran, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+		// Captured by defer, not read after t.Run returns: a body that fails only through
+		// ctx.T.Fatal/FailNow ends this closure with runtime.Goexit, never a normal return, so
+		// subT.Failed() must be read while this goroutine is still unwinding it, the same reason
+		// runProgram's own recover below is a defer rather than a plain call (issue #245 review,
+		// Codex P1 "Include direct testing.T failures in parallel outcomes"). ctx.hasFailed() alone
+		// only sees a failure that went through ctx.Expect/ctx assertions; a direct ctx.T.Error,
+		// ctx.T.Fatal or ctx.T.FailNow fails the Go subtest without ever touching ctx, so
+		// SpecFinished.Failed and SuiteFinished.FailedSpecs disagreed with the subtest's own
+		// PASS/FAIL line until this was added.
+		defer func() { subTFailed = subT.Failed() }()
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
@@ -676,7 +687,7 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 		// first panicking ItParallel and skip AfterEach. See spec_itparallel_failure_test.go.
 		message, output = runProgram(program, ctx)
 	})
-	failed := ctx.hasFailed()
+	failed := ctx.hasFailed() || subTFailed
 	duration := time.Since(startTime)
 	if parked {
 		// Leaked deliberately, same rule as releaseContext/failUnsupportedSpecBodyParallel: the
