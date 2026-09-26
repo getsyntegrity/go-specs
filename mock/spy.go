@@ -21,13 +21,15 @@ func NewSpy() *Spy {
 	return &Spy{}
 }
 
-// Call records an invocation with the given arguments.
+// Call records an invocation with the given arguments. The argument slice is copied, so a caller
+// that passes a slice with args... and mutates it afterwards does not rewrite the recorded call.
 func (s *Spy) Call(args ...any) {
 	if s == nil {
 		return
 	}
+	recorded := append([]any(nil), args...)
 	s.mu.Lock()
-	s.calls = append(s.calls, Call{Args: args})
+	s.calls = append(s.calls, Call{Args: recorded})
 	s.mu.Unlock()
 }
 
