@@ -462,6 +462,32 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** `EqualTo` and `ExpectT(...).ToEqual` compared errors with `==` only, so
+  `specs.ExpectT(ctx, fmt.Errorf("repo: %w", ErrNotFound)).ToEqual(ErrNotFound)` failed while
+  `ctx.Expect(...).ToEqual` passed for the same two errors — switching to the typed path for speed
+  silently changed what the assertion accepted. When `==` fails and both values are errors, the
+  typed path now asks `errors.Is(actual, expected)`, the same oriented check `ctx.Expect` has used
+  since [#183](https://github.com/getsyntegrity/go-specs/issues/183). The check runs only on the
+  failure branch, so the passing path is still a single `==` that allocates nothing. It applies when
+  `T` is an interface (such as `error`) or a pointer type, which reach `errors.Is` without an
+  allocation; a value error type as `T` (a struct or named integer implementing `error`) keeps plain
+  `==`, so the typed path stays allocation-free for every `T`.
+  ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
+- An error comparison whose actual or expected value was a typed nil pointer (a nil `*MyErr` held in
+  an `error`) panicked the spec when the error type's `Is` or `Unwrap` read a field of its receiver,
+  because `errors.Is` calls those methods. `Equal`, `NotEqual`, `MatchError`, `Contain`, `assert.EqualValues`,
+  `ctx.Expect(...).ToEqual`, `EqualTo` and `ExpectT(...).ToEqual` now compare a typed nil with `==`
+  alone, so the assertion fails instead of panicking; a typed nil still equals itself and never a
+  nil `error`. ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
+- `EqualTo[error]` and `ExpectT[error](...).ToEqual` panicked with "comparing uncomparable type"
+  when both errors held the same incomparable dynamic type (an error defined over a slice, for
+  example), because `==` on such interface values panics. They now treat that comparison as unequal
+  and go on to `errors.Is`, the verdict `ctx.Expect(...).ToEqual` gives. Only the typed path was
+  affected: `ctx.Expect(...).ToEqual`, `Equal`, `NotEqual`, `MatchError`, `Contain` and
+  `assert.EqualValues` already reached `errors.Is`, which skips `==` for incomparable values, and
+  never panicked on these errors. The guard folds away for
+  every non-interface `T`, so their passing path is unchanged.
+  ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
 - **Behavior change.** A spec that failed only through `ctx.T` (`Error`, `Fatal`, `Fail`,
   `FailNow`, or from a `Cleanup` it registered) failed its Go subtest but was reported to the
   `EventReporter` as passed, so `SpecResultEvent.Failed` was `false` and

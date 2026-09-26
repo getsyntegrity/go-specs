@@ -1,10 +1,12 @@
 package specs
 
 import (
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/getsyntegrity/go-specs/assert"
 )
@@ -206,20 +208,107 @@ type expectT[T comparable] struct{ s *typedExpectation[T] }
 //
 // Compares with Go's == (never reflect.DeepEqual): for a struct holding a pointer field, that
 // compares the pointer value itself, not the pointed-to value — unlike ctx.Expect(x).ToEqual(y)'s
-// reflect fallback for non-primitive types. See "Equality semantics" in docs/DSL.md.
+// reflect fallback for non-primitive types. See "Equality semantics" in docs/DSL.md. The one
+// exception is errors: when == fails and both values are errors, errors.Is(actual, expected) decides,
+// as it does for ctx.Expect (see typedErrorsMatch).
 //
 // Example: specs.EqualTo(ctx, 42, 42) or specs.EqualTo(ctx, "got", "got")
 func EqualTo[T comparable](c *Context, actual, expected T) {
 	if c == nil || c.backend == nil {
 		return
 	}
-	if actual == expected {
+	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
+	if !mayHoldIncomparable[T]() {
+		if actual == expected {
+			return
+		}
+	} else if interfaceEqual(actual, expected) {
+		return
+	}
+	if errorsFallbackIsFree[T]() && typedErrorsMatch(actual, expected) {
 		return
 	}
 	if c.tb != nil {
 		c.tb.Helper()
 	}
 	c.failf("expected %v to equal %v", actual, expected)
+}
+
+// mayHoldIncomparable reports whether == on two values of T can panic. An interface type such as
+// error satisfies the comparable constraint, but == on two of its values panics when both hold the
+// same dynamic type and that type is not comparable — an error defined over a slice, say. For such a
+// T, EqualTo and ExpectT(...).ToEqual compare through interfaceEqual, which reports that comparison
+// as false, and then ask typedErrorsMatch — errors.Is, the verdict ctx.Expect(...).ToEqual gives for
+// the same two errors. Every other T keeps a bare == with no defer.
+//
+// The test must cost nothing for the T that can never panic, because EqualTo's passing path is
+// ~1 ns. unsafe.Sizeof is a constant for each instantiation, so for any T that is not two words wide
+// the whole call folds to false. Only a two-word T (an interface, a string, a two-word struct) goes on
+// to the runtime check that its zero value boxes to a nil any, which only an interface's does. The
+// call sites branch on this rather than calling a helper that wraps ==: that helper was not inlined
+// into EqualTo, and the extra call alone made EqualTo ~35% slower.
+func mayHoldIncomparable[T comparable]() bool {
+	var zero T
+	return unsafe.Sizeof(zero) == interfaceSize && any(zero) == nil
+}
+
+const interfaceSize = unsafe.Sizeof(any(nil))
+
+// interfaceEqual is == for an interface T, reporting a comparison of incomparable dynamic values as
+// false rather than letting its runtime panic escape. See mayHoldIncomparable.
+func interfaceEqual[T comparable](a, b T) (equal bool) {
+	defer func() {
+		if recover() != nil {
+			equal = false
+		}
+	}()
+	return a == b
+}
+
+// errorsFallbackIsFree reports whether T is an interface or a pointer type — the kinds whose values
+// convert to an interface without allocating. Only for those does the typed path ask
+// typedErrorsMatch, because BENCHMARKS.md promises that EqualTo and ExpectT(...).ToEqual cost nothing
+// for any comparable T, and a passing assertion through the errors.Is fallback must keep that
+// promise. A value error type (a struct, or a named int, implementing error) would have to be boxed
+// on the heap to reach errors.Is, so it keeps the plain == verdict: an Is method on such a type is
+// not consulted here, though ctx.Expect(...).ToEqual does consult it. error itself and *MyErr, the
+// shapes errors are passed around in, both get the fallback.
+//
+// It is only called after == has failed, so the reflect lookup never touches the passing fast path.
+func errorsFallbackIsFree[T comparable]() bool {
+	switch reflect.TypeFor[T]().Kind() {
+	case reflect.Interface, reflect.Pointer:
+		return true
+	}
+	return false
+}
+
+// typedErrorsMatch is the second question EqualTo and ExpectT(...).ToEqual ask once == has said no:
+// when both values are errors, does errors.Is(actual, expected) hold? That is the semantics
+// ctx.Expect(...).ToEqual and the Equal matcher already apply to errors (#183), oriented the same
+// way, so moving an error assertion to the typed path for speed no longer changes what it accepts
+// (#237). Anything that is not an error on both sides — including a nil error, which boxes to a nil
+// any — keeps the plain == verdict.
+//
+// The error comparison itself is delegated to assert.ValuesEqual rather than written out again, so
+// the typed path cannot drift from ctx.Expect and the matchers — including how a typed nil pointer
+// is kept away from errors.Is (see assert's errorsMatch). Both values are known to be errors here,
+// and ValuesEqual's primitive fast path never claims an error, so it goes straight to that rule.
+//
+// It is only reached after == has said no, and only for a T that errorsFallbackIsFree accepts, so
+// converting its operands to any never allocates — not even when errors.Is then says yes and the
+// assertion passes. Like reportNotEqual it is a free, un-inlined function so that one copy serves
+// every instantiation instead of each T carrying its own.
+//
+//go:noinline
+func typedErrorsMatch(actual, expected any) bool {
+	if _, ok := actual.(error); !ok {
+		return false
+	}
+	if _, ok := expected.(error); !ok {
+		return false
+	}
+	return assert.ValuesEqual(expected, actual)
 }
 
 // ExpectT returns a typed expectation for comparable types. ToEqual(expected) is a direct
@@ -242,15 +331,17 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 // EqualTo. (An earlier version of this comment claimed ToEqual was inlineable; `go build
 // -gcflags=-m` disagrees, and were it true the reported source line would be wrong.)
 //
-// Same == comparison as EqualTo (see its doc comment) — not reflect.DeepEqual.
+// Same comparison as EqualTo (see its doc comment): == with the errors.Is fallback for errors — not
+// reflect.DeepEqual.
 //
 // Example: specs.ExpectT(ctx, 42).ToEqual(42) or specs.ExpectT(ctx, true).To(specs.BeTrue())
 func ExpectT[T comparable](c *Context, v T) expectT[T] {
 	return expectT[T]{s: &typedExpectation[T]{ctx: c, actual: v}}
 }
 
-// ToEqual asserts that the value equals expected using ==, not reflect.DeepEqual (see ExpectT's doc
-// comment). No reflection, and no interface conversion. Helper() only on failure, and must stay
+// ToEqual asserts that the value equals expected using ==, not reflect.DeepEqual, falling back to
+// errors.Is when both values are errors (see ExpectT's doc comment). No reflection, and no interface
+// conversion on the passing path. Helper() only on failure, and must stay
 // un-inlined — see the ATTRIBUTION note on EqualTo.
 //
 // There is no type-assertion branch here any more. There used to be one, because the value arrived
@@ -269,7 +360,17 @@ func (x expectT[T]) ToEqual(expected T) {
 	if s.ctx == nil || s.ctx.backend == nil {
 		return
 	}
-	if s.actual != expected {
+	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
+	var equal bool
+	if !mayHoldIncomparable[T]() {
+		equal = s.actual == expected
+	} else {
+		equal = interfaceEqual(s.actual, expected)
+	}
+	if !equal {
+		if errorsFallbackIsFree[T]() && typedErrorsMatch(s.actual, expected) {
+			return
+		}
 		if s.ctx.tb != nil {
 			s.ctx.tb.Helper()
 		}
@@ -537,13 +638,13 @@ func reportMatcherFailure(c *Context, failure string) {
 // ToEqual asserts that the actual value equals expected (fast path for benchmarks). Helper() only
 // on failure; must stay un-inlined (see EqualTo's ATTRIBUTION note).
 //
-// Unlike EqualTo/ExpectT.ToEqual (which always use ==), this uses == only for a fast-path set of
-// primitive types (int, string, bool, int64, float64, uint) and otherwise defers to
+// Unlike EqualTo/ExpectT.ToEqual (== plus an errors.Is fallback for errors), this uses == only for a
+// fast-path set of primitive types (int, string, bool, int64, float64, uint) and otherwise defers to
 // assert.ValuesEqual: errors.Is(actual, expected) when both values are errors, and
 // reflect.DeepEqual for everything else — including other primitives like int32/float32/uint64, and
 // any struct, slice, or map. That makes this the right choice when you need value-based equality for
-// non-primitive types, or error-identity equality for errors; see "Equality semantics" in
-// docs/DSL.md for why this differs from EqualTo/ExpectT.
+// non-primitive types; for errors all three agree. See "Equality semantics" in docs/DSL.md for why
+// this differs from EqualTo/ExpectT.
 func (e *Expectation) ToEqual(expected any) {
 	if e == nil {
 		return

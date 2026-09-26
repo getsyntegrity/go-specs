@@ -34,8 +34,28 @@ func errorOperands(expected, actual any) (expectedErr, actualErr error, ok bool)
 }
 
 // errorsMatch applies the oriented semantics: does actual carry expected's identity?
+//
+// A typed nil pointer — a nil *MyErr stored in an error — is answered by == alone, never handed to
+// errors.Is. errors.Is calls the actual's Is and Unwrap methods and passes the target into every Is
+// in the chain, and a method that reads a field of its receiver or of that target dereferences nil
+// and panics the spec instead of failing the assertion. == still says a typed nil equals itself, and
+// nothing else: it has no identity to carry.
+//
+// The shortcut is limited to a nil of a comparable type (a pointer, in practice), because it answers
+// with ==, and == on two errors holding the same incomparable type panics. A nil slice or map behind
+// an error is nil too, but its type is not comparable; it goes to errors.Is, which skips == for
+// incomparable values. The == here cannot panic: the nil side's type is comparable, and == only
+// compares values once both dynamic types are the same.
 func errorsMatch(expected, actual error) bool {
+	if isComparableNil(actual) || isComparableNil(expected) {
+		return actual == expected
+	}
 	return errors.Is(actual, expected)
+}
+
+// isComparableNil reports whether err holds a nil value of a comparable type, such as a nil *MyErr.
+func isComparableNil(err error) bool {
+	return IsNilValue(err) && reflect.TypeOf(err).Comparable()
 }
 
 // describeError renders an error alongside its concrete type. Two distinct errors built from the

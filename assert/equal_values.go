@@ -1,7 +1,6 @@
 package assert
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 )
@@ -32,7 +31,9 @@ func equalValuesSymmetric(a, b any) bool {
 	errA, aIsErr := a.(error)
 	errB, bIsErr := b.(error)
 	if aIsErr && bIsErr {
-		return errors.Is(errA, errB) || errors.Is(errB, errA)
+		// errorsMatch, not errors.Is directly, so a typed nil pointer is compared with == instead of
+		// panicking inside its own Is or Unwrap method.
+		return errorsMatch(errB, errA) || errorsMatch(errA, errB)
 	}
 	return reflect.DeepEqual(a, b)
 }

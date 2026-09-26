@@ -378,8 +378,8 @@ exists so that doing so by accident fails loudly instead of quietly asserting tw
 
 | API | Constraint | Comparison |
 |---|---|---|
-| `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
-| `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
+| `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`; when that fails and both sides are errors, `errors.Is(actual, expected)`. No reflection. |
+| `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`; when that fails and both sides are errors, `errors.Is(actual, expected)`. No reflection. |
 | `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `errors.Is(actual, expected)` when both sides are errors, `reflect.DeepEqual` for everything else. |
 
 The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't even be called with a slice or map — that's a compile error, not a runtime surprise. But for structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
@@ -427,7 +427,20 @@ ctx.Expect(err).To(specs.MatchErrorAs(&pathErr))  // errors.As, populates pathEr
 
 `MatchError` is the same semantics `Equal` applies, spelled out. `MatchErrorAs` is the only way to reach `errors.As`, and it reports a failure rather than panicking when handed an unusable target.
 
-`EqualTo` and `ExpectT(...).ToEqual(...)` are unaffected — they use `==`, which for errors compares interface identity. A wrapped error is not `==` its sentinel.
+`EqualTo` and `ExpectT(...).ToEqual(...)` give errors the same answer ([#237](https://github.com/getsyntegrity/go-specs/issues/237)). They still try `==` first, and only when it fails and both sides are errors do they ask `errors.Is(actual, expected)` — same orientation as above. So moving an error assertion to the typed path for speed does not change what it accepts, and the passing fast path is still a single `==` with no allocation:
+
+```go
+specs.ExpectT(ctx, wrapped).ToEqual(sentinel)  // passes, like ctx.Expect(wrapped).ToEqual(sentinel)
+specs.EqualTo(ctx, impostor, sentinel)         // fails — unrelated errors
+```
+
+The negative forms are the exact complement on every path: `NotEqual(x)` and `Not(Equal(x))`, through `ctx.Expect` or `ExpectT`, fail precisely where `ToEqual` passes. A pointer error type works as `T` too — `ExpectT(ctx, err).ToEqual(want)` with `err, want *MyErr` falls back to `errors.Is`, so an `Is` method on `*MyErr` is honoured.
+
+One exception, and it is deliberate. The fallback runs only when `T` is an interface (such as `error`) or a pointer type, because only those reach `errors.Is` without an allocation, and `EqualTo`/`ExpectT(...).ToEqual` promise to cost nothing for any `T` (see BENCHMARKS.md). With a **value** error type as `T` — a struct or a named integer that implements `error` — the typed path keeps plain `==`, so an `Is` method on that type is not consulted, while `ctx.Expect(...).ToEqual` does consult it. Assert through `error` (`ExpectT[error](ctx, err)`) or with `specs.MatchError` when that `Is` method matters.
+
+An error whose dynamic type is not comparable — `type sliceError []string`, say — does not panic the typed path either. `error` satisfies the `comparable` constraint, but Go's `==` panics on two interface values holding the same incomparable type; `EqualTo` and `ExpectT(...).ToEqual` treat that comparison as unequal and go on to `errors.Is`, exactly as `ctx.Expect` does.
+
+A typed nil pointer — a nil `*MyErr`, whether held as `*MyErr` or stored in an `error` — never reaches `errors.Is`, on any of these paths. `errors.Is` calls the error's own `Is` and `Unwrap` methods, and one that reads a field of a nil receiver would panic the spec instead of failing the assertion. A typed nil is compared with `==` alone: it equals itself and nothing else, and in particular it is not equal to a nil `error`.
 
 ### Matcher composition: `Not`, `All`, `Any`
 

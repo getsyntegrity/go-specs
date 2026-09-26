@@ -129,15 +129,93 @@ func TestMatchErrorAsIsExposedThroughTheDSL(t *testing.T) {
 	}
 }
 
-// EqualTo and ExpectT keep their documented == semantics; this change is scoped to the reflective
-// path, and docs/DSL.md records the divergence.
-func TestEqualToKeepsPointerIdentitySemanticsForErrors(t *testing.T) {
+// Issue #237: EqualTo and ExpectT(...).ToEqual used to compare errors with == only, so moving an
+// error assertion from ctx.Expect to the typed path for speed silently rejected a wrapped sentinel.
+// They now fall back to the same oriented errors.Is(actual, expected) — on the failure branch only,
+// so the passing fast path is still a single == that allocates nothing.
+
+func typedToEqual(actual, expected error) *capturingBackend {
+	backend := &capturingBackend{}
+	ExpectT(&Context{backend: backend}, actual).ToEqual(expected)
+	return backend
+}
+
+func typedEqualTo(actual, expected error) *capturingBackend {
+	backend := &capturingBackend{}
+	EqualTo(&Context{backend: backend}, actual, expected)
+	return backend
+}
+
+func TestTypedEqualityAcceptsAWrappedSentinel(t *testing.T) {
+	sentinel := errors.New("not found")
+	wrapped := fmt.Errorf("repo: %w", sentinel)
+
+	if b := typedToEqual(wrapped, sentinel); b.failed {
+		t.Errorf("expected ExpectT(ctx, wrapped).ToEqual(sentinel) to pass like ctx.Expect does, got %q", b.message)
+	}
+	if b := typedEqualTo(wrapped, sentinel); b.failed {
+		t.Errorf("expected EqualTo(ctx, wrapped, sentinel) to pass like ctx.Expect does, got %q", b.message)
+	}
+}
+
+func TestTypedEqualityRejectsUnrelatedErrorsSharingAMessage(t *testing.T) {
+	sentinel := errors.New("boom")
+	impostor := errors.New("boom")
+
+	if b := typedToEqual(impostor, sentinel); !b.failed {
+		t.Error("ExpectT: expected failure for an unrelated error that merely shares the message")
+	}
+	if b := typedEqualTo(impostor, sentinel); !b.failed {
+		t.Error("EqualTo: expected failure for an unrelated error that merely shares the message")
+	}
+}
+
+// The comparison is oriented exactly like ctx.Expect's: a bare sentinel does not satisfy an
+// expectation of an error that wraps it.
+func TestTypedEqualityIsOriented(t *testing.T) {
 	sentinel := errors.New("boom")
 	wrapped := fmt.Errorf("layer: %w", sentinel)
 
+	if b := typedToEqual(sentinel, wrapped); !b.failed {
+		t.Error("ExpectT: expected errors.Is(sentinel, wrapped) to be false")
+	}
+	if b := typedEqualTo(sentinel, wrapped); !b.failed {
+		t.Error("EqualTo: expected errors.Is(sentinel, wrapped) to be false")
+	}
+}
+
+func TestTypedEqualityRejectsANilErrorAgainstASentinel(t *testing.T) {
+	sentinel := errors.New("boom")
+
+	if b := typedToEqual(nil, sentinel); !b.failed {
+		t.Error("ExpectT: expected a nil error not to equal a sentinel")
+	}
+	if b := typedEqualTo(nil, sentinel); !b.failed {
+		t.Error("EqualTo: expected a nil error not to equal a sentinel")
+	}
+}
+
+type dslCodeError struct{ Code int }
+
+func (e dslCodeError) Error() string { return fmt.Sprintf("code %d", e.Code) }
+
+// Is makes every dslCodeError with the same Code match, which == on the value cannot see once the
+// values sit behind distinct wrappers.
+func (e dslCodeError) Is(target error) bool {
+	t, ok := target.(dslCodeError)
+	return ok && t.Code == e.Code
+}
+
+// A concrete error type T takes the same fallback: its values are errors, so an Is method on the
+// type is honoured exactly as ctx.Expect honours it.
+func TestTypedEqualityHonoursAnIsMethodOnAConcreteErrorType(t *testing.T) {
 	backend := &capturingBackend{}
-	EqualTo(&Context{backend: backend}, error(wrapped), error(sentinel))
+	ExpectT(&Context{backend: backend}, &dslNotFoundError{Name: "a"}).ToEqual(&dslNotFoundError{Name: "a"})
 	if !backend.failed {
-		t.Error("expected EqualTo to fail: == compares interface identity, not errors.Is")
+		t.Error("expected two distinct *dslNotFoundError pointers without an Is method not to match")
+	}
+
+	if b := typedToEqual(fmt.Errorf("w: %w", dslCodeError{Code: 7}), dslCodeError{Code: 7}); b.failed {
+		t.Errorf("expected errors.Is to honour dslCodeError.Is, got %q", b.message)
 	}
 }
