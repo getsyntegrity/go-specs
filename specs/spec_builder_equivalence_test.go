@@ -1,6 +1,6 @@
-// spec_builder_equivalence_test.go pins issue #245's T3: for the same declared tree shape (mixed
-// It/FIt/SkipIt/PendingIt, nested Describe/When), *Spec (both build paths) and Builder must report
-// the same set of (full name, status) outcomes and run the same set of bodies. Order is
+// spec_builder_equivalence_test.go pins issue #245's T3 (spec 1: FIt/SkipIt/PendingIt) and T4
+// (spec 2: ItParallel): for the same declared tree shape, *Spec (both build paths) and Builder must
+// report the same set of (full name, status) outcomes and run the same set of bodies. Order is
 // deliberately not compared: Builder's own finalize buffers a skip/pending mark and attaches it to
 // whichever coalesced group closes next (builder.go), so its *reported* order does not always match
 // declaration order even on Builder alone — see the feature doc's "What changes" section. The
@@ -12,6 +12,7 @@ package specs
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -288,6 +289,104 @@ func TestFocusSkipPendingEquivalence_Nested(t *testing.T) {
 					b.PendingIt("pending", func(*Context) { ran["inner.pending"] = true })
 				})
 			})
+		})
+		NewRunnerWithReporter(b.Build(), "suite", rep).Run(t)
+		assertSameOutcomes(t, "Builder", outcomesOf(rep), want)
+		for k := range wantRan {
+			if !ran[k] {
+				t.Errorf("Builder: %q did not run, want it to", k)
+			}
+		}
+	})
+}
+
+// TestItParallelEquivalence_MixedTree declares a mixed It/ItParallel/SkipIt/PendingIt tree, nested
+// under a When, on *Spec (both build paths) and on Builder, and asserts they report the same
+// (full name, status) outcomes and run the same bodies (issue #245's T4) — same as the
+// focus/skip/pending table above, but for ItParallel. Order is not compared, for the same reason:
+// neither engine promises reporting the same order for a coalesced/parallel group as its
+// declaration order relative to the rest of the suite, only that the group's own specs come out in
+// declaration order relative to each other (pinned separately by
+// TestSpecItParallel_ReporterEventOrderIsDeclarationOrder).
+func TestItParallelEquivalence_MixedTree(t *testing.T) {
+	want := map[string]string{
+		"suite/before":        "passed",
+		"suite/group/a":       "passed",
+		"suite/group/b":       "passed",
+		"suite/group/skip":    "skipped",
+		"suite/group/pending": "pending",
+		"suite/after":         "passed",
+	}
+	wantRan := map[string]bool{"before": true, "a": true, "b": true, "after": true}
+
+	t.Run("compiler path", func(t *testing.T) {
+		ran := map[string]bool{}
+		var mu sync.Mutex
+		record := func(k string) { mu.Lock(); ran[k] = true; mu.Unlock() }
+		rep := &recordingReporter{}
+		suite := BuildSuite(nil, "suite", func(s *Spec) {
+			s.It("before", func(*Context) { record("before") })
+			s.When("group", func(w *Spec) {
+				w.ItParallel("a", func(*Context) { record("a") })
+				w.ItParallel("b", func(*Context) { record("b") })
+				w.SkipIt("skip", func(*Context) { record("skip") })
+				w.PendingIt("pending", func(*Context) { record("pending") })
+			})
+			s.It("after", func(*Context) { record("after") })
+		})
+		suite.Reporter = rep
+		suite.Run(t)
+		assertSameOutcomes(t, "compiler path", outcomesOf(rep), want)
+		for k := range wantRan {
+			if !ran[k] {
+				t.Errorf("compiler path: %q did not run, want it to", k)
+			}
+		}
+	})
+
+	t.Run("registry path", func(t *testing.T) {
+		ran := map[string]bool{}
+		var mu sync.Mutex
+		record := func(k string) { mu.Lock(); ran[k] = true; mu.Unlock() }
+		rep := &recordingReporter{}
+		var suite *CompiledSuite
+		Analyze(func() {
+			suite = BuildSuite(nil, "suite", func(s *Spec) {
+				s.It("before", func(*Context) { record("before") })
+				s.When("group", func(w *Spec) {
+					w.ItParallel("a", func(*Context) { record("a") })
+					w.ItParallel("b", func(*Context) { record("b") })
+					w.SkipIt("skip", func(*Context) { record("skip") })
+					w.PendingIt("pending", func(*Context) { record("pending") })
+				})
+				s.It("after", func(*Context) { record("after") })
+			})
+		})
+		suite.Reporter = rep
+		suite.Run(t)
+		assertSameOutcomes(t, "registry path", outcomesOf(rep), want)
+		for k := range wantRan {
+			if !ran[k] {
+				t.Errorf("registry path: %q did not run, want it to", k)
+			}
+		}
+	})
+
+	t.Run("Builder", func(t *testing.T) {
+		ran := map[string]bool{}
+		var mu sync.Mutex
+		record := func(k string) { mu.Lock(); ran[k] = true; mu.Unlock() }
+		rep := &recordingReporter{}
+		b := NewBuilder()
+		b.Describe("suite", func() {
+			b.It("before", func(*Context) { record("before") })
+			b.Describe("group", func() {
+				b.ItParallel("a", func(*Context) { record("a") })
+				b.ItParallel("b", func(*Context) { record("b") })
+				b.SkipIt("skip", func(*Context) { record("skip") })
+				b.PendingIt("pending", func(*Context) { record("pending") })
+			})
+			b.It("after", func(*Context) { record("after") })
 		})
 		NewRunnerWithReporter(b.Build(), "suite", rep).Run(t)
 		assertSameOutcomes(t, "Builder", outcomesOf(rep), want)

@@ -29,8 +29,12 @@ type ArenaNode struct {
 }
 
 // itKind classifies how an ItNode was registered (issue #245): normal It, focused FIt, compile-time
-// SkipIt, or compile-time PendingIt. Mirrors Builder's specKind (builder.go) for the registry/arena
-// build path, so both compile paths agree on the same four cases.
+// SkipIt, compile-time PendingIt, or ItParallel (issue #245's second spec). Mirrors Builder's
+// specKind (builder.go) for the registry/arena build path, so both compile paths agree on the same
+// five cases. An itParallel node compiles exactly like itNormal (same before/body/after
+// instructions, see buildExecutionPlanFromArenaRec); only its Kind distinguishes it, so the sibling
+// loop that walks arena.Children can find consecutive runs of it and group them (see
+// buildExecutionPlanFromArenaRec's parallel-run tracking).
 type itKind uint8
 
 const (
@@ -38,6 +42,7 @@ const (
 	itFocus
 	itSkip
 	itPending
+	itParallel
 )
 
 // arenaGroupHooks holds the once-per-group hooks registered on arena nodes, indexed by node ID
