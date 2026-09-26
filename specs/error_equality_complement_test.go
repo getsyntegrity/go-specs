@@ -184,3 +184,43 @@ func TestTypedEqualityHandlesDynamicallyIncomparableErrors(t *testing.T) {
 		})
 	}
 }
+
+// dslWideCodeError is a value error type wider than a word whose Is method relates values that ==
+// does not. Converting one to an interface has to box it on the heap.
+type dslWideCodeError struct{ Code, A, B, C, D, E, F, G int }
+
+func (e dslWideCodeError) Error() string { return fmt.Sprintf("code %d", e.Code) }
+func (e dslWideCodeError) Is(target error) bool {
+	t, ok := target.(dslWideCodeError)
+	return ok && t.Code == e.Code
+}
+
+// Codex review on #259: BENCHMARKS.md promises that EqualTo and ExpectT(...).ToEqual cost nothing for
+// any comparable T at any width. That covers the errors.Is fallback too: a typed equality assertion
+// that PASSES must allocate nothing, whatever T is. (A failing one may allocate; the spec is ending.)
+func TestPassingTypedEqualityNeverAllocatesThroughTheErrorsFallback(t *testing.T) {
+	sentinel := errors.New("not found")
+	wrapped := fmt.Errorf("repo: %w", sentinel)
+	kindA, kindB := &dslKindError{Kind: "x"}, &dslKindError{Kind: "x"}
+	wideA, wideB := dslWideCodeError{Code: 7, A: 1}, dslWideCodeError{Code: 7, A: 2}
+
+	probes := map[string]func(*Context){
+		"EqualTo[error]":                    func(c *Context) { EqualTo(c, wrapped, error(sentinel)) },
+		"ExpectT[error].ToEqual":            func(c *Context) { ExpectT(c, wrapped).ToEqual(error(sentinel)) },
+		"EqualTo[*dslKindError]":            func(c *Context) { EqualTo(c, kindA, kindB) },
+		"ExpectT[*dslKindError].ToEqual":    func(c *Context) { ExpectT(c, kindA).ToEqual(kindB) },
+		"EqualTo[dslWideCodeError]":         func(c *Context) { EqualTo(c, wideA, wideB) },
+		"ExpectT[dslWideCodeError].ToEqual": func(c *Context) { ExpectT(c, wideA).ToEqual(wideB) },
+	}
+	for name, probe := range probes {
+		backend := &capturingBackend{}
+		ctx := &Context{backend: backend}
+		allocs := testing.AllocsPerRun(allocContractRuns, func() {
+			backend.failed = false
+			probe(ctx)
+		})
+		if !backend.failed && allocs != 0 {
+			t.Errorf("%s passed but allocated %.1f times per call, want 0", name, allocs)
+		}
+	}
+}

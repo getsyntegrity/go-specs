@@ -1,6 +1,7 @@
 package specs
 
 import (
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -224,7 +225,7 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 	} else if interfaceEqual(actual, expected) {
 		return
 	}
-	if typedErrorsMatch(actual, expected) {
+	if errorsFallbackIsFree[T]() && typedErrorsMatch(actual, expected) {
 		return
 	}
 	if c.tb != nil {
@@ -264,6 +265,24 @@ func interfaceEqual[T comparable](a, b T) (equal bool) {
 	return a == b
 }
 
+// errorsFallbackIsFree reports whether T is an interface or a pointer type — the kinds whose values
+// convert to an interface without allocating. Only for those does the typed path ask
+// typedErrorsMatch, because BENCHMARKS.md promises that EqualTo and ExpectT(...).ToEqual cost nothing
+// for any comparable T, and a passing assertion through the errors.Is fallback must keep that
+// promise. A value error type (a struct, or a named int, implementing error) would have to be boxed
+// on the heap to reach errors.Is, so it keeps the plain == verdict: an Is method on such a type is
+// not consulted here, though ctx.Expect(...).ToEqual does consult it. error itself and *MyErr, the
+// shapes errors are passed around in, both get the fallback.
+//
+// It is only called after == has failed, so the reflect lookup never touches the passing fast path.
+func errorsFallbackIsFree[T comparable]() bool {
+	switch reflect.TypeFor[T]().Kind() {
+	case reflect.Interface, reflect.Pointer:
+		return true
+	}
+	return false
+}
+
 // typedErrorsMatch is the second question EqualTo and ExpectT(...).ToEqual ask once == has said no:
 // when both values are errors, does errors.Is(actual, expected) hold? That is the semantics
 // ctx.Expect(...).ToEqual and the Equal matcher already apply to errors (#183), oriented the same
@@ -276,8 +295,9 @@ func interfaceEqual[T comparable](a, b T) (equal bool) {
 // is kept away from errors.Is (see assert's errorsMatch). Both values are known to be errors here,
 // and ValuesEqual's primitive fast path never claims an error, so it goes straight to that rule.
 //
-// It is only reached on the failure branch, so the boxing its any parameters cost never touches the
-// passing fast path. Like reportNotEqual it is a free, un-inlined function so that one copy serves
+// It is only reached after == has said no, and only for a T that errorsFallbackIsFree accepts, so
+// converting its operands to any never allocates — not even when errors.Is then says yes and the
+// assertion passes. Like reportNotEqual it is a free, un-inlined function so that one copy serves
 // every instantiation instead of each T carrying its own.
 //
 //go:noinline
@@ -348,7 +368,7 @@ func (x expectT[T]) ToEqual(expected T) {
 		equal = interfaceEqual(s.actual, expected)
 	}
 	if !equal {
-		if typedErrorsMatch(s.actual, expected) {
+		if errorsFallbackIsFree[T]() && typedErrorsMatch(s.actual, expected) {
 			return
 		}
 		if s.ctx.tb != nil {

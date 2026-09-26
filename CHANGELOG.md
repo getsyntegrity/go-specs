@@ -468,7 +468,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   silently changed what the assertion accepted. When `==` fails and both values are errors, the
   typed path now asks `errors.Is(actual, expected)`, the same oriented check `ctx.Expect` has used
   since [#183](https://github.com/getsyntegrity/go-specs/issues/183). The check runs only on the
-  failure branch, so the passing path is still a single `==` that allocates nothing.
+  failure branch, so the passing path is still a single `==` that allocates nothing. It applies when
+  `T` is an interface (such as `error`) or a pointer type, which reach `errors.Is` without an
+  allocation; a value error type as `T` (a struct or named integer implementing `error`) keeps plain
+  `==`, so the typed path stays allocation-free for every `T`.
   ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
 - An error comparison whose actual or expected value was a typed nil pointer (a nil `*MyErr` held in
   an `error`) panicked the spec when the error type's `Is` or `Unwrap` read a field of its receiver,
