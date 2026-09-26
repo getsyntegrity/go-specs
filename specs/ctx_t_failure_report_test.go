@@ -10,7 +10,8 @@ import (
 
 // ctxTFailureMechanisms is one spec per way a sequential spec body can fail its own subtest. Only
 // the last failing entry goes through ctx.Expect; the others fail the subtest through ctx.T
-// directly, which never touches the Context's own failure record (#253).
+// directly (including from a Cleanup it registers), which never touches the Context's own failure
+// record (#253).
 var ctxTFailureMechanisms = []struct {
 	name string
 	body func(*Context)
@@ -19,6 +20,13 @@ var ctxTFailureMechanisms = []struct {
 	{"fatals-via-ctx-T", func(ctx *Context) { ctx.T.Fatal("boom") }},
 	{"fails-via-ctx-T", func(ctx *Context) { ctx.T.Fail() }},
 	{"failnow-via-ctx-T", func(ctx *Context) { ctx.T.FailNow() }},
+	// testing runs Cleanup functions after the subtest's own function has returned, so this failure
+	// lands later than any defer inside that function could observe. ctx.T is captured first because
+	// the Context is reset for the next spec by the time the cleanup runs.
+	{"errors-from-ctx-T-cleanup", func(ctx *Context) {
+		t := ctx.T
+		t.Cleanup(func() { t.Error("boom from cleanup") })
+	}},
 	{"fails-via-expect", func(ctx *Context) { ctx.Expect(1).ToEqual(2) }},
 	{"passes", func(*Context) {}},
 }
@@ -30,9 +38,10 @@ var wantCtxTFailureReport = []string{
 	"SPEC_FINISHED name=fatals-via-ctx-T failed=true",
 	"SPEC_FINISHED name=fails-via-ctx-T failed=true",
 	"SPEC_FINISHED name=failnow-via-ctx-T failed=true",
+	"SPEC_FINISHED name=errors-from-ctx-T-cleanup failed=true",
 	"SPEC_FINISHED name=fails-via-expect failed=true",
 	"SPEC_FINISHED name=passes failed=false",
-	"SUITE_FINISHED total=6 failed=5",
+	"SUITE_FINISHED total=7 failed=6",
 }
 
 func printCtxTFailureReport(rep *recordingReporter) {
@@ -45,7 +54,7 @@ func printCtxTFailureReport(rep *recordingReporter) {
 }
 
 // TestCtxTFailuresAreReportedAsFailedRealProcess proves #253: a spec that fails only through ctx.T
-// (Error, Fatal, Fail, FailNow) is reported Failed and counted in FailedSpecs, on every sequential
+// (Error, Fatal, Fail, FailNow, or an Error from a Cleanup) is reported Failed and counted in FailedSpecs, on every sequential
 // engine that hands the body a live subtest *testing.T. Before the fix, each of these engines derived
 // Failed from the Context alone, so the subtest printed --- FAIL while the reporter said passed.
 //
@@ -106,5 +115,42 @@ func TestCtxTFailuresAreReportedAsFailedRealProcess(t *testing.T) {
 					strings.Join(got, "\n"), strings.Join(wantCtxTFailureReport, "\n"), output)
 			}
 		})
+	}
+}
+
+// TestRunnerFailFastStopsOnCtxTFailureRealProcess pins the behaviour change #253 brought to Runner:
+// FailFast reads the same outcome the reporter does, so a spec that fails only through ctx.T now
+// stops the run. Before, the Context never saw that failure and the next spec still ran.
+//
+// ctx.T.Error rather than Fatal, so the spec body itself runs to completion and only FailFast can be
+// what stops the next spec.
+func TestRunnerFailFastStopsOnCtxTFailureRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_CTX_T_FAIL_FAST_HELPER") == "1" {
+		prog := &Program{
+			Groups: []group{{
+				specs: []step{
+					func(ctx *Context) { ctx.T.Error("boom"); fmt.Println("spec1 ran") },
+					func(*Context) { fmt.Println("spec2 ran") },
+				},
+				names: []string{"spec one", "spec two"},
+			}},
+		}
+		r := NewRunner(prog)
+		r.FailFast = true
+		r.Run(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerFailFastStopsOnCtxTFailureRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_CTX_T_FAIL_FAST_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the failing spec to fail the process, but it passed: %s", output)
+	}
+	if !strings.Contains(string(output), "spec1 ran") {
+		t.Fatalf("expected spec one to run, got: %s", output)
+	}
+	if strings.Contains(string(output), "spec2 ran") {
+		t.Fatalf("expected FailFast to stop the run after spec one's ctx.T failure, but spec two ran: %s", output)
 	}
 }

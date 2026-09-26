@@ -59,9 +59,14 @@ import (
 // returned, called Fatal/FailNow (runtime.Goexit) or panicked all count as finished; only a parked
 // goroutine leaves it unset.
 //
-// failed is subT.Failed(), read by a defer for the same reason: a body that called Fatal/FailNow
-// still reports it. It is what lets a caller report a spec that failed only through ctx.T (Error,
-// Fatal, Fail, FailNow), which never touches the Context's own failure record, as failed (#253).
+// failed is subT.Failed(), read after t.Run returns rather than by a defer inside the closure:
+// testing runs the subtest's Cleanup functions only after that closure has returned, so a defer
+// would miss a failure raised from a Cleanup. t.Run does not return until the subtest and its
+// cleanups have finished, so the read sees every failure, Fatal/FailNow (runtime.Goexit) included.
+// It is read only when the subtest ran and is not parked: a filtered subtest never ran, and a parked
+// one has not finished, so its state is still being written on its own goroutine. It is what lets a
+// caller report a spec that failed only through ctx.T (Error, Fatal, Fail, FailNow, or from a
+// Cleanup), which never touches the Context's own failure record, as failed (#253).
 //
 // done is an atomic.Bool rather than a plain bool, and deliberately so. A plain bool would in
 // practice be ordered — testing.T.Parallel signals the parent over a channel that t.Run receives —
@@ -75,15 +80,20 @@ import (
 // The cost is nil in context: this path already starts a goroutine via t.Run, and the hot assertion
 // path never reaches it.
 func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, parked bool) {
-	var started, done, subFailed atomic.Bool
+	var started, done atomic.Bool
+	var sub *testing.T
 	t.Run(name, func(subT *testing.T) {
+		sub = subT
 		started.Store(true)
 		defer done.Store(true)
-		defer func() { subFailed.Store(subT.Failed()) }()
 		body(subT)
 	})
 	ran = started.Load()
-	return ran, subFailed.Load(), ran && !done.Load()
+	parked = ran && !done.Load()
+	if ran && !parked {
+		failed = sub.Failed()
+	}
+	return ran, failed, parked
 }
 
 // unsupportedSpecBodyParallelMessage builds the diagnostic for a spec body that called

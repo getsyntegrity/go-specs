@@ -462,6 +462,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** A sequential spec that failed only through `ctx.T` (`Error`, `Fatal`,
+  `Fail`, `FailNow`, or an `Error` raised from a `Cleanup` it registered) failed its Go subtest but
+  was reported to the `EventReporter` as passed, so `SpecResultEvent.Failed` was `false` and
+  `SuiteEndEvent.FailedSpecs` left it out. Every structured output built on the reporter (JSON,
+  JUnit, multi-package report coordination) marked it passed while `go test` printed `--- FAIL`.
+  Such specs are now reported failed and counted in `FailedSpecs`, on `Describe` with and without
+  `BeforeAll`/`AfterAll` and on `Runner`. `Runner`'s `FailFast` reads the same outcome, so it now
+  also stops the run after such a spec; before, the next spec still ran.
+  ([#253](https://github.com/getsyntegrity/go-specs/issues/253))
 - **Behavior change.** `ctx.Expect(x).To(nil)` and `specs.ExpectT(ctx, x).To(nil)` passed
   silently: both `To` methods returned early on a nil matcher, while `assert.Evaluate` and the
   `Not`/`All`/`Any` composites have always treated a nil matcher as never matching. A matcher
