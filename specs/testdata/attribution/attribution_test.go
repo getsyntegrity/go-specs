@@ -48,6 +48,24 @@ func TestExpectTTo(t *testing.T) {
 	})
 }
 
+// TestExpectTToNilMatcher and TestCtxExpectToNilMatcher cover the nil-matcher branch of To (issue
+// #236), which reports through its own helper rather than the ordinary matcher-failure path.
+func TestExpectTToNilMatcher(t *testing.T) {
+	specs.Describe(t, "expectt to nil matcher", func(s *specs.Spec) {
+		s.It("fails", func(ctx *specs.Context) {
+			specs.ExpectT(ctx, 42).To(nil) // want:ExpectTToNilMatcher
+		})
+	})
+}
+
+func TestCtxExpectToNilMatcher(t *testing.T) {
+	specs.Describe(t, "ctx expect to nil matcher", func(s *specs.Spec) {
+		s.It("fails", func(ctx *specs.Context) {
+			ctx.Expect(42).To(nil) // want:CtxExpectToNilMatcher
+		})
+	})
+}
+
 func TestCtxExpectToEqualPrimitive(t *testing.T) {
 	specs.Describe(t, "ctx expect toequal primitive", func(s *specs.Spec) {
 		s.It("fails", func(ctx *specs.Context) {
