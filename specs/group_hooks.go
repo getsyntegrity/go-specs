@@ -43,6 +43,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,6 +72,38 @@ type planGroups struct {
 	// of which group (if any) it was declared inside — see CompiledSuite.runSpecs.
 	skipped []specMark
 	pending []specMark
+	// parallel holds this suite's ItParallel groups (issue #245's second spec): maximal runs of
+	// consecutive ItParallel specs, each compiled into the plan exactly like an ordinary It (see
+	// buildExecutionPlanFromArenaRec / bytecodeCompiler.EmitItParallel) but recorded here, behind the
+	// same lazily allocated pointer, so runPlanWithGroups can find and launch them concurrently. A
+	// range never straddles a hookGroup's Start/End: both compile paths end an open run at every
+	// Describe/When scope transition, which is stricter than the documented rule ("ends at a
+	// BeforeAll/AfterAll group boundary") but never merges two runs the documented rule would have
+	// kept apart either — see the compiler/arena doc comments for why the stronger rule is safe.
+	parallel []parallelRange
+}
+
+// parallelRange is one ItParallel group (issue #245): a maximal run of consecutive ItParallel specs,
+// identified only by the plan index range it occupies. Unlike hookGroup it carries no Path/Name of
+// its own — each of its specs already has its own declared Name/Path in the plan (appendSpecPath) —
+// and it never nests: every index in [Start,End] is a leaf spec, so a parallelRange can sit inside
+// exactly one hookGroup, or be its sibling, but never contain one.
+type parallelRange struct {
+	Start, End int
+}
+
+// registerParallelGroup attaches one ItParallel run to *pg, allocating *pg on first use — the same
+// lazy-allocation rule registerHookGroup/registerSkipMark already use (H10). startIdx > endIdx is
+// impossible for a real run (see the two call sites) but guarded the same defensive way
+// registerHookGroup is.
+func registerParallelGroup(pg **planGroups, startIdx, endIdx int) {
+	if startIdx < 0 || startIdx > endIdx {
+		return
+	}
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).parallel = append((*pg).parallel, parallelRange{Start: startIdx, End: endIdx})
 }
 
 // specMark is one compile-time-only spec registration (SkipIt/PendingIt, issue #245): it never
@@ -169,14 +202,18 @@ func registerHookGroup(pg **planGroups, path []string, name string, before, afte
 // specs a focus filter removed instead of specs that were never declared. The arena/registry build
 // path never needs this: it pre-scans for a focus before emitting anything (see arenaHasFocus), so
 // a filtered-out spec simply never contributes to a group's Start/End in the first place.
+//
+// pg.parallel is remapped the same way and for the same reason: every ItParallel spec is unfocused
+// by construction (there is no FItParallel), so a suite-wide focus drops every one of them, and any
+// parallel range they formed must be dropped along with them rather than left pointing at plan
+// indices that no longer exist.
 func remapHookGroups(pg *planGroups, oldToNew []int) *planGroups {
 	if pg == nil {
 		return nil
 	}
-	var kept []hookGroup
-	for _, g := range pg.groups {
-		newStart, newEnd := -1, -1
-		for old := g.Start; old <= g.End; old++ {
+	remapRange := func(start, end int) (newStart, newEnd int, ok bool) {
+		newStart, newEnd = -1, -1
+		for old := start; old <= end; old++ {
 			if old < 0 || old >= len(oldToNew) {
 				continue
 			}
@@ -187,14 +224,28 @@ func remapHookGroups(pg *planGroups, oldToNew []int) *planGroups {
 				newEnd = nu
 			}
 		}
-		if newStart == -1 {
+		return newStart, newEnd, newStart != -1
+	}
+	var kept []hookGroup
+	for _, g := range pg.groups {
+		newStart, newEnd, ok := remapRange(g.Start, g.End)
+		if !ok {
 			continue
 		}
 		g.Start, g.End = newStart, newEnd
 		kept = append(kept, g)
 	}
 	pg.groups = kept
-	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 {
+	var keptParallel []parallelRange
+	for _, p := range pg.parallel {
+		newStart, newEnd, ok := remapRange(p.Start, p.End)
+		if !ok {
+			continue
+		}
+		keptParallel = append(keptParallel, parallelRange{Start: newStart, End: newEnd})
+	}
+	pg.parallel = keptParallel
+	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 && len(pg.parallel) == 0 {
 		return nil
 	}
 	return pg
@@ -210,6 +261,11 @@ type groupRun struct {
 	// in no other group.
 	children [][]int
 	top      []int
+	// parallelByStart maps an ItParallel range's Start index (issue #245) to its index in
+	// pg.parallel, built once by buildTree so runRange can recognize the start of a parallel run in
+	// O(1) at each step of its flat index walk, the same way it already recognizes a hookGroup start
+	// via children. nil when the suite registers no ItParallel.
+	parallelByStart map[int]int
 	// real is true when backend wraps a real *testing.T, i.e. when groups get subtests.
 	real bool
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
@@ -263,11 +319,24 @@ func (r *groupRun) buildTree() {
 		}
 		stack = append(stack, g)
 	}
+	if n := len(r.pg.parallel); n > 0 {
+		r.parallelByStart = make(map[int]int, n)
+		for i := range r.pg.parallel {
+			r.parallelByStart[r.pg.parallel[i].Start] = i
+		}
+	}
 }
 
 // runRange runs specs lo..hi, which all sit in the same scope: children are the hooked groups
 // directly inside that scope, t the scope's *testing.T (nil on a non-*testing.T backend) and prefix
 // the part of every spec's subtest name that t's own name already carries.
+//
+// A parallel run (issue #245) is looked up independently of children, via parallelByStart, rather
+// than merged into the same ordered list: a parallelRange never straddles a hookGroup's Start/End
+// (see planGroups.parallel's doc comment), so it is always either a hook group's direct child range
+// or a sibling of one — exactly the same relationship an individual spec index already has to
+// children — and the same three-way walk (child group, then parallel run, then single spec) covers
+// it without needing to sort the two kinds together.
 func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []int) {
 	k := 0
 	for i := lo; i <= hi; {
@@ -277,6 +346,13 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 			r.runGroup(t, prefix, g)
 			r.stopIfStopped(t)
 			i = r.pg.groups[g].End + 1
+			continue
+		}
+		if pi, ok := r.parallelByStart[i]; ok {
+			end := r.pg.parallel[pi].End
+			r.runParallelGroup(t, prefix, pi)
+			r.stopIfStopped(t)
+			i = end + 1
 			continue
 		}
 		r.runSpec(t, prefix, i)
@@ -488,6 +564,155 @@ func (r *groupRun) reportPath(i int) []string {
 		return nil
 	}
 	return specEventPath(r.plan, i)
+}
+
+// parallelSpecOutcome is one ItParallel spec's buffered result (issue #245), captured entirely
+// inside the goroutine that ran it — no reporter call, no *stopped/poison write to shared state —
+// so runParallelGroup can emit it, serialized, on its own goroutine once every spec in the range has
+// finished (the user's concurrency conditions 1 and 2: reporter events are serialized, and results
+// are reported in declaration order).
+type parallelSpecOutcome struct {
+	start    report.SpecStartEvent
+	result   specResult
+	duration time.Duration
+	// parked and specName describe a spec whose body called the unsupported ctx.T.Parallel()
+	// (spec_body_parallel.go): specName is only used to build the diagnostic once every spec in the
+	// range has been collected, since Fatal/FailNow must run on the goroutine actually running t (see
+	// runParallelGroup), never on the goroutine that detected it.
+	parked   bool
+	specName string
+}
+
+// runParallelGroup runs the ItParallel range r.pg.parallel[pi] (issue #245). Every spec in the range
+// gets its own Go subtest, launched from its own goroutine via testing.T.Run — never t.Parallel(),
+// which spec_body_parallel.go explains cannot share this package's *Context model — and every
+// launched t.Run call returns before this method does (wg.Wait), which is what the testing package
+// requires for calling t.Run concurrently from multiple goroutines in the first place.
+//
+// Without a real *testing.T (r.real == false: a *testing.B, or a fake backend in this package's own
+// tests), there is no subtest mechanism to run the range against concurrently, so its specs run one
+// at a time, in declaration order, exactly like an ordinary sequential spec in that mode — the
+// user's explicit choice for that case.
+func (r *groupRun) runParallelGroup(t *testing.T, prefix string, pi int) {
+	rng := r.pg.parallel[pi]
+	if !r.real {
+		for i := rng.Start; i <= rng.End; i++ {
+			r.runSpec(t, prefix, i)
+			if r.stopped.Load() {
+				return
+			}
+		}
+		return
+	}
+	n := rng.End - rng.Start + 1
+	outcomes := make([]parallelSpecOutcome, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for k := 0; k < n; k++ {
+		i := rng.Start + k
+		go func(i, k int) {
+			defer wg.Done()
+			outcomes[k] = r.runParallelSpec(t, prefix, i)
+		}(i, k)
+	}
+	wg.Wait()
+
+	parkedName := ""
+	for k := 0; k < n; k++ {
+		i := rng.Start + k
+		r.emitParallelOutcome(i, outcomes[k])
+		if outcomes[k].parked && parkedName == "" {
+			parkedName = outcomes[k].specName
+		}
+	}
+	if parkedName != "" {
+		// Every launched spec has finished (or leaked its poisoned Context, in the parked one's
+		// case), so this goroutine is the one actually running t again — the same guarantee
+		// runSpec's sequential equivalent (runSpecProgramIsolated/failUnsupportedSpecBodyParallel)
+		// relies on. r.stopped is set first so an enclosing scope that is not itself unwound by this
+		// Fatalf's Goexit (a sibling this group's own t.Run already returned control to) still stops
+		// at its own next stopIfStopped check (H5's "every group already entered still runs its
+		// AfterAlls while the stop unwinds").
+		r.stopped.Store(true)
+		if t != nil {
+			t.Helper()
+			t.Fatalf("%s", unsupportedSpecBodyParallelMessage(parkedName))
+		}
+	}
+}
+
+// runParallelSpec runs one ItParallel spec (plan index i) as its own Go subtest, on its own
+// goroutine, against its own pooled *Context — mirroring runSpec/runSpecProgramIsolated for the
+// sequential path, except every side effect that is not local to this one goroutine (reporting,
+// *stopped, releasing a parked Context) is deferred to the caller, which runs once every spec in the
+// group has returned (see runParallelGroup).
+//
+// ctx is acquired here, not shared with any other spec, so a parked body (ctx.T.Parallel(), see
+// spec_body_parallel.go) can safely be left un-released — the same poison-and-abandon rule
+// releaseContext already applies, just decided per spec here instead of per sequential step.
+func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelSpecOutcome {
+	name := specEventName(r.plan, i)
+	path := r.reportPath(i)
+	startTime := time.Now()
+	subtestName := specSubtestName(r.plan, i)
+	if len(subtestName) >= len(prefix) {
+		subtestName = subtestName[len(prefix):]
+	}
+	start, length := r.plan.ProgramStart[i], r.plan.ProgramLen[i]
+	var program []Instruction
+	if start+length <= len(r.plan.Instructions) {
+		program = r.plan.Instructions[start : start+length]
+	}
+	ctx := acquireContext(r.backend)
+	var message, output string
+	ran, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+		subBackend := asTestBackend(subT)
+		defer putTestBackend(subBackend)
+		ctx.Reset(subBackend)
+		message, output = runProgram(program, ctx)
+	})
+	failed := ctx.hasFailed()
+	duration := time.Since(startTime)
+	if parked {
+		// Leaked deliberately, same rule as releaseContext/failUnsupportedSpecBodyParallel: the
+		// parked body still holds ctx and will resume on its own goroutine later, so recycling it
+		// now would turn that body's assertions into silent no-ops or corrupt whichever unrelated
+		// spec the pool hands it to next.
+		ctx.poison()
+	} else {
+		releaseContext(ctx)
+	}
+	return parallelSpecOutcome{
+		start:    report.SpecStartEvent{Name: name, Path: path, Time: startTime},
+		result:   specResult{Failed: failed, Filtered: !ran, Message: message, Output: output},
+		duration: duration,
+		parked:   parked,
+		specName: subtestName,
+	}
+}
+
+// emitParallelOutcome reports one buffered ItParallel outcome. Called only from runParallelGroup,
+// after every spec in the range has finished, in declaration (index) order — so, unlike
+// reportSpecStarted/reportSpecFinished, it builds both events directly instead of deriving Duration
+// from time.Now(): that would measure the gap since the whole group finished, not the one spec's own
+// run.
+func (r *groupRun) emitParallelOutcome(i int, o parallelSpecOutcome) {
+	if r.rep == nil {
+		return
+	}
+	r.rep.SpecStarted(o.start)
+	duration := o.duration
+	if o.result.Filtered {
+		duration = 0
+	}
+	r.rep.SpecFinished(report.SpecResultEvent{
+		SpecStartEvent: o.start,
+		Failed:         o.result.Failed,
+		Filtered:       o.result.Filtered,
+		Duration:       duration,
+		Message:        o.result.Message,
+		Output:         o.result.Output,
+	})
 }
 
 // runGroupHookOnce runs one hook, recovering a panic through the same single authority every other

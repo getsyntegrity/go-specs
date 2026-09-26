@@ -207,8 +207,35 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 			appendSpecPath(plan, markScopes(scratch.path, name))
 		}
 	}
+	// openParallel tracks a currently-open run of consecutive ItParallel siblings (issue #245's
+	// second spec), scoped to this call's own children loop — i.e. to nodeID's direct children only.
+	// It is a local variable, not scratch state, precisely so it resets on every recursive call: a
+	// nested Describe/When processes its own children with its own fresh -1, which is what makes a
+	// scope boundary end any run the parent had open, and starting one there never leaks back out to
+	// the parent either. This is stricter than the documented rule ("ends at a BeforeAll/AfterAll
+	// group boundary") — it also ends a run at a scope with no hooks at all — but never merges two
+	// runs that rule would have kept apart, and it is what keeps a parallel range from ever
+	// straddling a hookGroup's Start/End (see planGroups.parallel's doc comment), because both
+	// build paths (this one and bytecodeCompiler's) apply exactly the same rule.
+	openParallel := -1
 	for _, cid := range arena.Children[nodeID] {
+		child := &arena.Nodes[cid]
+		wantParallel := child.Type == ItNode && child.Kind == itParallel
+		if !wantParallel && openParallel >= 0 {
+			registerParallelGroup(&scratch.groups, openParallel, len(plan.Names)-1)
+			openParallel = -1
+		}
+		before := len(plan.Names)
 		buildExecutionPlanFromArenaRec(arena, cid, plan, scratch)
+		if wantParallel && len(plan.Names) > before && openParallel < 0 {
+			// Focused out under a suite-wide FIt, len(plan.Names) does not grow (see focusedOut
+			// above), so a focused-out ItParallel sibling neither opens nor extends a run — it is
+			// invisible to grouping, exactly as it is invisible to the compiled plan.
+			openParallel = len(plan.Names) - 1
+		}
+	}
+	if openParallel >= 0 {
+		registerParallelGroup(&scratch.groups, openParallel, len(plan.Names)-1)
 	}
 	// Close this node's own group hooks (issue #207), the arena-path equivalent of
 	// bytecodeCompiler.closeGroupHooksAtTop: an ItNode has none of its own (BeforeAll/AfterAll are
@@ -360,13 +387,15 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 // SkipIt/PendingIt marks (issue #245), if any — they carry no before/body/after and never open a
 // subtest, so they are reported independently of whichever path runs the real specs below — then
 // runs the real specs through runPlanSpecsInOrder, unchanged from before issue #207, for a suite
-// without any BeforeAll/AfterAll group (H10), or through runPlanWithGroups otherwise.
+// without any BeforeAll/AfterAll group and without any ItParallel group (H10), or through
+// runPlanWithGroups otherwise — runPlanWithGroups is also where an ItParallel range is launched
+// concurrently (issue #245's second spec; see group_hooks.go's runParallelGroup).
 func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) {
 	if s.groups != nil {
 		reportMarks(rep, s.groups.skipped, false)
 		reportMarks(rep, s.groups.pending, true)
 	}
-	if s.groups == nil || len(s.groups.groups) == 0 {
+	if s.groups == nil || (len(s.groups.groups) == 0 && len(s.groups.parallel) == 0) {
 		runPlanSpecsInOrder(backend, rep, s.Plan)
 		return
 	}
