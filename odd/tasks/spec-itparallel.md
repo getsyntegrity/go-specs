@@ -156,9 +156,26 @@ Worktree `.claude/worktrees/issue-245-spec-itparallel`, based on `3734d4f` (head
 | T2 | delegated writer | same | 0ebf9e5 | RED (compile failure) → GREEN; `go test -race -count=20 -run TestSpecItParallel_ReporterOrderStability ./specs/` 20/20 pass; `go test ./...` green |
 | T3 | delegated writer | same | a1a22dc | RED (order-count bug caught by real run) → GREEN; `TestAssertionSourceAttribution` green with ItParallel added; `go test ./...` green |
 | T4 | delegated writer | same | 51e9077 | RED (compile failure, checked out against base) → GREEN; `go test -count=1 -run 'Equivalence|Alloc' ./specs/` green; benchmark recorded (no regression) |
-| T5 | delegated writer | docs only (DSL.md, EXECUTION_ENGINES.md, README.md, CHANGELOG.md) | (this commit) | `make fmt-check` clean, `go vet ./...` clean, `golangci-lint run ./specs/...` 0 issues, `go test ./...` green |
+| T5 | delegated writer | docs only (DSL.md, EXECUTION_ENGINES.md, README.md, CHANGELOG.md) | 3966165 | `make fmt-check` clean, `go vet ./...` clean, `golangci-lint run ./specs/...` 0 issues, `go test ./...` green |
+
+Deviation from the planned semantics, accepted as documented: a parallel run ends at *every*
+`Describe`/`When` transition, not only at a `BeforeAll`/`AfterAll` boundary. It is stricter than
+`Builder`, which coalesces consecutive `ItParallel` across `Describe` boundaries. Outcomes still
+match `Builder`; only which specs overlap in time differs. It guarantees a parallel range never
+straddles a hooked group. Pinned by `TestSpecItParallel_GroupingConsecutiveVsSeparated`.
+
+Parent verification: `gentle-ai review assess --base-ref 3734d4f --committed-only` returned risk
+`high` (`process_boundary`, subprocess tests); RDD is off for this clone, so no native review ran.
+The writer self-verified. An independent read-only verifier returned PASS with no findings. It
+checked concurrency, panic/`Fatal` containment (with throwaway reproducers, deleted), `-run`,
+reporting order, focus, H10, the non-`*testing.T` fallback and docs. It also ran
+`go test -race -count=3 -run TestSpecItParallel ./specs/`, which passed. The parent re-ran
+`go test -count=1 ./...`: no FAIL.
+
+Coverage gap noted by the verifier: no committed test pins panic/`ctx.T.Fatal` containment inside
+an `ItParallel` body. The behavior is correct today; a regression test is optional follow-up.
 
 ## Next step
 
-Done. All five tasks (T1–T5) landed on `feat/245-spec-itparallel`, stacked on `feat/245-spec-focus-skip-pending`
-(PR #250). Push and PR remain the user's decision.
+Spec 2 is done. Push and PR (`Closes #245`, base `feat/245-spec-focus-skip-pending` until #250
+merges) are the user's decision.
