@@ -382,7 +382,16 @@ exists so that doing so by accident fails loudly instead of quietly asserting tw
 | `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`; when that fails and both sides are errors, `errors.Is(actual, expected)`. No reflection. |
 | `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `errors.Is(actual, expected)` when both sides are errors, `reflect.DeepEqual` for everything else. |
 
-The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't even be called with a slice or map — that's a compile error, not a runtime surprise. But for structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
+The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't be called with a slice or map type — that's a compile error. An interface type such as `any` or `error` does satisfy `comparable`, though, and can hold a slice or map at runtime. `==` cannot compare two such values, so the typed pair does not panic; it fails, and the message says why:
+
+```go
+var a, b any = []int{1}, []int{1}
+specs.EqualTo(ctx, a, b)
+// expected [1] to equal [1], but dynamic type []int is not comparable with ==;
+// use ctx.Expect(...).ToEqual for a deep comparison
+```
+
+The `errors.Is` rule below still applies first, so an incomparable error whose `Is` method matches passes. For structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
 
 ```go
 type withPtr struct{ N *int }
