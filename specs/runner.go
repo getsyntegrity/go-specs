@@ -133,8 +133,8 @@ func (r *Runner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 	if r.FailFast {
 		ctx.SetFailFast(true)
 	}

@@ -144,9 +144,8 @@ One hundred thousand assertions at 172 ns is 17 ms. For an ordinary test suite t
 cost is irrelevant next to `t.Run`, I/O, fixtures and process startup — a suite is not slow
 because of its assertion library.
 
-It matters where assertions run in a tight loop: exploration, mutation and property testing,
-which is exactly what go-specs runs internally (`paths_bench_test.go`,
-`examples/property_coverage_spy`). At 10⁷ assertions the difference between 1 ns and 495 ns is
+It matters where assertions run in a tight loop: exploration, mutation and property testing
+(`gen/generators` is the in-repo building block for that). At 10⁷ assertions the difference between 1 ns and 495 ns is
 seconds of wall clock and hundreds of megabytes of garbage. That is the case the optimisation was
 built for, and saying so makes the result credible rather than weaker. A nanosecond difference is
 not a universal impact claim: outside those loops it is invisible.

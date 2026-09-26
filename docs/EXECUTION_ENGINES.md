@@ -48,7 +48,7 @@ as part of this work — a reader currently learns the wrong engine.
 | Reachable from `Describe` | **Yes — this is the documented entry point.** |
 | Non-test consumers | `specs/spec.go`, `specs/path_builder.go` |
 | Tests | `execution_plan_test.go`, `_isolation_test.go`, `_recovery_test.go`, `_reporter_test.go`, `compiled_runner_test.go`, `lifecycle_hooks_test.go`, `spec_event_path_test.go`, `subtest_identity_test.go` |
-| Benchmarks | `minimal_and_buildsuite_bench_test.go`, `paths_bench_test.go`, `describe_variants_bench_test.go` |
+| Benchmarks | `minimal_and_buildsuite_bench_test.go`, `describe_variants_bench_test.go`, `e2e_test.go` (`*testing.T` path) |
 | Docs | README, `ARCHITECTURE.md`, `EXECUTION_MODEL.md`, every `examples/*` |
 | Reason to exist | It is the product. |
 

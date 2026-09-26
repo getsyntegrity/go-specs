@@ -153,9 +153,9 @@ func TestPoisonedContextIsNotRecycled(t *testing.T) {
 	backend := asTestBackend(t)
 	defer putTestBackend(backend)
 
-	ctx, release := acquireContext(backend)
+	ctx := acquireContext(backend)
 	ctx.poison()
-	release()
+	releaseContext(ctx)
 
 	if ctx.backend == nil {
 		t.Fatal("expected a poisoned Context to keep its backend after release so a parked body still reports, got nil")
