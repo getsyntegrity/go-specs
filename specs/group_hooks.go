@@ -520,19 +520,36 @@ func (r *groupRun) stopIfStopped(t *testing.T) {
 // directly otherwise.
 func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 	group := &r.pg.groups[g]
+	var hc groupHookContext
 	if !r.real {
-		r.runGroupBody(nil, prefix, g)
+		r.runGroupBody(nil, prefix, g, &hc)
+		hc.release()
 		return
 	}
 	name, groupPrefix := groupSubtestName(prefix, group)
-	ran, _, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
-		r.runGroupBody(gt, groupPrefix, g)
+	var bodyFailed bool
+	ran, failed, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
+		// Read in a defer so a hook's Goexit still records it, and before testing runs gt's
+		// cleanups, which it does only once this function has returned.
+		defer func() { bodyFailed = gt.Failed() }()
+		r.runGroupBody(gt, groupPrefix, g, &hc)
 	})
 	if parked {
-		// A hook of this group called the unsupported ctx.T.Parallel() on the group subtest.
+		// A hook of this group called the unsupported ctx.T.Parallel() on the group subtest. The
+		// parked hook still holds hc's Context, so it is deliberately not released (#172).
 		r.stopped.Store(true)
 		t.Helper()
 		t.Fatalf("%s", unsupportedGroupHookParallelMessage(groupDisplayName(r.pg, g)))
+	}
+	// Only now, with t.Run returned and gt's cleanups run, may the hooks' Context go back to the
+	// pool: a cleanup a hook registered through ctx.T reads ctx.T and ctx when it runs (#256).
+	hc.release()
+	if ran && failed && !bodyFailed {
+		// Nothing but a cleanup can fail gt after its function returned, and only the group's hooks
+		// hold gt: a cleanup a BeforeAll or AfterAll registered failed. testing cannot say which hook
+		// registered it, so it is reported as the group's teardown, its [AfterAll] case (H6).
+		reportHookCase(r.rep, group.Path, hookKindAfterAll,
+			fmt.Sprintf("go-specs: a Cleanup registered by a BeforeAll or AfterAll failed for group %q", groupDisplayName(r.pg, g)), "")
 	}
 	if !ran {
 		// testing filtered the group subtest out: none of its hooks ran (H3), and its specs are
@@ -552,16 +569,16 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 // runtime.Goexit alike, and a Goexit raised inside a deferred call still runs the remaining defers,
 // so every AfterAll runs however the group ends — a BeforeAll or AfterAll failing through
 // ctx.Expect/Fatal/FailNow, a SkipNow, or the stop of an unsupported ctx.T.Parallel() (H5/H6).
-func (r *groupRun) runGroupBody(gt *testing.T, prefix string, g int) {
+func (r *groupRun) runGroupBody(gt *testing.T, prefix string, g int, hc *groupHookContext) {
 	group := &r.pg.groups[g]
 	acc := &afterAllResult{}
 	defer r.reportAfterAll(gt, g, acc)
 	for k := len(group.AfterAll) - 1; k >= 0; k-- {
 		if h := group.AfterAll[k]; h != nil {
-			defer r.runAfterAll(gt, h, acc)
+			defer r.runAfterAll(gt, hc, h, acc)
 		}
 	}
-	if !r.runBeforeAlls(gt, g) || r.stopped.Load() {
+	if !r.runBeforeAlls(gt, hc, g) || r.stopped.Load() {
 		return
 	}
 	r.runRange(gt, prefix, group.Start, group.End, r.children[g])
@@ -576,7 +593,7 @@ func (r *groupRun) runGroupBody(gt *testing.T, prefix string, g int) {
 // which covers a direct ctx.T.Errorf as well as ctx assertions, Fatal and FailNow. A BeforeAll that
 // stopped without returning and without failing called SkipNow: the group is skipped, its specs
 // are reported skipped, and it is not a failure.
-func (r *groupRun) runBeforeAlls(gt *testing.T, g int) (ok bool) {
+func (r *groupRun) runBeforeAlls(gt *testing.T, hc *groupHookContext, g int) (ok bool) {
 	group := &r.pg.groups[g]
 	var message, output string
 	var failed, returned bool
@@ -598,7 +615,7 @@ func (r *groupRun) runBeforeAlls(gt *testing.T, g int) (ok bool) {
 		if h == nil {
 			continue
 		}
-		m, o, hookFailed := r.runHook(gt, h)
+		m, o, hookFailed := r.runHook(gt, hc, h)
 		if hookFailed {
 			failed, message, output = true, m, o
 			break
@@ -623,7 +640,7 @@ type afterAllResult struct {
 // still prints the message and fails the group; only the [AfterAll] case is missing — the
 // documented H6 limitation. testing offers no per-call observation of a *testing.T that would lift
 // it.
-func (r *groupRun) runAfterAll(gt *testing.T, h func(*Context), acc *afterAllResult) {
+func (r *groupRun) runAfterAll(gt *testing.T, hc *groupHookContext, h func(*Context), acc *afterAllResult) {
 	failedBefore := gt != nil && gt.Failed()
 	var message, output string
 	var hookFailed, returned bool
@@ -636,7 +653,7 @@ func (r *groupRun) runAfterAll(gt *testing.T, h func(*Context), acc *afterAllRes
 			}
 		}
 	}()
-	message, output, hookFailed = r.runHook(gt, h)
+	message, output, hookFailed = r.runHook(gt, hc, h)
 	returned = true
 }
 
@@ -651,21 +668,57 @@ func (r *groupRun) reportAfterAll(gt *testing.T, g int, acc *afterAllResult) {
 	}
 }
 
-// runHook runs one group hook on the calling goroutine against a Context bound to gt, the group
-// subtest (or to the suite's backend when there is no *testing.T). A panic is recovered through the
-// single recovery authority (runGroupHookOnce); an assertion failure or Fatal/FailNow ends the
-// goroutine with runtime.Goexit on a real *testing.T, which the callers' defers account for.
-func (r *groupRun) runHook(gt *testing.T, h func(*Context)) (message, output string, failed bool) {
-	backend := r.backend
-	if gt != nil {
-		b := asTestBackend(gt)
-		defer putTestBackend(b)
-		backend = b
-	}
-	ctx := acquireContext(backend)
-	defer releaseContext(ctx)
+// runHook runs one group hook on the calling goroutine against the group's hook Context, bound to
+// gt, the group subtest (or to the suite's backend when there is no *testing.T). A panic is
+// recovered through the single recovery authority (runGroupHookOnce); an assertion failure or
+// Fatal/FailNow ends the goroutine with runtime.Goexit on a real *testing.T, which the callers'
+// defers account for.
+func (r *groupRun) runHook(gt *testing.T, hc *groupHookContext, h func(*Context)) (message, output string, failed bool) {
+	ctx := hc.bind(gt, r.backend)
 	message, output = runGroupHookOnce(ctx, h)
 	return message, output, ctx.hasFailed()
+}
+
+// groupHookContext is the one Context every BeforeAll and AfterAll of a group runs against. It
+// lives as long as the group subtest, not as long as one hook: testing runs the Cleanup functions
+// a hook registered through ctx.T only when the group subtest ends, and those cleanups read ctx.T
+// and ctx then (#256). runGroup releases it once t.Run has returned. Released any earlier, the
+// Context was back in the pool while the group still ran: ctx.T was nil in the cleanup, or the
+// Context had been handed to one of the group's specs, and ctx.Expect failed into a cleared
+// backend.
+type groupHookContext struct {
+	ctx *Context
+	// owned is the backend bind wrapped gt in, returned to its pool on release; nil when the hooks
+	// run against the suite's own backend, which is not this group's to return.
+	owned testBackend
+}
+
+// bind returns the group's hook Context, acquiring it bound to gt on the group's first hook and
+// giving every later hook a fresh failure record, so each hook's outcome is its own.
+func (hc *groupHookContext) bind(gt *testing.T, suite testBackend) *Context {
+	if hc.ctx != nil {
+		hc.ctx.Reset(hc.ctx.backend)
+		return hc.ctx
+	}
+	backend := suite
+	if gt != nil {
+		hc.owned = asTestBackend(gt)
+		backend = hc.owned
+	}
+	hc.ctx = acquireContext(backend)
+	return hc.ctx
+}
+
+// release returns the hook Context and its backend to their pools, if a hook ran. A poisoned
+// Context is still in use by a parked hook and keeps its backend too, as in releaseContext.
+func (hc *groupHookContext) release() {
+	if hc.ctx == nil || hc.ctx.poisoned {
+		return
+	}
+	releaseContext(hc.ctx)
+	if hc.owned != nil {
+		putTestBackend(hc.owned)
+	}
 }
 
 // reportGroupSkipped reports every spec of group g, including its nested groups' specs, skipped

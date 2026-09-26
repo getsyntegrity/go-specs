@@ -359,6 +359,18 @@ s.When("with a scratch dir", func(w *specs.Spec) {
 })
 ```
 
+The hook's own `ctx` lives exactly as long: a cleanup can read `ctx.T` and assert with `ctx.Expect`
+when it runs, and both still reach the group's subtest. A failure raised only from such a cleanup
+fails the group's subtest and is reported as the group's `[AfterAll]` case, because cleanups run as
+part of the group's teardown and `testing` cannot tell which hook registered one. The H6 limitation
+applies: if the group's subtest had already failed before its cleanups ran, no case is added.
+
+```go
+w.BeforeAll(func(ctx *specs.Context) {
+    ctx.T.Cleanup(func() { ctx.Expect(leaks()).ToEqual(0) }) // runs after the group's AfterAll
+})
+```
+
 `ctx.T.Parallel()` is not supported inside a hook: making the group's subtest parallel would detach
 the group's hooks from its specs. It is detected and stops the run with a diagnostic, the same way
 `ctx.T.Parallel()` inside a sequential spec body already is. `ctx.T.SkipNow()` inside a

@@ -479,6 +479,13 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   backend already handed back to its pool, which crashed the test binary with a nil pointer
   dereference, and on `ItParallel` raced with the specs running concurrently.
   ([#253](https://github.com/getsyntegrity/go-specs/issues/253))
+- The same holds for group hooks: a `BeforeAll`'s or `AfterAll`'s `Context` now stays bound to
+  the group's subtest until that subtest's `Cleanup` functions have run. Before, it went back to
+  the pool as soon as the hook returned, so a cleanup registered with
+  `ctx.T.Cleanup(func() { ctx.T.Error(...) })` crashed the test binary on a nil `ctx.T`, and one
+  asserting with `ctx.Expect` in the cleanup passed silently. A failure raised only from such a
+  cleanup now fails the group and is reported as the group's `[AfterAll]` case.
+  ([#256](https://github.com/getsyntegrity/go-specs/issues/256))
 - **Behavior change.** `ctx.Expect(x).To(nil)` and `specs.ExpectT(ctx, x).To(nil)` passed
   silently: both `To` methods returned early on a nil matcher, while `assert.Evaluate` and the
   `Not`/`All`/`Any` composites have always treated a nil matcher as never matching. A matcher
