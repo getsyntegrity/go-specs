@@ -6,6 +6,7 @@
 package specs
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -95,7 +96,7 @@ func TestSpecItParallel_SpecsOverlapInTime(t *testing.T) {
 
 	suite := BuildSuite(nil, "suite", func(s *Spec) {
 		for i := 0; i < n; i++ {
-			s.ItParallel("spec", body)
+			s.ItParallel(fmt.Sprintf("spec-%d", i), body)
 		}
 	})
 	suite.Run(t)

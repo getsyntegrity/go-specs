@@ -669,6 +669,11 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 		subBackend := asTestBackend(subT)
 		defer putTestBackend(subBackend)
 		ctx.Reset(subBackend)
+		// runProgram's deferred recover is the ONLY panic containment on this path, and the same
+		// defer is what runs AfterEach after a failing body. runSubtestGuardingParallel does not
+		// recover, and a panic on this goroutine is fatal to the whole test binary (the testing
+		// package re-panics it). Calling the instructions directly here would crash the run on the
+		// first panicking ItParallel and skip AfterEach. See spec_itparallel_failure_test.go.
 		message, output = runProgram(program, ctx)
 	})
 	failed := ctx.hasFailed()

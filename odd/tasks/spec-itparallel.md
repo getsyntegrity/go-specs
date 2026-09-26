@@ -175,9 +175,20 @@ reporting order, focus, H10, the non-`*testing.T` fallback and docs. It also ran
 Coverage gap noted by the verifier, now closed: `specs/spec_itparallel_failure_test.go` pins that a
 panic or `ctx.T.Fatal` inside one `ItParallel` body fails only that spec's subtest. Siblings still
 pass, `AfterEach` runs for all four specs, and the process does not crash. RED was observed through
-a temporary mutation that replaced `runProgram` in `runParallelSpec` with an unrecovered loop:
-`AfterEach ran 2 times, want 4`. The panic itself was still contained under that mutation, because
-`runSubtestGuardingParallel` recovers too. The mutation was reverted before the commit.
+a temporary mutation that replaced `runProgram` in `runParallelSpec` with an unrecovered loop.
+
+Correction (after review): an earlier version of this note claimed that
+`runSubtestGuardingParallel` also recovers the panic. That was wrong, because it has no `recover()`.
+Under the mutation the test binary did crash (`panic: parallel-boom [recovered, repanicked]`). The
+original test missed the crash because the `testing` package prints the whole `--- FAIL` hierarchy
+before it re-panics; its first RED came only from `AfterEach ran 2 times, want 4`. The test now
+asserts that Go's top-level `panic: ... [recovered` line is absent. Under the same mutation it fails
+with `an ItParallel panic escaped its spec and crashed the test binary`. `runParallelSpec` now
+carries a comment stating that `runProgram`'s deferred recover is the only containment on this
+path, and that the same defer is what runs `AfterEach`.
+
+Also renamed the four specs of `TestSpecItParallel_SpecsOverlapInTime` from a shared `"spec"`
+(which Go de-duplicates as `spec#01`…) to `spec-0`…`spec-3`.
 
 ## Next step
 

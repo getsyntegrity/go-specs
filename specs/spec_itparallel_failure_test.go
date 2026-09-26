@@ -35,10 +35,15 @@ func TestSpecItParallel_PanicAndFatalAreContainedPerSpec(t *testing.T) {
 	if !failed {
 		t.Fatalf("expected the run to fail (bravo panics, charlie calls Fatal), got a passing run:\n%s", output)
 	}
-	// The top-level test reaching its own FAIL line means the binary finished the test normally
-	// instead of being torn down by an unrecovered panic.
+	// A "--- FAIL: <test>" line alone does not prove the process survived: when a subtest panics
+	// unrecovered, the testing package prints the FAIL lines of the whole test hierarchy first and
+	// only then re-panics and kills the binary. The crash itself is what must be absent: Go's
+	// top-level "panic: ... [recovered" line, which is printed at column 0.
+	if crash := regexp.MustCompile(`(?m)^panic: .*\[recovered`); crash.MatchString(output) {
+		t.Fatalf("an ItParallel panic escaped its spec and crashed the test binary:\n%s", output)
+	}
 	if !strings.Contains(output, "--- FAIL: "+itParallelFailureTest+" (") {
-		t.Fatalf("expected %s to complete and report FAIL, not crash the process:\n%s", itParallelFailureTest, output)
+		t.Fatalf("expected %s to complete and report FAIL:\n%s", itParallelFailureTest, output)
 	}
 	for _, want := range []struct{ verdict, spec string }{
 		{"PASS", "alpha"},
