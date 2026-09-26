@@ -139,3 +139,48 @@ func TestTypedEqualityTypedNilPointerNeitherPanicsNorMatches(t *testing.T) {
 		t.Error("expected two typed nils of the same type to be == equal")
 	}
 }
+
+// dslSliceError is an error whose dynamic type is not comparable. error satisfies the comparable
+// constraint, so EqualTo[error] compiles, but == on two error values holding it panics at runtime.
+type dslSliceError []string
+
+func (e dslSliceError) Error() string { return fmt.Sprint([]string(e)) }
+
+// dslCodesError is incomparable too, but its Is method relates two values with the same first code.
+type dslCodesError []int
+
+func (e dslCodesError) Error() string { return fmt.Sprint([]int(e)) }
+func (e dslCodesError) Is(target error) bool {
+	t, ok := target.(dslCodesError)
+	return ok && len(t) > 0 && len(e) > 0 && t[0] == e[0]
+}
+
+// Codex review on #259: the typed path must not panic on errors whose dynamic type is incomparable.
+// It gives the verdict ctx.Expect gives — errors.Is, which skips == for incomparable values.
+func TestTypedEqualityHandlesDynamicallyIncomparableErrors(t *testing.T) {
+	cases := []struct {
+		name             string
+		actual, expected error
+		equal            bool
+	}{
+		{"same incomparable type, no Is method", dslSliceError{"a"}, dslSliceError{"a"}, false},
+		{"incomparable type with a matching Is method", dslCodesError{7, 1}, dslCodesError{7, 2}, true},
+		{"incomparable type with a non-matching Is method", dslCodesError{7}, dslCodesError{8}, false},
+		{"wrapped incomparable error with a matching Is", fmt.Errorf("w: %w", dslCodesError{7}), dslCodesError{7}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, e := tc.actual, tc.expected
+			want := outcome(t, "Expect.ToEqual", func(c *Context) { c.Expect(a).ToEqual(e) })
+			if want != tc.equal {
+				t.Fatalf("ctx.Expect(...).ToEqual passed=%v, test expects %v", want, tc.equal)
+			}
+			if got := outcome(t, "EqualTo", func(c *Context) { EqualTo(c, a, e) }); got != want {
+				t.Errorf("EqualTo passed=%v, want %v like ctx.Expect", got, want)
+			}
+			if got := outcome(t, "ExpectT.ToEqual", func(c *Context) { ExpectT(c, a).ToEqual(e) }); got != want {
+				t.Errorf("ExpectT.ToEqual passed=%v, want %v like ctx.Expect", got, want)
+			}
+		})
+	}
+}

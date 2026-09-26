@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/getsyntegrity/go-specs/assert"
 )
@@ -215,7 +216,12 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 	if c == nil || c.backend == nil {
 		return
 	}
-	if actual == expected {
+	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
+	if !mayHoldIncomparable[T]() {
+		if actual == expected {
+			return
+		}
+	} else if interfaceEqual(actual, expected) {
 		return
 	}
 	if typedErrorsMatch(actual, expected) {
@@ -225,6 +231,37 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		c.tb.Helper()
 	}
 	c.failf("expected %v to equal %v", actual, expected)
+}
+
+// mayHoldIncomparable reports whether == on two values of T can panic. An interface type such as
+// error satisfies the comparable constraint, but == on two of its values panics when both hold the
+// same dynamic type and that type is not comparable — an error defined over a slice, say. For such a
+// T, EqualTo and ExpectT(...).ToEqual compare through interfaceEqual, which reports that comparison
+// as false, and then ask typedErrorsMatch — errors.Is, the verdict ctx.Expect(...).ToEqual gives for
+// the same two errors. Every other T keeps a bare == with no defer.
+//
+// The test must cost nothing for the T that can never panic, because EqualTo's passing path is
+// ~1 ns. unsafe.Sizeof is a constant for each instantiation, so for any T that is not two words wide
+// the whole call folds to false. Only a two-word T (an interface, a string, a two-word struct) goes on
+// to the runtime check that its zero value boxes to a nil any, which only an interface's does. The
+// call sites branch on this rather than calling a helper that wraps ==: that helper was not inlined
+// into EqualTo, and the extra call alone made EqualTo ~35% slower.
+func mayHoldIncomparable[T comparable]() bool {
+	var zero T
+	return unsafe.Sizeof(zero) == interfaceSize && any(zero) == nil
+}
+
+const interfaceSize = unsafe.Sizeof(any(nil))
+
+// interfaceEqual is == for an interface T, reporting a comparison of incomparable dynamic values as
+// false rather than letting its runtime panic escape. See mayHoldIncomparable.
+func interfaceEqual[T comparable](a, b T) (equal bool) {
+	defer func() {
+		if recover() != nil {
+			equal = false
+		}
+	}()
+	return a == b
 }
 
 // typedErrorsMatch is the second question EqualTo and ExpectT(...).ToEqual ask once == has said no:
@@ -303,7 +340,14 @@ func (x expectT[T]) ToEqual(expected T) {
 	if s.ctx == nil || s.ctx.backend == nil {
 		return
 	}
-	if s.actual != expected {
+	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
+	var equal bool
+	if !mayHoldIncomparable[T]() {
+		equal = s.actual == expected
+	} else {
+		equal = interfaceEqual(s.actual, expected)
+	}
+	if !equal {
 		if typedErrorsMatch(s.actual, expected) {
 			return
 		}
