@@ -18,10 +18,12 @@ const SchemaVersion = "2"
 type Status string
 
 const (
-	StatusPassed   Status = "passed"
-	StatusFailed   Status = "failed"  // assertion or hook failure
-	StatusError    Status = "error"   // recovered panic or other infrastructure failure
-	StatusSkipped  Status = "skipped" // compile-time XIt/Skip; body never ran
+	StatusPassed Status = "passed"
+	StatusFailed Status = "failed" // assertion or hook failure
+	StatusError  Status = "error"  // recovered panic or other infrastructure failure
+	// StatusSkipped is a compile-time XIt/Skip spec (body never ran) or a spec whose own subtest
+	// skipped at runtime via ctx.T.Skip/Skipf/SkipNow (issue #254), where the body did start running.
+	StatusSkipped  Status = "skipped"
 	StatusFiltered Status = "filtered"
 	// StatusPending is a compile-time PendingIt/Pending spec: the specification exists but its
 	// implementation does not, distinct from Skipped (intentionally not executed). Body never ran,

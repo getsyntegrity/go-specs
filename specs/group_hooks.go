@@ -528,7 +528,10 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 	}
 	name, groupPrefix := groupSubtestName(prefix, group)
 	var bodyFailed bool
-	ran, failed, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
+	// This subtest wraps the group's own BeforeAll/body/AfterAll, not any one spec's body, so a
+	// runtime ctx.T.Skip inside a spec never reaches this call's skipped return — that spec has its
+	// own, nested subtest via runSpec/runParallelSpec below. Discarded here for that reason.
+	ran, failed, _, parked := runSubtestGuardingParallel(t, name, func(gt *testing.T) {
 		// Read in a defer so a hook's Goexit still records it, and before testing runs gt's
 		// cleanups, which it does only once this function has returned.
 		defer func() { bodyFailed = gt.Failed() }()
@@ -752,8 +755,8 @@ func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 		}
 	}()
 	started := reportSpecStarted(r.rep, specEventName(r.plan, i), r.reportPath(i))
-	message, output, ran, failed := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
-	reportSpecFinished(r.rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
+	message, output, ran, failed, skipped := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
+	reportSpecFinished(r.rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 }
 
 // reportPath is specEventPath(plan, i) when there is a reporter, and nil otherwise, so the
@@ -878,7 +881,11 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	// returned, so it also sees a failure raised from a Cleanup the body registered (#253).
 	// ctx.hasFailed() alone only sees a failure that went through ctx.Expect/ctx assertions; a direct
 	// ctx.T.Error, ctx.T.Fatal or ctx.T.FailNow fails the Go subtest without ever touching ctx.
-	ran, subTFailed, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+	// subTSkipped is the same subtest's Skipped(), read at the same point for the same reason: a
+	// runtime ctx.T.Skip/Skipf/SkipNow (#254) never touches ctx either. It is folded against the
+	// final failed below, not used on its own, since a body that fails and then skips must still be
+	// reported failed (see spec_body_parallel.go's doc comment on this precedence).
+	ran, subTFailed, subTSkipped, parked := runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		// The backend is not handed back to its pool here: testing runs the subtest's cleanups after
 		// this closure returns, and a cleanup may still assert through ctx. It goes back below, once
 		// t.Run has returned (see runSpecProgramIsolated). Doing it in a defer here raced with the
@@ -892,6 +899,7 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 		message, output = runProgram(program, ctx)
 	})
 	failed := ctx.hasFailed() || subTFailed
+	skipped := subTSkipped && !failed
 	duration := time.Since(startTime)
 	if parked {
 		// Leaked deliberately, same rule as releaseContext/failUnsupportedSpecBodyParallel: the
@@ -907,7 +915,7 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	}
 	return parallelSpecOutcome{
 		start:    report.SpecStartEvent{Name: name, Path: path, Time: startTime},
-		result:   specResult{Failed: failed, Filtered: !ran, Message: message, Output: output},
+		result:   specResult{Failed: failed, Filtered: !ran, Skipped: skipped, Message: message, Output: output},
 		duration: duration,
 		parked:   parked,
 		specName: subtestName,
@@ -932,6 +940,7 @@ func (r *groupRun) emitParallelOutcome(i int, o parallelSpecOutcome) {
 		SpecStartEvent: o.start,
 		Failed:         o.result.Failed,
 		Filtered:       o.result.Filtered,
+		Skipped:        o.result.Skipped,
 		Duration:       duration,
 		Message:        o.result.Message,
 		Output:         o.result.Output,

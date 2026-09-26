@@ -75,6 +75,9 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 	if result.Failed {
 		o.failed++
 	}
+	if result.Skipped {
+		o.skipped++
+	}
 	duration := time.Since(start.Time)
 	if result.Filtered {
 		o.filtered++
@@ -84,6 +87,7 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 		SpecStartEvent: start,
 		Failed:         result.Failed,
 		Filtered:       result.Filtered,
+		Skipped:        result.Skipped,
 		Duration:       duration,
 		Message:        result.Message,
 		Output:         result.Output,
@@ -252,9 +256,9 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
-		message, output, ran, failed := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		message, output, ran, failed, skipped := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
 		if named {
-			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
+			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 		}
 		if ctx.failFast && failed {
 			return
@@ -287,16 +291,21 @@ func runSpecsRecovered(ctx *Context, g *group) {
 // failed is the spec's outcome: the Context's own failure record, plus, on the isolation path, the
 // subtest's own Failed() — a body that fails only through ctx.T (Error, Fatal, Fail, FailNow) marks
 // the subtest failed without touching the Context (#253). The same mirror as runSpecProgram.
-func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran, failed bool) {
+//
+// skipped is always false on the two fast paths, for the same reason runSpecProgram's are: neither a
+// fake backend nor a *testing.B gives the body a real subtest for ctx.T.Skip to act on. On the
+// isolation path it is runSpecIsolated's own fold of the subtest's Skipped() against this function's
+// final failed (#254).
+func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran, failed, skipped bool) {
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed()
+		return message, output, true, ctx.hasFailed(), false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed()
+		return message, output, true, ctx.hasFailed(), false
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -320,10 +329,10 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // restoring earlier sent that failure to the parent instead, and the spec was reported passed
 // (#253). prevBackend/prevT/prevTB are plain locals the closure never captures, so this adds no
 // allocation.
-func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran, failed bool) {
+func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran, failed, skipped bool) {
 	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
 	var parked bool
-	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+	ran, failed, skipped, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
 	if parked {
@@ -333,6 +342,10 @@ func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []st
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
 	failed = failed || ctx.hasFailed()
+	// skipped is folded against this final failed, not the raw subtest failed above, so it always
+	// agrees with the Failed value this function reports: a body that fails and then calls SkipNow
+	// must be reported failed, not skipped (#254) — see spec_body_parallel.go's doc comment.
+	skipped = skipped && !failed
 	if ran {
 		putTestBackend(ctx.backend)
 		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB

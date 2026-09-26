@@ -430,8 +430,8 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 	ctx := acquireContext(backend)
 	defer releaseContext(ctx)
 	started := reportSpecStarted(rep, name, path)
-	message, output, ran, failed := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
-	reportSpecFinished(rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
+	message, output, ran, failed, skipped := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
+	reportSpecFinished(rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 }
 
 // runSpecProgram runs program for one ExecutionPlan spec against ctx, isolated in its own subtest
@@ -458,18 +458,23 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 // place a failure can land there. On the isolation path it also folds in the subtest's own Failed(),
 // because a body that fails only through ctx.T (Error, Fatal, Fail, FailNow) marks the subtest
 // failed without touching the Context (#253).
-func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed bool) {
+//
+// skipped is always false on the fast paths — neither a fake testBackend nor a *testing.B gives the
+// body a real subtest to skip, so there is nothing for ctx.T.Skip to act on. On the isolation path it
+// is the subtest's own Skipped(), and false whenever failed is true (#254): see
+// runSpecProgramIsolated for where that fold happens.
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed, skipped bool) {
 	real, ok := backend.(*runnableBackend)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed()
+		return message, output, true, ctx.hasFailed(), false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed()
+		return message, output, true, ctx.hasFailed(), false
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
@@ -489,9 +494,9 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // live backend; a defer would already have cleared it and handed it to the pool (#253). The backend
 // is read back from ctx.backend, which ctx.Reset set to it, rather than from a variable the closure
 // captures, so this adds no allocation.
-func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed bool) {
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed, skipped bool) {
 	var parked bool
-	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
+	ran, failed, skipped, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		ctx.Reset(asTestBackend(subT))
 		message, output = runProgram(program, ctx)
 	})
@@ -502,6 +507,11 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
 	failed = failed || ctx.hasFailed()
+	// skipped is folded against this final failed, not the raw subtest failed runSubtestGuardingParallel
+	// returned, so it always agrees with the Failed value this function actually reports: a body that
+	// fails and then calls SkipNow must be reported Failed, not Skipped (#254), whichever of the
+	// subtest or the Context recorded that failure.
+	skipped = skipped && !failed
 	if ran {
 		putTestBackend(ctx.backend)
 	}
@@ -605,6 +615,7 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, r
 		SpecStartEvent: start,
 		Failed:         result.Failed,
 		Filtered:       result.Filtered,
+		Skipped:        result.Skipped,
 		Duration:       duration,
 		Message:        result.Message,
 		Output:         result.Output,
