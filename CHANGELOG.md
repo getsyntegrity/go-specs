@@ -479,7 +479,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 - `EqualTo[error]` and `ExpectT[error](...).ToEqual` panicked with "comparing uncomparable type"
   when both errors held the same incomparable dynamic type (an error defined over a slice, for
   example), because `==` on such interface values panics. They now treat that comparison as unequal
-  and go on to `errors.Is`, the verdict `ctx.Expect(...).ToEqual` gives. The guard folds away for
+  and go on to `errors.Is`, the verdict `ctx.Expect(...).ToEqual` gives. Only the typed path was
+  affected: `ctx.Expect(...).ToEqual`, `Equal`, `NotEqual`, `MatchError`, `Contain` and
+  `assert.EqualValues` already reached `errors.Is`, which skips `==` for incomparable values, and
+  never panicked on these errors. The guard folds away for
   every non-interface `T`, so their passing path is unchanged.
   ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
 - **Behavior change.** A spec that failed only through `ctx.T` (`Error`, `Fatal`, `Fail`,
