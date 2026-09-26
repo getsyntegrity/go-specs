@@ -218,18 +218,26 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 		return
 	}
 	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
+	var incomparable bool
 	if !mayHoldIncomparable[T]() {
 		if actual == expected {
 			return
 		}
-	} else if interfaceEqual(actual, expected) {
-		return
+	} else {
+		var equal bool
+		if equal, incomparable = interfaceEqual(actual, expected); equal {
+			return
+		}
 	}
 	if errorsFallbackIsFree[T]() && typedErrorsMatch(actual, expected) {
 		return
 	}
 	if c.tb != nil {
 		c.tb.Helper()
+	}
+	if incomparable {
+		c.failf(incomparableNotEqualFormat, actual, expected)
+		return
 	}
 	c.failf("expected %v to equal %v", actual, expected)
 }
@@ -255,15 +263,24 @@ func mayHoldIncomparable[T comparable]() bool {
 const interfaceSize = unsafe.Sizeof(any(nil))
 
 // interfaceEqual is == for an interface T, reporting a comparison of incomparable dynamic values as
-// false rather than letting its runtime panic escape. See mayHoldIncomparable.
-func interfaceEqual[T comparable](a, b T) (equal bool) {
+// false rather than letting its runtime panic escape. See mayHoldIncomparable. incomparable reports
+// that the panic happened, so the failure can say why two equal-looking values were not equal
+// (issue #238) instead of printing "expected [1] to equal [1]".
+func interfaceEqual[T comparable](a, b T) (equal, incomparable bool) {
 	defer func() {
 		if recover() != nil {
-			equal = false
+			equal, incomparable = false, true
 		}
 	}()
-	return a == b
+	return a == b, false
 }
+
+// incomparableNotEqualFormat is the failure message when interfaceEqual could not compare the two
+// values. == never looks inside a slice, map or func, so the typed path cannot say whether they are
+// equal; ctx.Expect(...).ToEqual compares them with reflect.DeepEqual. %[1]T names actual's type, so the
+// format takes the same two operands as the plain one.
+const incomparableNotEqualFormat = "expected %v to equal %v, but dynamic type %[1]T is not comparable with ==; " +
+	"use ctx.Expect(...).ToEqual for a deep comparison"
 
 // errorsFallbackIsFree reports whether T is an interface or a pointer type — the kinds whose values
 // convert to an interface without allocating. Only for those does the typed path ask
@@ -361,11 +378,11 @@ func (x expectT[T]) ToEqual(expected T) {
 		return
 	}
 	// See mayHoldIncomparable for why == is guarded, and why the guard is written out here.
-	var equal bool
+	var equal, incomparable bool
 	if !mayHoldIncomparable[T]() {
 		equal = s.actual == expected
 	} else {
-		equal = interfaceEqual(s.actual, expected)
+		equal, incomparable = interfaceEqual(s.actual, expected)
 	}
 	if !equal {
 		if errorsFallbackIsFree[T]() && typedErrorsMatch(s.actual, expected) {
@@ -373,6 +390,10 @@ func (x expectT[T]) ToEqual(expected T) {
 		}
 		if s.ctx.tb != nil {
 			s.ctx.tb.Helper()
+		}
+		if incomparable {
+			reportNotEqual(s.ctx, incomparableNotEqualFormat, s.actual, expected)
+			return
 		}
 		reportNotEqual(s.ctx, "expected %v to equal %v", s.actual, expected)
 		return
