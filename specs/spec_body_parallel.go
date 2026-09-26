@@ -79,19 +79,25 @@ import (
 //
 // The cost is nil in context: this path already starts a goroutine via t.Run, and the hot assertion
 // path never reaches it.
+//
+// sub is written before started is stored and read only after started loads true, so the atomic
+// orders it too. The three live in one struct because the closure's capture moves them to the heap:
+// as separate variables that is one allocation each, per spec, on the real *testing.T path.
 func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, parked bool) {
-	var started, done atomic.Bool
-	var sub *testing.T
+	var st struct {
+		started, done atomic.Bool
+		sub           *testing.T
+	}
 	t.Run(name, func(subT *testing.T) {
-		sub = subT
-		started.Store(true)
-		defer done.Store(true)
+		st.sub = subT
+		st.started.Store(true)
+		defer st.done.Store(true)
 		body(subT)
 	})
-	ran = started.Load()
-	parked = ran && !done.Load()
+	ran = st.started.Load()
+	parked = ran && !st.done.Load()
 	if ran && !parked {
-		failed = sub.Failed()
+		failed = st.sub.Failed()
 	}
 	return ran, failed, parked
 }

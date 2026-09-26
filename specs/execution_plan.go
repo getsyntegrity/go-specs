@@ -481,12 +481,18 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
 // the capture inside its own function scopes that heap allocation to the isolation path only (see the
 // identical split for runner.go's runSpecRecovered/runSpecIsolated).
+//
+// ctx stays bound to the subtest's backend until t.Run has returned, and the backend goes back to its
+// pool only then, not in a defer inside the closure. testing runs the subtest's Cleanup functions
+// after the closure has returned, so a cleanup the body registered, such as
+// ctx.T.Cleanup(func() { ctx.Expect(x).ToEqual(y) }), still needs ctx pointing at this subtest's own
+// live backend; a defer would already have cleared it and handed it to the pool (#253). The backend
+// is read back from ctx.backend, which ctx.Reset set to it, rather than from a variable the closure
+// captures, so this adds no allocation.
 func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed bool) {
 	var parked bool
 	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
-		subBackend := asTestBackend(subT)
-		defer putTestBackend(subBackend)
-		ctx.Reset(subBackend)
+		ctx.Reset(asTestBackend(subT))
 		message, output = runProgram(program, ctx)
 	})
 	if parked {
@@ -496,6 +502,9 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
 	failed = failed || ctx.hasFailed()
+	if ran {
+		putTestBackend(ctx.backend)
+	}
 	return
 }
 

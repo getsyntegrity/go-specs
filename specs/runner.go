@@ -312,44 +312,51 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // ran is set from inside the closure itself, not from t.Run's own bool return (see runSpecRecovered's
 // doc comment on why t.Run's return can't be trusted for this) — which only runs at all when the
 // filter accepted the subtest.
+//
+// ctx is rebound to the parent's backend/T/tb, and the subtest's backend handed back to its pool,
+// only after t.Run has returned, never in a defer inside the closure. testing runs the subtest's
+// Cleanup functions after the closure has returned, so an idiomatic
+// ctx.T.Cleanup(func() { ctx.T.Error("...") }) needs ctx.T to still be this spec's subtest by then;
+// restoring earlier sent that failure to the parent instead, and the spec was reported passed
+// (#253). prevBackend/prevT/prevTB are plain locals the closure never captures, so this adds no
+// allocation.
 func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran, failed bool) {
+	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
 	var parked bool
 	ran, failed, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
 	if parked {
-		// The body called the unsupported ctx.T.Parallel(): runSpecBody's deferred restore has not
-		// run and cannot be run here, because the parked body still needs ctx pointing at its own
-		// subtest. Stop the run instead of letting the next spec swap over it (#172).
+		// The body called the unsupported ctx.T.Parallel(): ctx cannot be rebound to the parent here,
+		// because the parked body still needs ctx pointing at its own subtest. Stop the run instead of
+		// letting the next spec swap over it (#172).
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
 	failed = failed || ctx.hasFailed()
+	if ran {
+		putTestBackend(ctx.backend)
+		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
+	}
 	return
 }
 
-// runSpecBody runs before/s/after against ctx with ctx.backend/ctx.T/ctx.tb temporarily swapped to
-// tb's own backend (tb is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so
-// every assertion helper — all of which read c.backend/e.ctx.backend at call time, never cache it —
-// fails tb, not the parent. That is what makes the Goexit land in this subtest's goroutine instead of
-// the parent's. Restored before returning so the next spec in this group (back in the parent's
-// goroutine) sees the parent's backend/T/tb again, exactly as Context.Reset already does for the
-// analogous runIsolatedCase case.
+// runSpecBody runs before/s/after against ctx with ctx.backend/ctx.T/ctx.tb swapped to tb's own
+// backend (tb is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so every
+// assertion helper — all of which read c.backend/e.ctx.backend at call time, never cache it — fails
+// tb, not the parent. That is what makes the Goexit land in this subtest's goroutine instead of the
+// parent's. It deliberately leaves ctx bound to tb on return: the subtest's cleanups run after this
+// returns and still need it. runSpecIsolated rebinds ctx to the parent, and hands the backend back
+// to its pool, once t.Run has returned.
 //
 // ctx.tb must be swapped alongside ctx.backend: it is the only field assertion failure paths use to
 // mark themselves as test helpers, so leaving it pointing at the parent (or at nil) sends the
 // failure location back to a go-specs frame instead of the user's assertion line.
 func runSpecBody(ctx *Context, tb testing.TB, before []step, s step, after []step) (message, output string) {
-	subBackend := asTestBackend(tb)
-	defer putTestBackend(subBackend)
-	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
-	ctx.backend = subBackend
+	ctx.backend = asTestBackend(tb)
 	ctx.tb = tb
 	if t, ok := tb.(*testing.T); ok {
 		ctx.T = t
 	}
-	defer func() {
-		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
-	}()
 	return runSpecWithHooks(ctx, before, s, after)
 }
 

@@ -8,10 +8,15 @@ import (
 	"testing"
 )
 
-// ctxTFailureMechanisms is one spec per way a sequential spec body can fail its own subtest. Only
-// the last failing entry goes through ctx.Expect; the others fail the subtest through ctx.T
-// directly (including from a Cleanup it registers), which never touches the Context's own failure
-// record (#253).
+// ctxTFailureMechanisms is one spec per way a spec body can fail its own subtest. Most fail it
+// through ctx.T directly, which never touches the Context's own failure record (#253).
+//
+// The two cleanup entries use the idiomatic form, reading ctx.T and ctx inside the cleanup rather
+// than capturing them first. testing runs a subtest's Cleanup functions only after the subtest's own
+// function has returned, so these pin that the spec's Context stays bound to its own subtest until
+// t.Run, cleanups included, has finished: ctx.T must still be this spec's subtest, not the parent,
+// and ctx.Expect must still fail through this spec's own backend, not one already handed back to the
+// pool.
 var ctxTFailureMechanisms = []struct {
 	name string
 	body func(*Context)
@@ -20,12 +25,11 @@ var ctxTFailureMechanisms = []struct {
 	{"fatals-via-ctx-T", func(ctx *Context) { ctx.T.Fatal("boom") }},
 	{"fails-via-ctx-T", func(ctx *Context) { ctx.T.Fail() }},
 	{"failnow-via-ctx-T", func(ctx *Context) { ctx.T.FailNow() }},
-	// testing runs Cleanup functions after the subtest's own function has returned, so this failure
-	// lands later than any defer inside that function could observe. ctx.T is captured first because
-	// the Context is reset for the next spec by the time the cleanup runs.
 	{"errors-from-ctx-T-cleanup", func(ctx *Context) {
-		t := ctx.T
-		t.Cleanup(func() { t.Error("boom from cleanup") })
+		ctx.T.Cleanup(func() { ctx.T.Error("boom from cleanup") })
+	}},
+	{"fails-via-expect-in-cleanup", func(ctx *Context) {
+		ctx.T.Cleanup(func() { ctx.Expect(1).ToEqual(2) })
 	}},
 	{"fails-via-expect", func(ctx *Context) { ctx.Expect(1).ToEqual(2) }},
 	{"passes", func(*Context) {}},
@@ -39,9 +43,10 @@ var wantCtxTFailureReport = []string{
 	"SPEC_FINISHED name=fails-via-ctx-T failed=true",
 	"SPEC_FINISHED name=failnow-via-ctx-T failed=true",
 	"SPEC_FINISHED name=errors-from-ctx-T-cleanup failed=true",
+	"SPEC_FINISHED name=fails-via-expect-in-cleanup failed=true",
 	"SPEC_FINISHED name=fails-via-expect failed=true",
 	"SPEC_FINISHED name=passes failed=false",
-	"SUITE_FINISHED total=7 failed=6",
+	"SUITE_FINISHED total=8 failed=7",
 }
 
 func printCtxTFailureReport(rep *recordingReporter) {
@@ -54,9 +59,10 @@ func printCtxTFailureReport(rep *recordingReporter) {
 }
 
 // TestCtxTFailuresAreReportedAsFailedRealProcess proves #253: a spec that fails only through ctx.T
-// (Error, Fatal, Fail, FailNow, or an Error from a Cleanup) is reported Failed and counted in FailedSpecs, on every sequential
-// engine that hands the body a live subtest *testing.T. Before the fix, each of these engines derived
-// Failed from the Context alone, so the subtest printed --- FAIL while the reporter said passed.
+// (Error, Fatal, Fail, FailNow, or from a Cleanup) is reported Failed and counted in FailedSpecs, on
+// every engine that hands the body a live subtest *testing.T. Before the fix, each of these engines
+// derived Failed from the Context alone, or read the subtest's state before its cleanups had run, so
+// the subtest printed --- FAIL while the reporter said passed.
 //
 // A subprocess, because the specs' real subtest failures would otherwise fail this test itself.
 func TestCtxTFailuresAreReportedAsFailedRealProcess(t *testing.T) {
@@ -86,6 +92,15 @@ func TestCtxTFailuresAreReportedAsFailedRealProcess(t *testing.T) {
 				g.names = append(g.names, m.name)
 			}
 			NewRunnerWithReporter(&Program{Groups: []group{g}}, "suite", rep).Run(t)
+		},
+		// ItParallel runs every spec of the range concurrently, each on its own goroutine and its own
+		// pooled Context, and reports them afterwards in declaration order.
+		"it-parallel": func(t *testing.T, rep *recordingReporter) {
+			DescribeWithReporter(t, "suite", rep, func(s *Spec) {
+				for _, m := range ctxTFailureMechanisms {
+					s.ItParallel(m.name, m.body)
+				}
+			})
 		},
 	}
 
