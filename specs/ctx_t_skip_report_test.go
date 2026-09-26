@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // ctxTSkipMechanisms is one spec per way a spec body can skip its own subtest at runtime (#254),
@@ -148,5 +150,212 @@ func TestRunnerFailFastDoesNotStopOnCtxTSkip(t *testing.T) {
 
 	if !spec2Ran {
 		t.Fatal("expected FailFast not to stop the run after spec one only skipped, but spec two did not run")
+	}
+}
+
+// assertOnlySkipped fails t unless e reports exactly Skipped: true and nothing else in
+// Skipped/Failed/Filtered/Pending — the "not failed, not passed, not filtered, not pending" shape a
+// runtime-skipped spec must have (#254).
+func assertOnlySkipped(t *testing.T, label string, e report.SpecResultEvent) {
+	t.Helper()
+	if !e.Skipped || e.Failed || e.Filtered || e.Pending {
+		t.Errorf("%s: got Skipped=%v Failed=%v Filtered=%v Pending=%v, want only Skipped",
+			label, e.Skipped, e.Failed, e.Filtered, e.Pending)
+	}
+}
+
+// TestBeforeEachSkipReportsSpecSkippedAndStillRunsAfterEach pins that ctx.T.Skip/Skipf/SkipNow
+// inside a BeforeEach is folded into the spec's own outcome exactly like a skip in the spec body
+// itself (#254): the spec is reported Skipped (not failed, not passed) and counted in SkippedSpecs,
+// and AfterEach still runs.
+//
+// No new mechanism is needed for AfterEach to run: BeforeEach/body/AfterEach are one instruction
+// stream inside the spec's own subtest (runProgram, execution_plan.go; runSpecWithHooks, runner.go),
+// and a SkipNow ends that subtest's goroutine with runtime.Goexit, which runs every deferred call on
+// its way out — the same guarantee that already makes AfterEach run after a Fatal/FailNow in a
+// BeforeEach (see runSpecWithHooks' and runProgram's doc comments). This test exists to pin that
+// guarantee explicitly for Skip, on every engine that has a BeforeEach.
+//
+// No subprocess needed: a BeforeEach skip never fails the process, unlike ctxTSkipMechanisms'
+// fails-then-skips case above.
+func TestBeforeEachSkipReportsSpecSkippedAndStillRunsAfterEach(t *testing.T) {
+	t.Run("describe", func(t *testing.T) {
+		rep := &recordingReporter{}
+		var afterEachRan bool
+		DescribeWithReporter(t, "suite", rep, func(s *Spec) {
+			s.BeforeEach(func(ctx *Context) { ctx.T.Skip("no fixture") })
+			s.AfterEach(func(*Context) { afterEachRan = true })
+			s.It("spec", func(*Context) {})
+		})
+		if len(rep.specFinished) != 1 {
+			t.Fatalf("expected exactly one SpecFinished event, got %d: %+v", len(rep.specFinished), rep.specFinished)
+		}
+		assertOnlySkipped(t, "spec", rep.specFinished[0])
+		if !afterEachRan {
+			t.Error("AfterEach did not run after BeforeEach's ctx.T.Skip")
+		}
+		if len(rep.suiteFinished) != 1 {
+			t.Fatalf("expected exactly one SuiteFinished event, got %d", len(rep.suiteFinished))
+		}
+		if end := rep.suiteFinished[0]; end.SkippedSpecs != 1 || end.FailedSpecs != 0 || end.TotalSpecs != 1 {
+			t.Errorf("suite totals = %+v, want TotalSpecs=1 SkippedSpecs=1 FailedSpecs=0", end)
+		}
+	})
+
+	// A BeforeAll alongside the spec's own BeforeEach routes the suite through the group engine
+	// (runPlanWithGroups / group_hooks.go's runSpec), whose isolation is separate from the flat
+	// path's runExecution.
+	t.Run("describe-with-before-all", func(t *testing.T) {
+		rep := &recordingReporter{}
+		var afterEachRan bool
+		DescribeWithReporter(t, "suite", rep, func(s *Spec) {
+			s.BeforeAll(func(*Context) {})
+			s.BeforeEach(func(ctx *Context) { ctx.T.Skipf("no fixture: %d", 1) })
+			s.AfterEach(func(*Context) { afterEachRan = true })
+			s.It("spec", func(*Context) {})
+		})
+		if len(rep.specFinished) != 1 {
+			t.Fatalf("expected exactly one SpecFinished event, got %d: %+v", len(rep.specFinished), rep.specFinished)
+		}
+		assertOnlySkipped(t, "spec", rep.specFinished[0])
+		if !afterEachRan {
+			t.Error("AfterEach did not run after BeforeEach's ctx.T.Skipf")
+		}
+		if len(rep.suiteFinished) != 1 {
+			t.Fatalf("expected exactly one SuiteFinished event, got %d", len(rep.suiteFinished))
+		}
+		if end := rep.suiteFinished[0]; end.SkippedSpecs != 1 || end.FailedSpecs != 0 || end.TotalSpecs != 1 {
+			t.Errorf("suite totals = %+v, want TotalSpecs=1 SkippedSpecs=1 FailedSpecs=0", end)
+		}
+	})
+
+	// The raw Runner/Builder engine's per-group before/after (group.before/group.after) is the
+	// BeforeEach/AfterEach equivalent, run per spec via runSpecWithHooks (runner.go).
+	t.Run("runner", func(t *testing.T) {
+		rep := &recordingReporter{}
+		var afterEachRan bool
+		g := group{
+			before: []step{func(ctx *Context) { ctx.T.SkipNow() }},
+			after:  []step{func(*Context) { afterEachRan = true }},
+			specs:  []step{func(*Context) {}},
+			names:  []string{"spec"},
+		}
+		NewRunnerWithReporter(&Program{Groups: []group{g}}, "suite", rep).Run(t)
+		if len(rep.specFinished) != 1 {
+			t.Fatalf("expected exactly one SpecFinished event, got %d: %+v", len(rep.specFinished), rep.specFinished)
+		}
+		assertOnlySkipped(t, "spec", rep.specFinished[0])
+		if !afterEachRan {
+			t.Error("the group's after hook did not run after before's ctx.T.SkipNow")
+		}
+		if len(rep.suiteFinished) != 1 {
+			t.Fatalf("expected exactly one SuiteFinished event, got %d", len(rep.suiteFinished))
+		}
+		if end := rep.suiteFinished[0]; end.SkippedSpecs != 1 || end.FailedSpecs != 0 || end.TotalSpecs != 1 {
+			t.Errorf("suite totals = %+v, want TotalSpecs=1 SkippedSpecs=1 FailedSpecs=0", end)
+		}
+	})
+
+	// ItParallel compiles to the exact same before/body/after instruction stream as an ordinary It
+	// (compiler.go's EmitItParallel), just launched on its own goroutine (group_hooks.go's
+	// runParallelSpec) — so a BeforeEach declared on the enclosing scope applies to it too.
+	t.Run("it-parallel", func(t *testing.T) {
+		rep := &recordingReporter{}
+		var afterEachRan bool
+		DescribeWithReporter(t, "suite", rep, func(s *Spec) {
+			s.BeforeEach(func(ctx *Context) { ctx.T.Skip("no fixture") })
+			s.AfterEach(func(*Context) { afterEachRan = true })
+			s.ItParallel("spec", func(*Context) {})
+		})
+		if len(rep.specFinished) != 1 {
+			t.Fatalf("expected exactly one SpecFinished event, got %d: %+v", len(rep.specFinished), rep.specFinished)
+		}
+		assertOnlySkipped(t, "spec", rep.specFinished[0])
+		if !afterEachRan {
+			t.Error("AfterEach did not run after BeforeEach's ctx.T.Skip")
+		}
+		if len(rep.suiteFinished) != 1 {
+			t.Fatalf("expected exactly one SuiteFinished event, got %d", len(rep.suiteFinished))
+		}
+		if end := rep.suiteFinished[0]; end.SkippedSpecs != 1 || end.FailedSpecs != 0 || end.TotalSpecs != 1 {
+			t.Errorf("suite totals = %+v, want TotalSpecs=1 SkippedSpecs=1 FailedSpecs=0", end)
+		}
+	})
+}
+
+// TestBeforeAllSkipNowReportsEveryGroupSpecSkippedAndRunsAfterAll pins docs/SUITE_HOOKS_CONTRACT.md
+// H5's "ctx.T.SkipNow() in a BeforeAll" paragraph on the reporter side: every spec of the group,
+// including a nested group's specs, is reported SpecStarted+SpecFinished{Skipped: true} — never
+// passed, never dropped from the report — counted in SkippedSpecs and not in FailedSpecs; no
+// synthetic [BeforeAll] case is emitted (a skip is not a failure); the group's AfterAll still runs;
+// and a sibling spec/group outside the skipped one is unaffected.
+//
+// This is pre-existing #207 H4/H5 behavior (group_hooks.go's runBeforeAlls, the `case !returned:`
+// branch, and reportGroupSuppressedSpec), already pinned end-to-end against a real process by
+// TestSkipNowInABeforeAllSkipsTheGroup (before_after_all_scope_test.go). This test adds the
+// SpecResultEvent-shape and SuiteEndEvent-totals assertions that test's printingReporter does not
+// make (its SuiteFinished is a no-op), using recordingReporter instead, without a subprocess: a
+// BeforeAll skip never fails `go test`.
+func TestBeforeAllSkipNowReportsEveryGroupSpecSkippedAndRunsAfterAll(t *testing.T) {
+	rep := &recordingReporter{}
+	var afterAllRan bool
+	DescribeWithReporter(t, "suite", rep, func(s *Spec) {
+		s.When("skipped", func(w *Spec) {
+			w.BeforeAll(func(ctx *Context) { ctx.T.SkipNow() })
+			w.AfterAll(func(*Context) { afterAllRan = true })
+			w.It("first", func(*Context) { t.Error("must not run: BeforeAll skipped the group") })
+			w.When("nested", func(n *Spec) {
+				n.It("second", func(*Context) { t.Error("must not run: an ancestor BeforeAll skipped the group") })
+			})
+		})
+		s.It("sibling", func(*Context) {})
+	})
+
+	if !afterAllRan {
+		t.Error("AfterAll did not run after a BeforeAll ctx.T.SkipNow (docs/SUITE_HOOKS_CONTRACT.md H5)")
+	}
+
+	byName := map[string]report.SpecResultEvent{}
+	for _, e := range rep.specFinished {
+		byName[e.Name] = e
+	}
+
+	for _, name := range []string{"first", "second"} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing SpecStarted/SpecFinished for %q: a BeforeAll skip must not drop specs from the report", name)
+		}
+		assertOnlySkipped(t, name, e)
+		if !strings.Contains(e.Message, "BeforeAll skipped group") {
+			t.Errorf("%s: Message = %q, want it naming the skipped group (H5)", name, e.Message)
+		}
+	}
+
+	sibling, ok := byName["sibling"]
+	if !ok {
+		t.Fatal("missing SpecFinished for the sibling spec outside the skipped group")
+	}
+	if sibling.Failed || sibling.Skipped || sibling.Filtered || sibling.Pending {
+		t.Errorf("sibling spec outside the skipped group must be an ordinary pass, got %+v", sibling)
+	}
+
+	for _, e := range rep.specFinished {
+		if e.Hook != report.HookNone {
+			t.Errorf("no synthetic hook case should be emitted for a BeforeAll skip (H5, unlike H4's failure case): %+v", e)
+		}
+	}
+
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected exactly one SuiteFinished event, got %d", len(rep.suiteFinished))
+	}
+	end := rep.suiteFinished[0]
+	if end.SkippedSpecs != 2 {
+		t.Errorf("SkippedSpecs = %d, want 2 (first and second)", end.SkippedSpecs)
+	}
+	if end.FailedSpecs != 0 {
+		t.Errorf("FailedSpecs = %d, want 0: a BeforeAll skip is not a failure", end.FailedSpecs)
+	}
+	if end.TotalSpecs != 3 {
+		t.Errorf("TotalSpecs = %d, want 3 (first, second, sibling)", end.TotalSpecs)
 	}
 }
