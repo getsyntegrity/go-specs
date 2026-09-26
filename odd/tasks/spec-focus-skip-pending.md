@@ -137,14 +137,22 @@ Runner: `go test ./...` (targeted runs with `go test -count=1 -run <Name> ./spec
   B/op and allocs/op are byte-for-byte identical across 6 runs each; sec/op shows no statistically
   significant difference (noisy shared machine, high develop-side variance). H10 holds: an unused
   suite pays nothing for this feature.
-- [ ] **T5 — Docs.** README DSL section, `docs/EXECUTION_ENGINES.md` Stage 4 item 1 marked done,
+- [x] **T5 — Docs.** README DSL section, `docs/EXECUTION_ENGINES.md` Stage 4 item 1 marked done,
   CHANGELOG entry referencing #245. Check: `make fmt-check`, `go vet ./...`.
+  Done: `docs/DSL.md` (the actual DSL reference; README has no DSL section of its own — it points
+  readers there) gained a "Spec.FIt, SkipIt and PendingIt" section, and its stale "Pending is only
+  on the Builder/ItWith path today" sentence was corrected. `docs/EXECUTION_ENGINES.md` Stage 4 item
+  1 marked done (struck through, `ItParallel` split out as item 2's own scope), its "Unique
+  capabilities"/"load-bearing fact" prose for Builder/Runner corrected (focus/skip/pending no longer
+  Builder-only), and the section-2 matrix's "Focus / skip / pending filtering" row updated for the
+  `ExecutionPlan` column. `CHANGELOG.md` gained an `### Added` entry referencing #245, in the
+  existing style (modeled on the neighboring #207 entry).
 
 ## Acceptance criteria
 
-1. A user of `specs.Describe` can call `s.FIt`, `s.SkipIt`, `s.PendingIt`.
-2. For the same tree, `Spec` and `Builder` produce the same outcomes (T3 is the proof).
-3. A suite that uses none of them allocates and performs as before (T4 is the proof).
+1. A user of `specs.Describe` can call `s.FIt`, `s.SkipIt`, `s.PendingIt`. **Met** — T1/T2.
+2. For the same tree, `Spec` and `Builder` produce the same outcomes (T3 is the proof). **Met.**
+3. A suite that uses none of them allocates and performs as before (T4 is the proof). **Met.**
 
 ## Delivery
 
@@ -161,8 +169,9 @@ Worktree `.claude/worktrees/issue-245-spec-focus-skip-pending`, based on `origin
 | T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | 4caa637 | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
 | T3 | delegated writer | spec_builder_equivalence_test.go (new, 2 non-trivial trees across 3 engines) | (pending commit) | RED (test-authoring bug, not implementation): first draft's `want` maps used bare leaf names instead of full breadcrumbs (`"a"` instead of `"suite/a"`); `go test -count=1 -run Equivalence -v ./specs/` failed identically on all 3 engines with "missing outcome for a, want passed" / "unexpected outcome for suite/a". GREEN: fixed `want` keys, same command all PASS. `make fmt-check` (after `make fmt`): clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
 | T4 | delegated writer | benchmark evidence, no source change | (pending commit) | `go test -count=1 -run Alloc ./specs/`: all PASS. `go test ./benchmarks -run='^$' -bench='^BenchmarkDescribeVariant_Describe$' -benchmem -count=6` on this branch and on `origin/develop` (temporary detached worktree, removed after): B/op and allocs/op identical; see table above. |
-| T5 | delegated writer | docs | — | pending |
+| T5 | delegated writer | docs/DSL.md, docs/EXECUTION_ENGINES.md, CHANGELOG.md | (pending commit) | `make fmt-check`: clean. `go vet ./...`: clean. |
 
 ## Next step
 
-T1–T4 done. Continue with T5 (docs).
+All tasks T1-T5 done. Final `go test ./...` full-suite pass remains before closing out; ready for
+review/PR (user decision — spec 2 closes #245, this PR only references it).

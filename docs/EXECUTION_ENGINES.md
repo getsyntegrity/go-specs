@@ -61,10 +61,10 @@ as part of this work — a reader currently learns the wrong engine.
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
 | Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
-| **Unique capabilities** | **`Focus`/`Skip`/`Pending`/`FIt`/`SkipIt`/`PendingIt`, `ItParallel`, `FailFast`, and `RunShard` all exist here and nowhere else.** `Spec` (the `Describe` API) has no focus, skip or pending at all. |
+| **Unique capabilities** | **`ItParallel`, `FailFast`, and `RunShard` exist here and nowhere else.** `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. |
 
-This is the load-bearing fact for v1: removing this engine removes focus/skip/pending and parallel specs
-from the library.
+This is the load-bearing fact for v1: removing this engine removes `ItParallel`, `FailFast` and
+`RunShard` from the library. Focus/skip/pending no longer depend on it (#245).
 
 ### 1.3 `MinimalRunner`
 
@@ -128,7 +128,7 @@ of the others.
 | Hook ordering (before outer→inner, after LIFO) | ✅ | ✅ | ❌ | ✅ (flattened at build) | ❌ | ❌ |
 | Per-spec panic recovery | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Failure recording | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (indexed) |
-| Focus / skip / pending filtering | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Focus / skip / pending filtering | ✅ ([#245](https://github.com/getsyntegrity/go-specs/issues/245)) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `-run` filtering (`Filtered`) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Subtest identity (`t.Run`) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Reporting (`report.EventReporter`) | ✅ | ✅ | ❌ | ❌ | ❌ | ⚠️ `parallelStep` only |
@@ -233,14 +233,20 @@ code does not do:
 
 Builder/Runner stays until the canonical engine grows what only it has:
 
-1. Focus/skip on `Spec` (`s.FIt` / `s.XIt`), compiled into `ExecutionPlan` the way `Builder.finalize`
-   compiles them into groups.
+1. ~~Focus/skip on `Spec` (`s.FIt` / `s.XIt`), compiled into `ExecutionPlan` the way `Builder.finalize`
+   compiles them into groups.~~ **Done ([#245](https://github.com/getsyntegrity/go-specs/issues/245)).**
+   `Spec.FIt`/`SkipIt`/`PendingIt` exist on both build paths (the bytecode compiler and the
+   `Analyze`/registry path) with the same observable behavior as `Builder.FIt`/`SkipIt`/`PendingIt`
+   — see `docs/DSL.md`'s "Spec.FIt, SkipIt and PendingIt" and `specs/spec_builder_equivalence_test.go`.
+   `ItParallel` is not part of this item; it is item 2 below, tracked separately as its own follow-up
+   change (it carries the determinism and concurrency risk `#245`'s proposal deliberately kept out).
 2. `ItParallel` equivalent on the plan model, reusing the existing worker substrate.
 3. `FailFast` on `CompiledSuite`.
 4. `RunShard` re-expressed over `ExecutionPlan`.
 
-Only once all four land — each with a contract-table row — does removing Builder/Runner become a migration
-question rather than a feature regression. **That decision is explicitly out of scope for #176.**
+Only once items 2-4 also land — each with a contract-table row — does removing Builder/Runner become
+a migration question rather than a feature regression. **That decision is explicitly out of scope
+for #176.**
 
 ---
 
