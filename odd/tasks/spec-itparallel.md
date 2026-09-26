@@ -172,8 +172,12 @@ reporting order, focus, H10, the non-`*testing.T` fallback and docs. It also ran
 `go test -race -count=3 -run TestSpecItParallel ./specs/`, which passed. The parent re-ran
 `go test -count=1 ./...`: no FAIL.
 
-Coverage gap noted by the verifier: no committed test pins panic/`ctx.T.Fatal` containment inside
-an `ItParallel` body. The behavior is correct today; a regression test is optional follow-up.
+Coverage gap noted by the verifier, now closed: `specs/spec_itparallel_failure_test.go` pins that a
+panic or `ctx.T.Fatal` inside one `ItParallel` body fails only that spec's subtest. Siblings still
+pass, `AfterEach` runs for all four specs, and the process does not crash. RED was observed through
+a temporary mutation that replaced `runProgram` in `runParallelSpec` with an unrecovered loop:
+`AfterEach ran 2 times, want 4`. The panic itself was still contained under that mutation, because
+`runSubtestGuardingParallel` recovers too. The mutation was reverted before the commit.
 
 ## Next step
 
