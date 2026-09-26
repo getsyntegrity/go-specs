@@ -423,6 +423,20 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** `mock.Equal` compared errors with `reflect.DeepEqual`, the structural
+  comparison [#183](https://github.com/getsyntegrity/go-specs/issues/183) removed from `assert`: an
+  unrelated error carrying the same message matched, and an argument wrapping the expected sentinel
+  did not. It now delegates to `assert.ValuesEqual`, so `CalledWith(mock.Equal(ErrX))` asks
+  `errors.Is(arg, ErrX)`, exactly like `Expect(err).To(Equal(ErrX))`. Non-error arguments keep their
+  structural semantics. A test that relied on matching an error by its message alone now fails and
+  should match the sentinel it means. ([#239](https://github.com/getsyntegrity/go-specs/issues/239))
+- `Spy.Call` recorded the caller's variadic slice without copying it, so `spy.Call(args...)`
+  followed by a mutation of `args` rewrote the recorded call and changed what `Calls` and
+  `CalledWith` reported. The arguments are now copied when the call is recorded.
+  ([#240](https://github.com/getsyntegrity/go-specs/issues/240))
+- The zero value of `mock.Mock` panicked with "assignment to entry in nil map" on its first `Spy`
+  call. The map is now created lazily under the lock, so `var m mock.Mock` is ready to use.
+  ([#241](https://github.com/getsyntegrity/go-specs/issues/241))
 - `MatchErrorAs` and `MatchError` reported a nil error as a non-error actual. Their
   `FailureMessage` asserted `actual.(error)` before checking for nil, and a type assertion rejects an
   untyped nil, so the dedicated "got a nil error" branch was unreachable: the common case of a

@@ -86,25 +86,32 @@ comes first, because the micro-benchmarks below are easy to over-read:
 > exploration testing), not in an ordinary suite. See [BENCHMARKS.md](BENCHMARKS.md) for which
 > claims CI enforces and which are observational.
 
-All figures: Go 1.25.14 (the pinned toolchain), linux/amd64, one Intel Xeon core at 2.1 GHz, medians
-of repeated runs. Absolute numbers vary by machine; compare rows within a table, not across machines.
+All figures: Go 1.25.14 (the pinned toolchain), linux/amd64, medians of repeated runs, measured on
+machine A (one Intel Xeon core at 2.1 GHz) unless a table says otherwise. Absolute numbers vary by
+machine; compare rows within a table, not across machines.
 
 ### End to end: what a suite actually costs (`*testing.T`, 1000 specs)
 
 Every framework runs the same 1000 specs, one passing equality assertion each, and every spec is its
 own subtest, as `go test -v` reports it. The baseline is a hand-written `t.Run` loop with an `if`,
-so the last column shows what each framework adds on top of the testing package itself.
+so the ratio columns show what each framework adds on top of the testing package itself. Two
+independent machines are shown because the ratios depend on the hardware: with a single core the
+subtest goroutines and the framework code compete for the same CPU, so framework overhead weighs
+more.
 
-| Framework                                     | per spec | vs `t.Run` baseline | allocs/spec |
-| --------------------------------------------- | -------- | ------------------- | ----------- |
-| baseline: `t.Run` + `if`                      | ~10.1 µs | 1.00×               | 25          |
-| go-specs, suite built once (`BuildSuite`)     | ~12.9 µs | ~1.27×              | 30          |
-| Testify: `t.Run` + `assert.Equal`             | ~13.8 µs | ~1.37×              | 27          |
-| go-specs, `specs.Describe` (declare + run)    | ~14.3 µs | ~1.41×              | 31          |
-| Gomega: `t.Run` + `NewWithT`                  | ~15.0 µs | ~1.48×              | 33          |
+| Framework                                  | A: per spec | A: vs baseline | B: per spec | B: vs baseline | allocs/spec |
+| ------------------------------------------ | ----------- | -------------- | ----------- | -------------- | ----------- |
+| baseline: `t.Run` + `if`                   | ~10.1 µs    | 1.00×          | ~7.3 µs     | 1.00×          | 25          |
+| go-specs, suite built once (`BuildSuite`)  | ~12.9 µs    | ~1.27×         | ~7.8 µs     | ~1.07×         | 30          |
+| Testify: `t.Run` + `assert.Equal`          | ~13.8 µs    | ~1.37×         | ~8.0 µs     | ~1.09×         | 27          |
+| go-specs, `specs.Describe` (declare + run) | ~14.3 µs    | ~1.41×         | ~8.0 µs     | ~1.10×         | 31          |
+| Gomega: `t.Run` + `NewWithT`               | ~15.0 µs    | ~1.48×         | ~8.6 µs     | ~1.18×         | 33          |
 
-Differences under ~10% between rows are within run-to-run noise. Reproduce with `make bench-e2e`
-(source: [`benchmarks/e2e_test.go`](benchmarks/e2e_test.go)).
+A: one Intel Xeon core at 2.1 GHz. B: maintainer workstation. Both runs order the rows the same
+way and report identical allocation counts; the framework overhead is between ~1.1× and ~1.5× of a
+bare `t.Run` depending on the machine, and differences under ~10% between rows are within
+run-to-run noise. Reproduce with `make bench-e2e` (source:
+[`benchmarks/e2e_test.go`](benchmarks/e2e_test.go)).
 
 ### Assertions (single assertion, no subtest)
 
