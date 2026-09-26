@@ -174,6 +174,11 @@ func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 // the Describe engine acquires a Context once per spec, so every spec cost one allocation there
 // while every existing contract stayed green.
 func TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
+	if raceEnabled {
+		// Unlike the runners above, this engine acquires a pooled Context once per spec, so the
+		// race detector's random sync.Pool drops surface here as ~0.25 allocations per spec.
+		t.Skip("sync.Pool drops Puts at random under -race; the contract is enforced by the non-race run")
+	}
 	assertRunnerLoopDoesNotAllocatePerSpec(t, "Describe/CompiledSuite engine", func(n int) func(testing.TB) {
 		suite := BuildSuite(nil, "suite", func(s *Spec) {
 			s.BeforeEach(func(*Context) {})
