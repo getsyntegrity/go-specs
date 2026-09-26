@@ -104,10 +104,17 @@ Runner: `go test ./...` (targeted runs with `go test -count=1 -run <Name> ./spec
   `TestSpecFItGroupWithZeroSpecsAfterFocusIsNeverEntered` and its converse,
   `TestSpecFItGroupSurvivingFocusIsStillEntered` (a group with at least one focused spec left is
   still entered, hooks run once around it).
-- [ ] **T3 — Equivalence with `Builder`.** Table of identical trees declared through both engines
+- [x] **T3 — Equivalence with `Builder`.** Table of identical trees declared through both engines
   (mixed `It`/`FIt`/`SkipIt`/`PendingIt`, nested `Describe`/`When`) asserting the same set of
   (full name, status) outcomes and the same executed bodies. Check: `go test -count=1 -run
   Equivalence ./specs/`.
+  Done: 3 tree shapes (flat mix, focused, nested with hooks) × 3 build paths (compiler, registry,
+  Builder) in `spec_builder_equivalence_test.go`. Deliberately compares the *set* of (full name,
+  status) outcomes, not event order: Builder's own `finalize` attaches a buffered skip/pending mark
+  to whichever coalesced group closes next, so even Builder-only reporting order does not always
+  match declaration order — see the feature doc's semantics section and the test file's header
+  comment. `BeforeAll`/`AfterAll` are out of this table: they exist only on `*Spec`
+  (`docs/EXECUTION_ENGINES.md`), so Builder has nothing to compare them against.
 - [ ] **T4 — Performance evidence.** Allocation contract tests pass unchanged; benchmark of the
   flat `Describe` path on `origin/develop` vs this branch recorded here. Check:
   `go test -count=1 -run Alloc ./specs/` and the recorded benchmark.
@@ -132,9 +139,10 @@ Worktree `.claude/worktrees/issue-245-spec-focus-skip-pending`, based on `origin
 | Task | Route | Trigger evidence | Commit | Checks |
 | --- | --- | --- | --- | --- |
 | T1 | delegated writer | 2+ non-trivial files (spec.go, compiler.go, execution_plan.go, group_hooks.go, arena.go, registry.go, tests) | d0ff646 | RED: compile failure (`s.SkipIt undefined`) on `spec_skip_pending_test.go`. GREEN: `go test -count=1 -run 'TestSpecSkipIt\|TestSpecPendingIt' ./specs/` all PASS. `make fmt-check`: clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
-| T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | (pending commit) | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
-| T3–T5 | delegated writer | same files, continuing | — | pending |
+| T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | 4caa637 | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
+| T3 | delegated writer | spec_builder_equivalence_test.go (new, 2 non-trivial trees across 3 engines) | (pending commit) | RED (test-authoring bug, not implementation): first draft's `want` maps used bare leaf names instead of full breadcrumbs (`"a"` instead of `"suite/a"`); `go test -count=1 -run Equivalence -v ./specs/` failed identically on all 3 engines with "missing outcome for a, want passed" / "unexpected outcome for suite/a". GREEN: fixed `want` keys, same command all PASS. `make fmt-check` (after `make fmt`): clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
+| T4–T5 | delegated writer | same files, continuing | — | pending |
 
 ## Next step
 
-T1, T2 done. Continue with T3 (equivalence with Builder).
+T1, T2, T3 done. Continue with T4 (performance evidence).
