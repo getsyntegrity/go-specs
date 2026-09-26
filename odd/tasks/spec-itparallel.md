@@ -209,7 +209,19 @@ ctx.hasFailed() || subTFailed`.
 The sequential `*Spec` path (`runSpecProgramIsolated` in `specs/execution_plan.go`, via its caller in
 `execution_plan.go:434`) has the **same gap**: `Failed: ctx.hasFailed()`, no `subT.Failed()` fold-in.
 Per this task's scope, the sequential path was left unchanged — this is a pre-existing, separate
-divergence, not something Fix 1 introduced or corrected.
+divergence, not something Fix 1 introduced or corrected. Tracked as issue #253, with a repro:
+`ctx.T.Error` and `ctx.T.FailNow` specs report `failed=false`, and `SUITE_FINISHED failed=1`
+where 3 is expected.
+
+Follow-up check (second review): the ItParallel name table does account for subtests the same
+parent `*testing.T` registered before the group. `computeParallelSubtestNames` counts sequential
+siblings (`uniqueSubtestName(counts, leafName(prefix, i))`), so `It("a")` followed by two
+`ItParallel("a")` yields `a`, `a#01`, `a#02`. This is pinned by
+`TestSpecItParallel_DuplicateNameAfterSequentialSiblingIsDeterministic` (commit `c56ae69`), with
+`-count=20` and `-run` on each leaf. It passed on first run. To show it can fail, a temporary
+mutation removed the sequential-sibling count; the test then went RED with
+`-run leaf "a#01": RAN:parallel-1 ran 1 times, want 20` / `RAN:parallel-2 ran 19 times, want 0`.
+That is the race the reviewer predicted. The mutation was reverted.
 
 RED (`specs/spec_itparallel_direct_failure_test.go`,
 `TestSpecItParallel_DirectTestingTFailuresCountInOutcomes`, subprocess-based since a real
