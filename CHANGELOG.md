@@ -462,6 +462,14 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- **Behavior change.** `EqualTo` and `ExpectT(...).ToEqual` compared errors with `==` only, so
+  `specs.ExpectT(ctx, fmt.Errorf("repo: %w", ErrNotFound)).ToEqual(ErrNotFound)` failed while
+  `ctx.Expect(...).ToEqual` passed for the same two errors — switching to the typed path for speed
+  silently changed what the assertion accepted. When `==` fails and both values are errors, the
+  typed path now asks `errors.Is(actual, expected)`, the same oriented check `ctx.Expect` has used
+  since [#183](https://github.com/getsyntegrity/go-specs/issues/183). The check runs only on the
+  failure branch, so the passing path is still a single `==` that allocates nothing.
+  ([#237](https://github.com/getsyntegrity/go-specs/issues/237))
 - **Behavior change.** A spec that failed only through `ctx.T` (`Error`, `Fatal`, `Fail`,
   `FailNow`, or from a `Cleanup` it registered) failed its Go subtest but was reported to the
   `EventReporter` as passed, so `SpecResultEvent.Failed` was `false` and

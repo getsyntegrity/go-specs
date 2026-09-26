@@ -378,8 +378,8 @@ exists so that doing so by accident fails loudly instead of quietly asserting tw
 
 | API | Constraint | Comparison |
 |---|---|---|
-| `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
-| `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`, always. No reflection. |
+| `EqualTo(ctx, actual, expected)` | `T comparable` (compile-time) | Go's `==`; when that fails and both sides are errors, `errors.Is(actual, expected)`. No reflection. |
+| `ExpectT(ctx, x).ToEqual(y)` | `T comparable` (compile-time) | Go's `==`; when that fails and both sides are errors, `errors.Is(actual, expected)`. No reflection. |
 | `ctx.Expect(x).ToEqual(y)` | `any` | `==` for `int`/`string`/`bool`/`int64`/`float64`/`uint` (fast path), `errors.Is(actual, expected)` when both sides are errors, `reflect.DeepEqual` for everything else. |
 
 The `comparable`-constrained pair (`EqualTo`/`ExpectT`) can't even be called with a slice or map — that's a compile error, not a runtime surprise. But for structs containing pointer fields, `==` compares the pointer values themselves, while `reflect.DeepEqual` can recursively compare the values they point to:
@@ -427,7 +427,12 @@ ctx.Expect(err).To(specs.MatchErrorAs(&pathErr))  // errors.As, populates pathEr
 
 `MatchError` is the same semantics `Equal` applies, spelled out. `MatchErrorAs` is the only way to reach `errors.As`, and it reports a failure rather than panicking when handed an unusable target.
 
-`EqualTo` and `ExpectT(...).ToEqual(...)` are unaffected — they use `==`, which for errors compares interface identity. A wrapped error is not `==` its sentinel.
+`EqualTo` and `ExpectT(...).ToEqual(...)` give errors the same answer ([#237](https://github.com/getsyntegrity/go-specs/issues/237)). They still try `==` first, and only when it fails and both sides are errors do they ask `errors.Is(actual, expected)` — same orientation as above. So moving an error assertion to the typed path for speed does not change what it accepts, and the passing fast path is still a single `==` with no allocation:
+
+```go
+specs.ExpectT(ctx, wrapped).ToEqual(sentinel)  // passes, like ctx.Expect(wrapped).ToEqual(sentinel)
+specs.EqualTo(ctx, impostor, sentinel)         // fails — unrelated errors
+```
 
 ### Matcher composition: `Not`, `All`, `Any`
 

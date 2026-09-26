@@ -150,8 +150,9 @@ allocation. Use `EqualTo` or `ExpectT(...).ToEqual(...)` where the comparison is
 numbers above are pinned by tests in `specs/assertion_allocations_test.go`, not only by benchmarks.
 
 > **Semantics differ, not only cost.** `EqualTo`/`ExpectT(...).ToEqual` compare with `==`;
-> `ctx.Expect(...).ToEqual` uses `errors.Is` for errors and `reflect.DeepEqual` for everything else.
-> Switching an error assertion to the typed path for speed changes what it accepts. See
+> `ctx.Expect(...).ToEqual` uses `reflect.DeepEqual` for non-primitive values, so a struct holding a
+> pointer can pass one and fail the other. Errors are the exception: all three ask
+> `errors.Is(actual, expected)`, so switching an error assertion to the typed path is safe. See
 > [Equality semantics](docs/DSL.md#equality-semantics-differ-between-the-three-toequal-shaped-apis--by-design) in docs/DSL.md.
 
 ### Matcher (Expect().To(Equal) style)
