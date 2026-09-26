@@ -316,6 +316,7 @@ func (s *Spec) It(name string, fn func(*Context)) {
 		return
 	}
 	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
 		c.EmitIt(name, fn)
 		return
 	}
@@ -335,6 +336,7 @@ func (s *Spec) SkipIt(name string, fn func(*Context)) {
 		return
 	}
 	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
 		c.EmitSkip(name)
 		return
 	}
@@ -355,6 +357,7 @@ func (s *Spec) PendingIt(name string, fn func(*Context)) {
 		return
 	}
 	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
 		c.EmitPending(name)
 		return
 	}
@@ -377,6 +380,7 @@ func (s *Spec) FIt(name string, fn func(*Context)) {
 		return
 	}
 	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
 		c.EmitFocusedIt(name, fn)
 		return
 	}
@@ -384,6 +388,35 @@ func (s *Spec) FIt(name string, fn func(*Context)) {
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itFocus)
+	pop()
+}
+
+// ItParallel registers a spec that runs concurrently with its adjacent ItParallel siblings (issue
+// #245's second spec, the *Spec equivalent of Builder.ItParallel). A nil fn follows It's existing
+// nil handling on *Spec (the spec is still registered, with no body instruction) rather than
+// Builder.ItParallel's early return — see docs/DSL.md.
+//
+// Consecutive ItParallel specs form one parallel group, launched from separate goroutines via their
+// own real Go subtest (testing.T.Run, never t.Parallel() — see spec_body_parallel.go) once the
+// suite reaches them: every spec gets its own pooled *Context and a real ctx.T, so -run selects or
+// excludes it like any other spec, BeforeEach/AfterEach still run around its body, and a fatal
+// ctx.T.Parallel() call inside it is still detected and stops the run. The group ends at any other
+// spec kind (It, FIt, SkipIt, PendingIt) or at a Describe/When boundary — including one that
+// registers no BeforeAll/AfterAll — never partway through one BeforeAll/AfterAll group. Under focus
+// (any FIt in this Describe/BuildSuite call's tree), every ItParallel is dropped, exactly like an
+// unfocused It; there is no FItParallel.
+func (s *Spec) ItParallel(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.EmitItParallel(name, fn)
+		return
+	}
+	s.requireBuildTarget("ItParallel")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itParallel)
 	pop()
 }
 

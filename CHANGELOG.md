@@ -106,6 +106,26 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   separate follow-up change, since it carries the determinism and concurrency risk this change
   deliberately kept out. See [docs/DSL.md](docs/DSL.md#specfit-skipit-and-pendingit) for the DSL
   summary. ([#245](https://github.com/getsyntegrity/go-specs/issues/245))
+- `Spec.ItParallel(name, fn)` on the canonical `Describe`/`Spec` engine, the follow-up the previous
+  entry named: the same signature `Builder.ItParallel` already has, but a different — stronger —
+  execution model underneath. Consecutive `ItParallel` specs form one group, launched concurrently
+  from the worker substrate (concurrent `testing.T.Run` calls, never `t.Parallel()`; see
+  `specs/spec_body_parallel.go`), each as its own real Go subtest with its own pooled `*Context` and
+  a live, non-nil `ctx.T` — unlike `Builder.ItParallel`, whose specs share one step with `ctx.T ==
+  nil`. That gives `Spec.ItParallel` `-run`/`-skip` addressing of an individual parallel spec,
+  `ctx.T.TempDir()`/`Cleanup()`/`Helper()`-based attribution, and correct interaction with
+  `BeforeAll`/`AfterAll` (H9, `docs/SUITE_HOOKS_CONTRACT.md`: the group's `BeforeAll` completes
+  before any parallel spec starts, and its `AfterAll` only starts once every one of them —
+  including every parallel one — has finished). The group ends at any other spec kind or at a
+  `Describe`/`When` scope boundary, even an unhooked one, so a parallel group never straddles a
+  `BeforeAll`/`AfterAll` group's boundary on either build path. Dropped under focus like an
+  unfocused `It` — there is no `FItParallel`. Reporter events for a group are serialized and emitted
+  in declaration order once the whole group has finished, regardless of completion order. The
+  `ctx.T.Parallel()` guard still fires inside it, same as inside a sequential spec body. A suite
+  that never registers `ItParallel` allocates and performs identically to before this change. This
+  closes item 2 of [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md)'s Stage 4. See
+  [docs/DSL.md](docs/DSL.md#itparallel) for the DSL summary and the `ctx.T`/`Setenv` caveats.
+  ([#245](https://github.com/getsyntegrity/go-specs/issues/245))
 - `Spec.BeforeAll(fn)` and `Spec.AfterAll(fn)` on the canonical `Describe`/`Spec` engine: once-per-
   group setup and teardown, instead of once per spec the way `BeforeEach`/`AfterEach` already work.
   A group (the root `Describe` body, a nested `Describe`, or a `When`) is entered right before its

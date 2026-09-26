@@ -166,7 +166,10 @@ Both `Spec` build paths agree: the bytecode compiler (the default, top-level `De
 
 ## ItParallel
 
-`ItParallel` registers a spec that runs in parallel with adjacent `ItParallel` specs. It is available on the **Builder** API, not on the top-level `Describe` path.
+`ItParallel` registers a spec that runs in parallel with adjacent `ItParallel` specs. It exists on
+both the **Builder** API and, since [#245](https://github.com/getsyntegrity/go-specs/issues/245),
+on `*Spec` (the `Describe`/`It` path) — with the same signature, `func(name string, fn
+func(*Context))`, but a different execution model underneath, described below.
 
 ```go
 b := specs.NewBuilder()
@@ -178,11 +181,69 @@ prog := b.Build()
 specs.NewRunner(prog).Run(t)
 ```
 
-Consecutive `ItParallel` specs are grouped into one parallel step; they run concurrently, then execution continues with the next sequential step.
+```go
+specs.Describe(t, "suite", func(s *specs.Spec) {
+    s.ItParallel("A", func(ctx *specs.Context) { ctx.Expect(add(1, 1)).ToEqual(2) })
+    s.ItParallel("B", func(ctx *specs.Context) { ctx.Expect(add(2, 2)).ToEqual(4) })
+})
+```
 
-Each `ItParallel` spec runs on its own `*specs.Context`. `ctx.T` is `nil` inside these bodies — sharing the real `*testing.T` across goroutines is not safe, so use `ctx.Expect(...)` for assertions instead of `ctx.T` directly.
+Consecutive `ItParallel` specs are grouped into one parallel unit; they run concurrently, then
+execution continues with the next sequential spec or group. On `*Spec` the group also ends at a
+`Describe`/`When` scope boundary — even one that registers no `BeforeAll`/`AfterAll` — so a parallel
+group never straddles a `BeforeAll`/`AfterAll` group's boundary (`docs/SUITE_HOOKS_CONTRACT.md` H9).
+`Builder` has no group hooks, so it has no such boundary to respect. Under focus (any `FIt`
+registered in the same `Describe`/`BuildSuite` call), every `ItParallel` is dropped, exactly like an
+unfocused `It` — there is no `FItParallel`.
 
-A failing assertion still stops the rest of that spec body, same as in a sequential `It` — code after a failed `ctx.Expect(...)` inside `ItParallel` does not run. Every spec in the parallel group always runs to completion before the runner moves on; `Runner.FailFast` only takes effect at the next group, it cannot cancel a sibling `ItParallel` spec mid-group.
+### `Builder.ItParallel` vs. `Spec.ItParallel`: `ctx.T`
+
+The two engines give a parallel spec a different `*specs.Context`, and that difference is the one
+thing to know before writing one:
+
+- **`Builder.ItParallel`** runs every spec of a group under the parent test, sharing no per-spec Go
+  subtest. `ctx.T` is `nil` inside these bodies — exposing the shared `*testing.T` across goroutines
+  would not be safe — so use `ctx.Expect(...)` for assertions instead of `ctx.T` directly. A failing
+  assertion still stops the rest of that spec body, same as a sequential `It`; code after a failed
+  `ctx.Expect(...)` does not run. `-run` cannot select or exclude one spec inside the group (there is
+  no subtest to match), and every spec in the group is reported by the runner itself rather than as
+  its own `go test` subtest.
+- **`Spec.ItParallel`** runs every spec of a group as its own real Go subtest, launched from its own
+  goroutine via `testing.T.Run` (never `t.Parallel()` — see the next section), with its own pooled
+  `*specs.Context`. `ctx.T` is a real, non-nil `*testing.T` — the same guarantee a sequential `It`
+  gives — so `ctx.T.TempDir()`, `ctx.T.Cleanup()` and `ctx.T.Helper()`-based attribution all work
+  normally, and `-run`/`-skip` select or exclude one parallel spec exactly like any other `*Spec`
+  spec. `BeforeEach`/`AfterEach` run per spec, on that spec's own `Context`, around its body, same as
+  `Builder`. A `BeforeAll`/`AfterAll` group wrapping a parallel group runs its `BeforeAll` once,
+  before any of the group's specs start, and its `AfterAll` once, after every one of them —
+  including every parallel one — has finished (H9). Reporter events for the group are serialized
+  (never called concurrently from a worker goroutine) and emitted in declaration order once the
+  whole group has finished, so `go test -v`'s printed order may differ from a report consumer's
+  order, but the report itself is deterministic run to run.
+
+Both give the same (full name, status) outcomes for the same declared tree
+(`specs/spec_builder_equivalence_test.go`); the difference is `ctx.T`'s presence, `-run` addressing
+a single spec, and (on `*Spec`) interaction with `BeforeAll`/`AfterAll`.
+
+### `ctx.T.Setenv` and other global-state mutation: not safe inside `ItParallel`
+
+`Spec.ItParallel`'s real `ctx.T` makes calls like `ctx.T.Setenv`, or any other assertion or fixture
+that mutates process-global state, look safe — they compile, and `ctx.T` is never `nil`. They are
+not: several `ItParallel` specs run concurrently, on different goroutines, and mutating the same
+process-global state (an environment variable, a package-level variable, a shared file) from more
+than one of them at once is an ordinary data race, exactly as it would be from any other pair of
+goroutines. Go's `testing` package only detects this misuse when `t.Parallel()` is the mechanism
+used to run concurrently (it marks `Setenv` unsafe alongside `Parallel`); `ItParallel` deliberately
+does not use `t.Parallel()` (see the next section and the top-level rejection of `ctx.T.Parallel()`
+below), so `testing` has no opportunity to catch a `Setenv` call here the way it would in a
+`t.Parallel()`-marked subtest. Prefer `ctx.Expect(...)`/fixtures scoped to each spec's own state; if
+process-global state must be touched, do it outside `ItParallel`, in a `BeforeAll`/`BeforeEach` that
+runs before the group, or in a sequential `It`.
+
+Every spec in the parallel group always runs to completion before execution moves on; `FailFast`
+only takes effect at the next group (on `Builder.Runner`; `*Spec` does not have `FailFast` yet,
+tracked separately as [#251](https://github.com/getsyntegrity/go-specs/issues/251)) — it cannot
+cancel a sibling `ItParallel` spec mid-group, on either engine.
 
 ### `ctx.T.Parallel()` is not supported
 
@@ -202,6 +263,14 @@ run specs concurrently; those give each spec its own Context and never expose a 
 ```
 
 The parked body's Context is deliberately abandoned rather than recycled, so if that body does resume, its assertions still report against its own subtest instead of disappearing or landing on an unrelated spec.
+
+**Inside `Spec.ItParallel`, too.** `ctx.T` there is a real `*testing.T` (unlike `Builder.ItParallel`,
+where it is `nil` and `ctx.T.Parallel()` would panic on a nil pointer before ever reaching this
+guard), so the same detection applies to it as to a sequential spec body: the offending spec's own
+subtest goroutine is left parked, and once every launched spec in the group has finished, the group
+reports the same diagnostic and stops the run — every enclosing `BeforeAll`/`AfterAll` group still
+runs its `AfterAll`s while the stop unwinds (`docs/SUITE_HOOKS_CONTRACT.md` H5), same as any other
+stopped run.
 
 ## Builder.It, Skip and Focus
 

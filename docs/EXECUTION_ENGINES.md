@@ -61,10 +61,10 @@ as part of this work — a reader currently learns the wrong engine.
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
 | Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
-| **Unique capabilities** | **`ItParallel`, `FailFast`, and `RunShard` exist here and nowhere else.** `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. |
+| **Unique capabilities** | **`FailFast` and `RunShard` exist here and nowhere else.** `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. `ItParallel` is likewise Builder-only as a `SpecFn`-free direct method, but `Spec.ItParallel` has the same capability with a stronger guarantee — a real per-spec `*testing.T` and `-run` addressing — since #245's second spec; see Stage 4 item 2 below. |
 
-This is the load-bearing fact for v1: removing this engine removes `ItParallel`, `FailFast` and
-`RunShard` from the library. Focus/skip/pending no longer depend on it (#245).
+This is the load-bearing fact for v1: removing this engine removes `FailFast` and
+`RunShard` from the library. Focus/skip/pending and `ItParallel` no longer depend on it (#245).
 
 ### 1.3 `MinimalRunner`
 
@@ -135,6 +135,7 @@ of the others.
 | FailFast | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Isolation (spec survives `Fatalf`) | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ (sentinel) |
 | `BeforeAll`/`AfterAll` group hooks ([#207](https://github.com/getsyntegrity/go-specs/issues/207), `docs/SUITE_HOOKS_CONTRACT.md`) | ✅ | ❌ (follow-up) | ❌ | ❌ | ❌ | ❌ |
+| `ItParallel` ([#245](https://github.com/getsyntegrity/go-specs/issues/245), Stage 4 item 2) | ✅ (real per-spec subtest and `ctx.T`; H9 with `BeforeAll`/`AfterAll`) | ✅ (shared `ctx.T == nil`, no subtest) | ❌ | ❌ | ❌ | ❌ |
 
 Two asymmetries are **deliberate** and must not be "consolidated" away:
 
@@ -153,7 +154,7 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 | Engine | Class | Rationale |
 |---|---|---|
 | `ExecutionPlan` + `CompiledSuite` | **Canonical** | The `Describe` path. Every invariant lands here first. |
-| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented, exercised by `examples/parallel`, and the sole home of focus/skip, `ItParallel`, `FailFast` and `RunShard`. Cannot be removed until those capabilities exist on the canonical engine. |
+| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented, exercised by `examples/parallel`, and the sole home of `FailFast` and `RunShard`. Focus/skip/pending and `ItParallel` have equivalents on the canonical engine since #245; cannot be removed until `FailFast` and `RunShard` do too. |
 | `MinimalRunner` | **Compatibility surface (narrow)** | Named in README, benchmarked, and the documented partner of `ShardSpecs`. Keep `Run`/`RunParallel`/`RunParallelBatched`; do not grow it. |
 | Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG.md:184`. Keep unexported. |
 | `BytecodeRunner` / `BCProgram` / `BCBuilder` | **Experimental → deprecate** | Zero documentation, zero benchmarks, zero consumers beyond `ShardBCProgram`. A strictly weaker duplicate of the canonical model with no measured justification. |
@@ -238,13 +239,21 @@ Builder/Runner stays until the canonical engine grows what only it has:
    `Spec.FIt`/`SkipIt`/`PendingIt` exist on both build paths (the bytecode compiler and the
    `Analyze`/registry path) with the same observable behavior as `Builder.FIt`/`SkipIt`/`PendingIt`
    — see `docs/DSL.md`'s "Spec.FIt, SkipIt and PendingIt" and `specs/spec_builder_equivalence_test.go`.
-   `ItParallel` is not part of this item; it is item 2 below, tracked separately as its own follow-up
-   change (it carries the determinism and concurrency risk `#245`'s proposal deliberately kept out).
-2. `ItParallel` equivalent on the plan model, reusing the existing worker substrate.
+   `ItParallel` is not part of this item; it was item 2 below, tracked separately as its own
+   follow-up change (it carries the determinism and concurrency risk `#245`'s proposal deliberately
+   kept out).
+2. ~~`ItParallel` equivalent on the plan model, reusing the existing worker substrate.~~ **Done
+   ([#245](https://github.com/getsyntegrity/go-specs/issues/245)).** `Spec.ItParallel` exists on
+   both build paths, but not by literally reusing `parallelStep`/the worker substrate's shared-`ctx`
+   model: it launches each parallel spec as its own real Go subtest (concurrent `testing.T.Run`
+   calls, never `t.Parallel()`), so every spec keeps this engine's per-spec guarantees — a real
+   `ctx.T`, `-run` addressing, `BeforeAll`/`AfterAll` interaction (H9) — that `Builder`'s
+   shared-context model cannot give without breaking them. See `docs/DSL.md`'s "ItParallel" section
+   and `specs/spec_builder_equivalence_test.go`.
 3. `FailFast` on `CompiledSuite`.
 4. `RunShard` re-expressed over `ExecutionPlan`.
 
-Only once items 2-4 also land — each with a contract-table row — does removing Builder/Runner become
+Only once items 3-4 also land — each with a contract-table row — does removing Builder/Runner become
 a migration question rather than a feature regression. **That decision is explicitly out of scope
 for #176.**
 

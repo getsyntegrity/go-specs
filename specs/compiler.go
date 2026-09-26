@@ -30,6 +30,16 @@ type bytecodeCompiler struct {
 	// focusIndices holds plan.Names indices emitted by FIt (issue #245); nil unless the suite
 	// registers at least one. Non-empty at TakePlan time means applyFocusFilter must run.
 	focusIndices []int
+	// openParallelStart is the plan.Names index a currently-open run of consecutive ItParallel specs
+	// began at (issue #245's second spec), or -1 when no run is open. Unlike the arena path (whose
+	// per-node children loop resets this for free on every recursive call — see
+	// buildExecutionPlanFromArenaRec), this compiler emits linearly as DSL calls happen, so
+	// closeOpenParallelRun has to be called explicitly at every point that ends a run: PushScope,
+	// PopScope, TakePlan (the root scope's close), and every non-ItParallel spec registration
+	// (It/FIt/SkipIt/PendingIt, called from spec.go before the matching Emit* method). See
+	// closeOpenParallelRun for why ending at every scope transition — not just a hooked one — is
+	// still correct.
+	openParallelStart int
 	// scratch for flattening hooks and building program
 	beforeFlat []func(*Context)
 	afterFlat  []func(*Context)
@@ -64,6 +74,7 @@ func newBytecodeCompiler() *bytecodeCompiler {
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
 	c.focusIndices = nil
+	c.openParallelStart = -1
 	return c
 }
 
@@ -76,11 +87,13 @@ func (c *bytecodeCompiler) reset() {
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
 	c.focusIndices = nil
+	c.openParallelStart = -1
 	bytecodeCompilerPool.Put(c)
 }
 
 // PushScope enters a Describe/When block. Call PopScope when the block callback returns.
 func (c *bytecodeCompiler) PushScope(name string) {
+	c.closeOpenParallelRun()
 	c.nameStack = append(c.nameStack, name)
 	c.beforeStack = append(c.beforeStack, nil)
 	c.afterStack = append(c.afterStack, nil)
@@ -91,6 +104,7 @@ func (c *bytecodeCompiler) PushScope(name string) {
 // before discarding its bookkeeping. The root scope opened by describeWithCompiler/BuildSuite is
 // never popped this way (nothing calls PopScope for it) — see TakePlan, which closes it instead.
 func (c *bytecodeCompiler) PopScope() {
+	c.closeOpenParallelRun()
 	c.closeGroupHooksAtTop()
 	if n := len(c.nameStack); n > 0 {
 		c.nameStack = c.nameStack[:n-1]
@@ -124,6 +138,22 @@ func (c *bytecodeCompiler) closeGroupHooksAtTop() {
 	start := c.groupStartStack[n-1]
 	end := len(c.plan.Names) - 1
 	registerHookGroup(&c.groups, c.nameStack, c.nameStack[n-1], before, after, start, end)
+}
+
+// closeOpenParallelRun ends the compiler's currently open ItParallel run, if any (issue #245's
+// second spec), registering it into c.groups — the same lazily allocated pointer skip/pending marks
+// and hook groups already share (H10). Called from PushScope, PopScope, TakePlan (the root scope's
+// close) and from spec.go before every non-ItParallel registration (It, FIt, SkipIt, PendingIt): a
+// run is only ever built from ItParallel specs registered directly next to each other, with nothing
+// else — not even an empty, hook-free Describe/When — between them. See the field comment on
+// openParallelStart for why ending at every scope transition, not just a hooked one, still agrees
+// with the arena/registry build path.
+func (c *bytecodeCompiler) closeOpenParallelRun() {
+	if c.openParallelStart < 0 {
+		return
+	}
+	registerParallelGroup(&c.groups, c.openParallelStart, len(c.plan.Names)-1)
+	c.openParallelStart = -1
 }
 
 // AppendBefore adds a before-each hook to the current scope.
@@ -276,6 +306,20 @@ func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	appendSpecPath(c.plan, c.nameStack)
 }
 
+// EmitItParallel appends one ItParallel spec (issue #245's second spec): the exact same instruction
+// stream EmitIt would produce for the same name/body — a parallel spec's own before/body/after runs
+// no differently from an ordinary one's, only how the runner launches it differs (see
+// group_hooks.go's runParallelGroup) — plus the grouping bookkeeping consecutive ItParallel calls
+// need. It never calls closeOpenParallelRun itself: doing so would immediately close the run this
+// call is trying to open or extend. spec.go calls closeOpenParallelRun before It/FIt/SkipIt/
+// PendingIt instead, so only those calls (and scope transitions) end a run.
+func (c *bytecodeCompiler) EmitItParallel(name string, body func(*Context)) {
+	if c.openParallelStart < 0 {
+		c.openParallelStart = len(c.plan.Names)
+	}
+	c.EmitIt(name, body)
+}
+
 // EmitSkip buffers a compile-time SkipIt registration (issue #245): name and the current scope
 // chain are kept so it can still be reported skipped, but no instruction is ever emitted for it —
 // mirroring Builder.SkipIt's kindSkip buffering (builder.go) for this compile path. If the suite
@@ -363,6 +407,7 @@ func (c *bytecodeCompiler) TakePlan() *ExecutionPlan {
 // the suite registered no BeforeAll/AfterAll), which lives beside the plan rather than on it — see
 // planGroups.
 func (c *bytecodeCompiler) takePlanAndGroups() (*ExecutionPlan, *planGroups) {
+	c.closeOpenParallelRun()
 	c.closeGroupHooksAtTop()
 	c.applyFocusFilter()
 	plan, groups := c.plan, c.groups

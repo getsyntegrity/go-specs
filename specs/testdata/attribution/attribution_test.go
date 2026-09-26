@@ -16,6 +16,19 @@ import (
 
 // --- Describe: per-spec subtests (the default sequential model) ---
 
+// TestItParallel pins that Spec.ItParallel (issue #245) gets the same real testing.T.Helper
+// attribution as an ordinary sequential It: unlike Builder.ItParallel (out of scope here — see the
+// package doc comment above, and parallel_attribution_test.go), each ItParallel spec runs as its
+// own real Go subtest with a live, non-nil ctx.T, so its failure is attributed to the user's own
+// line the same way any other spec's is.
+func TestItParallel(t *testing.T) {
+	specs.Describe(t, "itparallel", func(s *specs.Spec) {
+		s.ItParallel("fails", func(ctx *specs.Context) {
+			specs.EqualTo(ctx, 1, 2) // want:ItParallel
+		})
+	})
+}
+
 func TestEqualTo(t *testing.T) {
 	specs.Describe(t, "equalto", func(s *specs.Spec) {
 		s.It("fails", func(ctx *specs.Context) {
