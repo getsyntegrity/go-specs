@@ -83,9 +83,27 @@ Runner: `go test ./...` (targeted runs with `go test -count=1 -run <Name> ./spec
   fixed to account for a suite made only of marks and for pending tallying, which the
   ExecutionPlan/CompiledSuite engine never did before (report/model.go's `StatusPending` existed
   since #208 but only Builder populated it).
-- [ ] **T2 — `FIt` on `*Spec`.** Focus filters the whole `Describe` tree as `Builder.finalize`
+- [x] **T2 — `FIt` on `*Spec`.** Focus filters the whole `Describe` tree as `Builder.finalize`
   does; nil `fn` is a no-op; hooks around focused specs run. Check: new tests RED then GREEN;
   `go test ./...`.
+  Done. Note: `FIt`'s implementation (`applyFocusFilter`, `EmitFocusedIt`, `arenaHasFocus`, the
+  `itKind`/`Kind` plumbing) landed together with T1's commit because skip/pending/focus share the
+  same infrastructure (`planGroups`, the arena `Kind` field, `remapHookGroups`) end to end — "one
+  behavior, two entry points" made the three hard to build as fully separate slices without
+  duplicating that plumbing. To still get a genuine T2 RED, `Spec.FIt` was temporarily stubbed to a
+  no-op, the new focus tests were run and observed failing for the real reason (unfocused specs ran,
+  focused ones didn't filter anything), then the stub was reverted and the tests re-run GREEN. See
+  Progress row below for the exact commands.
+  **Semantics decision (BeforeAll/AfterAll of a group emptied by focus):** a group whose only specs
+  are filtered out by a focus elsewhere in the suite is never entered — neither its `BeforeAll` nor
+  its `AfterAll` runs. This is not a new rule: it is exactly H3
+  (`docs/SUITE_HOOKS_CONTRACT.md`), "a group with zero runnable specs is never entered", already
+  applied to "declares no `It`" — focus filtering is just another way a group's runnable-spec count
+  can reach zero before it is entered, so the same test that decides entry (does this group's spec
+  range contain at least one plan entry) answers both cases uniformly. Pinned by
+  `TestSpecFItGroupWithZeroSpecsAfterFocusIsNeverEntered` and its converse,
+  `TestSpecFItGroupSurvivingFocusIsStillEntered` (a group with at least one focused spec left is
+  still entered, hooks run once around it).
 - [ ] **T3 — Equivalence with `Builder`.** Table of identical trees declared through both engines
   (mixed `It`/`FIt`/`SkipIt`/`PendingIt`, nested `Describe`/`When`) asserting the same set of
   (full name, status) outcomes and the same executed bodies. Check: `go test -count=1 -run
@@ -113,9 +131,10 @@ Worktree `.claude/worktrees/issue-245-spec-focus-skip-pending`, based on `origin
 
 | Task | Route | Trigger evidence | Commit | Checks |
 | --- | --- | --- | --- | --- |
-| T1 | delegated writer | 2+ non-trivial files (spec.go, compiler.go, execution_plan.go, group_hooks.go, arena.go, registry.go, tests) | (pending commit) | RED: compile failure (`s.SkipIt undefined`) on `spec_skip_pending_test.go`. GREEN: `go test -count=1 -run 'TestSpecSkipIt\|TestSpecPendingIt' ./specs/` all PASS. `make fmt-check`: clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
-| T2–T5 | delegated writer | same files, continuing | — | pending |
+| T1 | delegated writer | 2+ non-trivial files (spec.go, compiler.go, execution_plan.go, group_hooks.go, arena.go, registry.go, tests) | d0ff646 | RED: compile failure (`s.SkipIt undefined`) on `spec_skip_pending_test.go`. GREEN: `go test -count=1 -run 'TestSpecSkipIt\|TestSpecPendingIt' ./specs/` all PASS. `make fmt-check`: clean. `go vet ./...`: clean. `go test ./...`: all packages ok. |
+| T2 | delegated writer | same files (FIt's implementation shipped with T1; see note above), + spec_focus_test.go | (pending commit) | RED (via temporary `Spec.FIt` stub): `go test -count=1 -run TestSpecFIt -v ./specs/` — 7 of 9 new tests FAIL, e.g. `TestSpecFItOnlyFocusedRuns_CompilerPath: ran = [plain], want only [focused]`. GREEN (stub reverted): `go test -count=1 -run TestSpecFIt -v ./specs/` all PASS. `go vet ./specs/`: clean. `go test ./...`: all packages ok. |
+| T3–T5 | delegated writer | same files, continuing | — | pending |
 
 ## Next step
 
-T1 done. Continue with T2 (`FIt` on `*Spec`).
+T1, T2 done. Continue with T3 (equivalence with Builder).
