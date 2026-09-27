@@ -101,3 +101,10 @@ already-named follow-up (`describe-shard`), out of scope here.
 ## Next step
 
 None — this spec is done. `describe-shard` (issue #251 spec 2) is a separate feature document.
+
+## Commit evidence
+
+- T1 `0ef70dd` feat(specs): add SetFailFast to CompiledSuite for the Describe engine (#251)
+- T2 `432f0f7` feat(specs): honor fail-fast across BeforeAll/AfterAll groups and ItParallel batches (#251)
+- T3 `bc7685d` docs: document fail-fast on the Describe engine (#251)
+- Verified on the rebased branch: `go build ./...`, `go vet ./...`, `make fmt-check`, `go test -count=1 ./...` all green (no `-race`); RDD off, no review run.
