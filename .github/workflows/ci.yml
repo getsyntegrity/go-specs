@@ -135,6 +135,46 @@ jobs:
       - name: Execute benchmark code paths
         run: make bench-smoke
 
+      # `go test -race ./...` above never invokes Benchmark* functions (no
+      # -bench flag, and go test's default -run skips them), and `make
+      # bench-smoke` above has no -race flag -- so neither required check
+      # ever puts a goroutine-spawning benchmark through the race detector
+      # (getsyntegrity/go-specs#218).
+      #
+      # The benchmarks that actually spawn goroutines were found by tracing
+      # every Benchmark* function to the concurrency entry points it calls
+      # (RunParallel, RunParallelBatched, ItParallel, or an inline `go func`),
+      # not by grepping benchmark source for an inline `go` statement -- that
+      # grep is blind to a benchmark that reaches a goroutine indirectly
+      # through a runner method. Two groups do:
+      #
+      #   - BenchmarkFalseSharing_* (specs/parallel_false_sharing_bench_test.go)
+      #     call runParallelPadded/runParallelLocalPlain, which spawn `workers`
+      #     goroutines directly (inline `go func` at :89 and :182) sharing a
+      #     *[]failureRecord and *uint32.
+      #   - BenchmarkRunner_MinimalParallel_* (both plain and _LargeSuite
+      #     variants, in benchmarks/minimal_and_buildsuite_bench_test.go) call
+      #     MinimalRunner.RunParallel/RunParallelBatched, which spawn workers
+      #     at specs/minimal_runner.go:158.
+      #
+      # Every other Benchmark* in the module (checked by grepping every
+      # `^func Benchmark` in the repo, not just files named *_bench_test.go --
+      # specs/program_test.go and specs/block_runner_test.go also define
+      # benchmarks -- and tracing each one's runner) drives only the
+      # sequential Builder/Program Runner, MinimalRunner.Run, or BlockRunner.Run
+      # paths, none of which spawn goroutines.
+      #
+      # Scoped to -bench='FalseSharing|MinimalParallel' across both
+      # ./specs/... and ./benchmarks/... (the two packages these benchmarks
+      # live in) rather than a full `-bench=. ./...` sweep: -race adds real
+      # per-goroutine overhead, so racing every benchmark in the module would
+      # cost more for no extra coverage. -benchtime=1x mirrors bench-smoke:
+      # enough to execute the goroutines once, not a timing measurement. If a
+      # future benchmark reaches a new concurrency entry point, widen this
+      # selector (or the entry points above) to cover it.
+      - name: Race-check goroutine-spawning benchmarks
+        run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
+
   shipwright:
     # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
     # single workflow step with "failed to acquire Dagger client: daemon connected but not
