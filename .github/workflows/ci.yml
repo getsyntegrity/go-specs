@@ -381,7 +381,7 @@ jobs:
       # Bump deliberately, alongside re-running `make lint` locally to catch any new
       # findings the newer linter version surfaces.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
 
