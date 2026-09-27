@@ -69,7 +69,7 @@ func describeMatcher(m Matcher) string {
 
 // Not returns a matcher that succeeds exactly when m does not. A nil m is a caller mistake, not a
 // logical value, so Not(nil) never matches — see the nil/empty table in
-// odd/tasks/matcher-composition.md.
+// docs/investigations/odd-tasks/matcher-composition.md.
 func Not(m Matcher) Matcher {
 	return &notMatcher{sub: m}
 }

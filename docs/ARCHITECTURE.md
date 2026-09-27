@@ -4,52 +4,63 @@ High-level architecture of go-specs: how tests are defined, compiled, and execut
 
 ## Overview
 
-The core architecture is a linear pipeline:
+`Describe` — the documented, default entry point — compiles directly to a flat instruction stream.
+It never touches `Builder`, `Program`, or `Runner`:
 
-**DSL → Builder → Program → Runner**
+**DSL → Compiler → ExecutionPlan → CompiledSuite**
 
 ```mermaid
 flowchart LR
-    DSL[DSL API] --> Builder[Builder / Compiler]
-    Builder --> Program[Execution Program]
-    Program --> Runner[Runner Loop]
-    Runner --> Results[Test Results]
+    DSL[DSL: Describe/BeforeEach/AfterEach/It] --> Compiler[Bytecode Compiler]
+    Compiler --> Plan[ExecutionPlan]
+    Plan --> Suite[CompiledSuite.Run]
+    Suite --> Results[Test Results]
 ```
 
-Each component has a single responsibility:
+`Builder → Program → Runner` is a second, parallel path, reachable only when a caller constructs it
+by hand via `NewBuilder`/`BuildProgram` + `NewRunner`. It is a compatibility surface: CI sharding,
+its last unique capability, is also available on the canonical path as `CompiledSuite.RunShard`
+since [#251](https://github.com/getsyntegrity/go-specs/issues/251). Both paths share the same external
+shape — hooks resolved at compile time, steps executed in a flat loop — but share no code with each
+other.
 
 | Component | Responsibility |
 | --------- | -------------- |
-| **DSL** | User-facing test definition. `Describe`, `BeforeEach`, `AfterEach`, and `It` (or the Builder API) register structure and callbacks. |
-| **Builder** | Compiles DSL constructs into an execution program. Resolves hooks at compile time and produces a flat list of steps or groups. |
-| **Program** | A compiled execution plan containing test steps. Either a flat instruction stream with per-spec bounds (ExecutionPlan) or groups of before/specs/after steps (Program). No tree structure at run time. |
-| **Runner** | Executes steps sequentially with minimal overhead. Gets a Context from a pool, runs each step in order, and returns the Context to the pool. No hook resolution or reflection. |
+| **DSL** | User-facing test definition. `Describe`, `BeforeEach`, `AfterEach`, and `It` register structure and callbacks with the bytecode compiler as they run; the `Builder` API offers the same shape for the alternate path. |
+| **Compiler** (`specs/compiler.go`) | Compiles `Describe`'s DSL calls into an `ExecutionPlan`. Resolves hooks at compile time and flattens each spec's before/body/after into its own instruction range. |
+| **ExecutionPlan / CompiledSuite** (`specs/execution_plan.go`) | The compiled artifact for the `Describe` path: a flat instruction stream with per-spec bounds. `CompiledSuite.Run` iterates it — no tree structure at run time. |
+| **Builder / Program / Runner** (`specs/builder.go`, `specs/program.go`, `specs/runner.go`) | The alternate, caller-constructed path. `Builder.Build()` produces a `Program` — a slice of groups, each with before/specs/after steps; `Runner.Run` iterates it. Never reached from `Describe`. |
 
-Heavy work (parsing, hook collection, plan construction) happens during **compilation**; execution is a thin loop over the compiled plan. See [PERFORMANCE.md](PERFORMANCE.md) for execution cost and scaling.
+Heavy work (parsing, hook collection, plan construction) happens during **compilation**; execution is a thin loop over the compiled plan on both paths. See [PERFORMANCE.md](PERFORMANCE.md) for execution cost and scaling, and [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md) for the full inventory of every execution engine in this repository and which one is canonical.
 
 ---
 
 ## DSL → Execution pipeline (full lifecycle)
 
-The full lifecycle from user code to test results:
+The full lifecycle from user code to test results, for the default `Describe` path:
 
 ```mermaid
 flowchart LR
     UserTest[Test File] --> DSL[go-specs DSL]
-    DSL --> Builder[Builder Compiler]
-    Builder --> Program[Compiled Execution Program]
-    Program --> Runner[Runner Execution Loop]
-    Runner --> Results[Test Results]
+    DSL --> Compiler[Bytecode Compiler]
+    Compiler --> Plan[ExecutionPlan]
+    Plan --> Suite[CompiledSuite.Run]
+    Suite --> Results[Test Results]
 ```
 
 | Stage | Description |
 | ----- | ----------- |
-| **Test file** | User writes a `*_test.go` file and calls `Describe(t, "name", ...)` (or uses the Builder API). |
-| **go-specs DSL** | `Describe`, `BeforeEach`, `AfterEach`, and `It` register scope and callbacks with the compiler. |
-| **Builder compiler** | Flattens hooks and specs into a linear execution plan. No tree is retained at run time. |
-| **Compiled execution program** | A flat list of steps (or groups of steps). Each step is `func(*Context)`. |
-| **Runner execution loop** | Iterates over the plan and calls each step with a pooled Context. Zero allocations in the loop. |
+| **Test file** | User writes a `*_test.go` file and calls `Describe(t, "name", ...)`. |
+| **go-specs DSL** | `Describe`, `BeforeEach`, `AfterEach`, and `It` register scope and callbacks with the compiler as they run. |
+| **Bytecode compiler** | Flattens hooks and specs into a linear `ExecutionPlan`. No tree is retained at run time. |
+| **ExecutionPlan** | A flat instruction stream with per-spec bounds — each spec's own `OpBeforeHook`/`OpBody`/`OpAfterHook` range, already in the correct order. |
+| **CompiledSuite.Run** | Iterates the plan and runs each spec's instructions with a pooled Context. Zero allocations in the loop. |
 | **Test results** | Pass/fail is reported via the test backend (`*testing.T`); the runner does not interpret assertions. |
+
+Constructing `Builder`/`BuildProgram` + `NewRunner` by hand instead of `Describe` follows the same
+shape — DSL calls flattened into a plan ahead of time, then executed in a flat loop — but produces
+a `Program` (groups of before/specs/after steps) run by `Runner`, not an `ExecutionPlan` run by
+`CompiledSuite`. See [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md).
 
 ---
 
@@ -131,19 +142,27 @@ Hooks are **compiled into the execution plan** and do not require runtime traver
 
 ## Internal package architecture
 
-High-level responsibilities of the main packages:
+There is no `internal/` package under `specs` — the compiler, `ExecutionPlan`/`CompiledSuite`, and
+`Builder`/`Program`/`Runner` all live directly in the `specs` package. (`report/coordination/internal/`
+is a separate, unrelated `internal/` package scoped to shard-report coordination.) High-level
+responsibilities:
 
 ```mermaid
 flowchart LR
-    DSL --> Builder
-    Builder --> Plan
-    Plan --> Runner
-    Runner --> Report
+    DSL --> Compiler
+    Compiler --> Plan[ExecutionPlan]
+    Plan --> Suite[CompiledSuite]
+    Suite --> Report
 ```
 
-| Package | Role |
+| Package / file | Role |
 | ------- | ---- |
-| **specs** | Public DSL (`Describe`, `BeforeEach`, `AfterEach`, `It`), Builder API, compiler, ExecutionPlan/Program types, Runner, and Context. Entry point for all user code. |
-| **internal/plan** | Execution plan representation and construction (when using the arena/registry path). Used by the analyzer; the bytecode path builds a plan directly in specs. |
-| **internal/runner** | Internal runner logic for executing a plan (when used by the specs package). The public runner lives in specs. |
-| **report** | Reporting and formatting (e.g. for structured output). Used by the runner when a reporter is configured. |
+| **specs** | Public DSL (`Describe`, `BeforeEach`, `AfterEach`, `It`), the bytecode compiler, `ExecutionPlan`/`CompiledSuite` (the default engine), the `Builder`/`Program`/`Runner` compatibility surface, and `Context`. Entry point for all user code. |
+| `specs/compiler.go` | Compiles `Describe`'s DSL calls into an `ExecutionPlan` (the bytecode-compiler path); the `Analyze`/registry path builds the same `ExecutionPlan` type from an arena instead (`specs/execution_plan.go`'s `buildExecutionPlanFromArena`). |
+| `specs/execution_plan.go` | `ExecutionPlan` and `CompiledSuite`: the flat instruction stream and the code that runs it. |
+| `specs/builder.go`, `specs/program.go`, `specs/runner.go` | `Builder`, `Program`, and `Runner`: the alternate, caller-constructed engine; the package-level `RunShard` (`specs/scheduler.go`) shards a `*Program`, while `CompiledSuite.RunShard` covers the canonical path. |
+| **report** | Reporting and formatting (e.g. for structured output). Used by both engines when a reporter is configured. |
+
+See [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md) for the complete inventory of every execution
+engine in this repository (including `MinimalRunner`, `BytecodeRunner`, `BlockRunner`, and the
+parallel scheduler) and which ones are canonical, compatibility surface, or slated for removal.

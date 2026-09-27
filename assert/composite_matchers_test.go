@@ -8,8 +8,9 @@ import (
 // Not/All/Any exist because #149/#200 taught this repo that matcher messages are the product: a
 // composite that reports "combined matcher failed" throws away the only thing the user needs. These
 // tests pin the Match truth tables, every message branch (which sub-matcher named, by which index,
-// with which wording), and the nil/empty table from odd/tasks/matcher-composition.md. None of the
-// nil/empty cases may panic — a testing framework reports, it does not take the suite down.
+// with which wording), and the nil/empty table from
+// docs/investigations/odd-tasks/matcher-composition.md. None of the nil/empty cases may panic — a
+// testing framework reports, it does not take the suite down.
 
 // fakeMatcher is a hand-rolled Matcher (not one of the built-ins) used to prove two things composite
 // code must not conflate: (1) a matcher that does not implement Describer falls back to %T rather

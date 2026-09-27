@@ -149,7 +149,7 @@ func TestAfterAllRunsBeforeNextSiblingGroupBeforeAll(t *testing.T) {
 
 // TestBeforeAllAfterAllViaAnalyzeRegistryPath proves the arena/registry compile path (active
 // inside specs.Analyze) implements the exact same ordering as the default bytecode-compiler path
-// tested above — both compile paths must support group hooks (odd/tasks/before-after-all.md).
+// tested above — both compile paths must support group hooks (docs/SUITE_HOOKS_CONTRACT.md).
 func TestBeforeAllAfterAllViaAnalyzeRegistryPath(t *testing.T) {
 	r := &orderRecorder{}
 	Analyze(func() {
