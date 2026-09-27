@@ -67,9 +67,13 @@ jobs:
           fi
 
   ratio-guard:
-    # In-process baseline ratio guard (#243): machine-independent because it compares the
-    # Runner/Describe cost against a hand-written no-framework loop in the same process, same run,
-    # rather than asserting a raw ns/op threshold. Opt-in (GOSPECS_BENCH_GUARD=1 via
+    # In-process baseline ratio guard (#243): compares the Runner/Describe cost against a
+    # hand-written no-framework loop in the same process, same run, rather than asserting a raw
+    # ns/op threshold. That reduces the effect of CPU speed, but the ratio is still not
+    # machine-independent (Describe measured ~210-257x on a laptop vs ~79-115x on this runner), so
+    # the bounds in benchmarks/regression_guard_test.go are calibrated for ubuntu-latest and must
+    # be re-measured if the runner image changes; a local `make bench-ratio-guard` result does not
+    # transfer to these bounds. See BENCHMARKS.md. Opt-in (GOSPECS_BENCH_GUARD=1 via
     # `make bench-ratio-guard`) and kept out of ci.yml/`make bench-smoke` deliberately, so it never
     # sits on the PR critical path (pull_request is not one of this workflow's triggers).
     #
