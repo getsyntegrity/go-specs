@@ -132,6 +132,99 @@ s.It("adds numbers", func(ctx *specs.Context) {
 
 Each `It` is compiled into a step sequence: before hooks (outer to inner), then the spec body, then after hooks (inner to outer).
 
+## Shared behaviors: reusing specs across implementations
+
+A "shared behavior" — the same set of specs applied to several implementations of one interface —
+does not need a new DSL primitive. The existing composition model already supports it: a shared
+behavior is just an ordinary Go function that takes the `*specs.Spec` its caller was handed and
+registers specs on it, exactly like inline code in that `Describe`/`When` block would.
+
+```go
+type Store interface {
+    Set(key, value string)
+    Get(key string) (string, bool)
+}
+
+// behavesLikeAStore is a plain Go function, not a specs.* API. It registers directly on the *Spec
+// it is given, so its Its become part of whichever Describe/When calls it.
+func behavesLikeAStore(s *specs.Spec, mk func() Store) {
+    var store Store
+    s.BeforeEach(func(ctx *specs.Context) {
+        store = mk()
+    })
+
+    s.It("stores and retrieves a value", func(ctx *specs.Context) {
+        store.Set("key", "value")
+        got, ok := store.Get("key")
+        ctx.Expect(ok).To(specs.BeTrue())
+        ctx.Expect(got).ToEqual("value")
+    })
+
+    s.It("reports a missing key", func(ctx *specs.Context) {
+        _, ok := store.Get("missing")
+        ctx.Expect(ok).To(specs.BeFalse())
+    })
+}
+```
+
+Apply the same helper from as many `Describe` blocks as there are implementations to cover:
+
+```go
+func TestMapStore(t *testing.T) {
+    specs.Describe(t, "mapStore", func(s *specs.Spec) {
+        behavesLikeAStore(s, func() Store { return newMapStore() })
+    })
+}
+
+func TestPrefixedStore(t *testing.T) {
+    specs.Describe(t, "prefixedStore", func(s *specs.Spec) {
+        behavesLikeAStore(s, func() Store { return newPrefixedStore("ns:") })
+    })
+}
+```
+
+Nothing about `behavesLikeAStore` changes between the two call sites: it is called the same way,
+with a different constructor, from a different `Describe`. This is ordinary Go function composition
+— the same `func(*Spec)` shape `Describe` and `When` already hand out (see "Describe" and "When"
+above) — not a separate runtime feature, a registry, or a macro. A shared behavior can take any
+extra parameters it needs (a factory function, fixtures, configuration), can call `s.When` to nest
+further, and can itself call out to other shared behaviors, all without touching the compiler or the
+registry directly.
+
+### Hooks: the helper shares its caller's scope
+
+A shared behavior does not open a new `Describe`/`When` scope unless it explicitly calls `s.Describe`
+or `s.When` itself — plain `s.BeforeEach`, `s.AfterEach` and `s.It` calls inside it register on the
+very same scope as the code that called it. That means the usual hook rules ("Execution order of
+hooks" below) apply exactly as if the helper's calls were written inline:
+
+- A `BeforeEach`/`AfterEach` registered in the surrounding `Describe` **before** the helper is called
+  still runs for every spec the helper registers — there is nothing helper-specific about it.
+- If the helper registers its own `BeforeEach`/`AfterEach`, they share that same scope with the
+  surrounding ones: multiple `BeforeEach` calls in one scope run in registration order, and multiple
+  `AfterEach` calls run LIFO (last registered runs first) — regardless of whether a given call came
+  from inline code or from inside the helper.
+
+Concretely, for a `BeforeEach` registered by the surrounding `Describe` before the helper call, and a
+`BeforeEach`/`AfterEach` pair registered by the helper itself:
+
+```go
+specs.Describe(t, "instrumented store", func(s *specs.Spec) {
+    s.BeforeEach(func(ctx *specs.Context) { /* outer-before */ })
+    s.AfterEach(func(ctx *specs.Context) { /* outer-after */ })
+
+    behavesLikeAnObservedStore(s, func() Store { return newMapStore() }, &order)
+})
+```
+
+runs, per spec, in this order: `outer-before`, then the helper's own before hook, then the spec
+body, then the helper's own after hook (registered after `outer-after`, so LIFO runs it first), then
+`outer-after`. `examples/shared_behaviors/shared_behaviors_test.go` runs exactly this and asserts the
+full order for two specs, so this is verified behavior, not a claim.
+
+No new production API was needed to support this pattern — it already worked before this section was
+written; only the documentation was missing.
+
 ## Spec.FIt, SkipIt and PendingIt
 
 `*Spec` — the `Describe`/`It` path — has the same `FIt`, `SkipIt` and `PendingIt` `Builder` already
