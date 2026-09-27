@@ -273,6 +273,8 @@ The builder groups parallel specs into one step; the runner executes that step (
 
 **Known limitation:** this can produce uneven shard runtimes when hook groups are large or unevenly sized, since balancing happens at the group level rather than the individual-spec level. Balancing by spec count is tracked separately and deferred post-v1.0.0.
 
+This describes the package-level `RunShard` over a `*Program`. `CompiledSuite.RunShard(tb, shardIndex, shardCount)` shards a `Describe`-built suite with a finer assignment unit — a whole top-level `BeforeAll`/`AfterAll` group, a whole `ItParallel` batch, or a single spec otherwise — see `docs/SUITE_HOOKS_CONTRACT.md`'s sharding rule.
+
 ### Configuration is fail-closed
 
 Sharding has three states, not two, and keeping the middle one distinct is what makes a sharded CI run trustworthy:

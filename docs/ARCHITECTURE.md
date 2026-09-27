@@ -18,8 +18,9 @@ flowchart LR
 ```
 
 `Builder → Program → Runner` is a second, parallel path, reachable only when a caller constructs it
-by hand via `NewBuilder`/`BuildProgram` + `NewRunner`. It exists mainly because `RunShard` (CI
-sharding) is implemented only over `Program`/`Runner` today. Both paths share the same external
+by hand via `NewBuilder`/`BuildProgram` + `NewRunner`. It is a compatibility surface: CI sharding,
+its last unique capability, is also available on the canonical path as `CompiledSuite.RunShard`
+since [#251](https://github.com/getsyntegrity/go-specs/issues/251). Both paths share the same external
 shape — hooks resolved at compile time, steps executed in a flat loop — but share no code with each
 other.
 
@@ -159,7 +160,7 @@ flowchart LR
 | **specs** | Public DSL (`Describe`, `BeforeEach`, `AfterEach`, `It`), the bytecode compiler, `ExecutionPlan`/`CompiledSuite` (the default engine), the `Builder`/`Program`/`Runner` compatibility surface, and `Context`. Entry point for all user code. |
 | `specs/compiler.go` | Compiles `Describe`'s DSL calls into an `ExecutionPlan` (the bytecode-compiler path); the `Analyze`/registry path builds the same `ExecutionPlan` type from an arena instead (`specs/execution_plan.go`'s `buildExecutionPlanFromArena`). |
 | `specs/execution_plan.go` | `ExecutionPlan` and `CompiledSuite`: the flat instruction stream and the code that runs it. |
-| `specs/builder.go`, `specs/program.go`, `specs/runner.go` | `Builder`, `Program`, and `Runner`: the alternate, caller-constructed engine, and the only home of `RunShard`. |
+| `specs/builder.go`, `specs/program.go`, `specs/runner.go` | `Builder`, `Program`, and `Runner`: the alternate, caller-constructed engine; the package-level `RunShard` (`specs/scheduler.go`) shards a `*Program`, while `CompiledSuite.RunShard` covers the canonical path. |
 | **report** | Reporting and formatting (e.g. for structured output). Used by both engines when a reporter is configured. |
 
 See [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md) for the complete inventory of every execution
