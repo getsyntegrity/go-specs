@@ -24,46 +24,67 @@ import (
 // across a fast laptop and a throttled shared runner even though neither absolute number is.
 //
 // Gated behind GOSPECS_BENCH_GUARD=1 (see `make bench-ratio-guard`) so `go test ./...` and
-// `make bench-smoke` stay fast and this never sits on the PR critical path -- it runs from
-// benchmarks.yml on push to main/workflow_dispatch, same cadence as the rest of the timing-sensitive
-// suite in that workflow.
+// `make bench-smoke` stay fast and this never sits on the PR critical path -- it runs from its own
+// `ratio-guard` job in benchmarks.yml, on push to develop and main and on workflow_dispatch (see
+// BENCHMARKS.md).
 //
 // Bounds are per check, not shared, because Describe's ratio is naturally larger and noisier than
 // Runner's: Describe pays declaration (Spec/Program construction) *and* execution every b.N
 // iteration, where CreateGoSpecsSuite's Program is built once before the timed loop, so Describe's
 // ratio includes a cost Runner's does not. See the constants below for the measurements behind
 // each bound.
+//
+// Bounds are calibrated against GitHub Actions (ubuntu-latest), not a developer's laptop, because
+// that is where this guard actually runs. That calibration matters more than it looks: a first
+// pass at these bounds was measured on a linux/amd64 laptop (10 local `go test` runs) and looked
+// generous there, but a same-process *ratio* is not fully machine-independent after all --
+// Runner's ratio traveled reasonably well (local 15.73x-17.10x vs. 10 `workflow_dispatch` runs on
+// this PR's own branch measuring 14.02x-18.41x, a similar band), but Describe's did not: the same
+// 10 CI runs measured 79.40x-115.29x, roughly half the local 210.60x-257.00x. Bounds set from the
+// laptop numbers would have left Describe with almost 2x more headroom than intended once deployed
+// to the runner that actually executes it -- exactly wide enough to *not* catch a #235-class 2x
+// regression. See the constants below for the CI-measured ranges and the resulting bound for each
+// check, and BENCHMARKS.md for the full derivation and its false-positive/false-negative tradeoff.
 const guardSpecCount = 1000
 
 const (
 	// guardRunnerBound is the ratio bound for the Runner check, applied when
 	// GOSPECS_BENCH_GUARD_BOUND_RUNNER is unset.
 	//
-	// Measured locally (linux/amd64, i7-13620H, go1.26.6, plain `go test`, 10 separate process
-	// runs) with CreateGoSpecsSuite(1000) as the subject: ratio ranged 15.73x-17.10x (~9% spread),
-	// mean ~16.6x.
+	// Measured on GitHub Actions (ubuntu-latest, go1.26.6): 10 `workflow_dispatch` runs of this
+	// workflow's `ratio-guard` job against this PR's branch measured ratio 14.02x-18.41x (mean
+	// ~15.7x, median ~15.2x; two of the ten runs were mild outliers at 18.14x/18.41x, the rest
+	// clustered 14.02x-15.47x).
 	//
 	// #235 showed individual commits roughly doubling the Runner's own ns/op in one commit
-	// (11.4us -> 23.6us, a 2.07x jump -- the case the issue calls out by name). Because CPU speed
-	// cancels out of a same-process ratio, a same-shaped regression today would double the measured
-	// ratio too, to ~31x-34x depending on where in the observed band it started. 30x sits below
-	// that entire doubled range (so a #235-class jump from anywhere in the observed band still
-	// trips it) while leaving ~1.75x headroom over the noisiest local run (30/17.10), comfortably
-	// above the ~9% run-to-run spread actually observed.
-	guardRunnerBound = 30.0
+	// (11.4us -> 23.6us, a 2.07x jump). A same-shaped regression today would double the measured
+	// ratio the same way. 25x sits above the observed ceiling (18.41x, ~36% headroom -- more than
+	// the ~2.6x-31% spread observed run to run) while staying below 2x the observed floor (14.02x
+	// -> 28.04x, ~12% margin), so a #235-class regression is caught starting from anywhere in the
+	// 10 runs actually measured, and a smaller regression (as little as ~1.6x) is still caught when
+	// it starts from a typical (non-outlier) run.
+	guardRunnerBound = 25.0
 
 	// guardDescribeBound is the ratio bound for the Describe check, applied when
 	// GOSPECS_BENCH_GUARD_BOUND_DESCRIBE is unset.
 	//
-	// Measured the same way, with specs.Describe(b, "suite", body) declaring and running 1000 specs
-	// as the subject: ratio ranged 210.60x-257.00x (~22% spread, wider than Runner's because
-	// declaration cost is included every iteration), mean ~235x.
+	// Measured the same way (10 `workflow_dispatch` runs of the `ratio-guard` job, same branch,
+	// same CI runner class): ratio 79.40x-115.29x (mean ~96.7x, median ~93.8x) -- a ~45% spread,
+	// noisier than Runner's because Describe pays suite declaration every b.N iteration and that
+	// cost is more sensitive to scheduling/allocator variance on a shared runner.
 	//
-	// 400x sits below the doubled low end of the observed band (210.60x * 2 = 421.2x, so a
-	// #235-class 2x regression starting anywhere in the observed range still trips it) while
-	// leaving ~1.56x headroom over the noisiest local run (400/257.00), well above the ~22% spread
-	// actually observed.
-	guardDescribeBound = 400.0
+	// That spread leaves less room to satisfy both "safely above observed noise" and "safely below
+	// a 2x regression from the observed floor" at once than Runner's does: the gap between the
+	// observed ceiling (115.29x) and 2x the observed floor (79.40x -> 158.80x) is only ~1.38x, where
+	// Runner's equivalent gap is ~1.52x. 150x is a deliberate compromise, not a fully "generous"
+	// bound: ~30% headroom over the observed ceiling (150/115.29), and it still sits below 2x the
+	// observed floor (150 < 158.80, ~6% margin) -- so a #235-class regression is caught even
+	// starting from the single noisiest-fast run in the sample, but only just. Starting from a
+	// typical (median ~93.8x) run, sensitivity is much better, catching a regression as small as
+	// ~1.6x. With only 10 CI samples behind it, an unobserved noise spike above 115.29x (or a
+	// regression smaller than ~1.9x starting from the observed floor) could go either uncaught or
+	// falsely flagged; see BENCHMARKS.md's "Known risks" for that tradeoff stated plainly.
+	guardDescribeBound = 150.0
 )
 
 // guardBaselineFuncs returns n closures, each performing one passing int comparison -- the same

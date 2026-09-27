@@ -82,12 +82,16 @@ bench-e2e:
 	GOSPECS_E2E=1 GOSPECS_E2E_RUNS=31 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$$' ./benchmarks | grep '^E2E'
 
 # In-process baseline ratio guard (#243): fails the Runner or Describe check if its per-spec cost
-# grows beyond a generous bound (30x / 400x) relative to a hand-written no-framework loop measured
-# in the same process, same run. The ratio cancels out machine speed, so the bound is
-# machine-independent unlike a raw ns/op threshold -- see BENCHMARKS.md and
-# benchmarks/regression_guard_test.go for the measurements the bounds are derived from. Opt-in
-# (GOSPECS_BENCH_GUARD=1) so it never sits on the PR critical path; benchmarks.yml runs it on push
-# to main and workflow_dispatch, alongside the rest of the timing-sensitive suite.
+# grows beyond a bound (25x / 150x) relative to a hand-written no-framework loop measured in the
+# same process, same run. The ratio cancels out machine speed for the *shape* of the comparison,
+# but the bounds themselves are calibrated against GitHub Actions (ubuntu-latest) specifically --
+# see BENCHMARKS.md and benchmarks/regression_guard_test.go for the CI measurements they come from.
+# Running this target on a different machine (a laptop, say) can show a meaningfully different
+# ratio, especially for Describe: a local FAIL here is not on its own evidence of a regression,
+# only benchmarks.yml's ratio-guard job (or a same-machine before/after comparison, e.g. via
+# GOSPECS_BENCH_GUARD_BOUND_DESCRIBE) is. Opt-in (GOSPECS_BENCH_GUARD=1) so it never sits on the PR
+# critical path; benchmarks.yml runs it on push to develop, main, and workflow_dispatch, in its own
+# `ratio-guard` job.
 bench-ratio-guard:
 	GOSPECS_BENCH_GUARD=1 go test -count=1 -v -run '^TestBenchmarkRatioGuard$$' ./benchmarks
 

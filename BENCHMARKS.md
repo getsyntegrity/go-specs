@@ -84,22 +84,51 @@ runners -- see "Not measured in shared CI at all" below and "Contractual vs obse
 The guard is still not an absolute threshold. It is a **ratio against an in-process baseline**,
 measured in the same process, same `go test` invocation, back to back: a hand-written loop calling
 the same 1000 funcs (one passing comparison each, no framework) that the Runner and Describe paths
-call. Dividing the framework's ns/op by the baseline's ns/op cancels out CPU speed, so the ratio is
-comparable across a fast laptop and a throttled shared runner even though neither absolute number
-is. `TestBenchmarkRatioGuard` runs two checks this way:
+call. Dividing the framework's ns/op by the baseline's ns/op cancels out CPU speed, which is most of
+what makes an absolute ns/op threshold unsafe on a shared runner. `TestBenchmarkRatioGuard` runs two
+checks this way:
 
-| Check | Subject | Bound | Measured locally (10 runs, linux/amd64, go1.26.6) |
-| ----- | ------- | ----- | -------------------------------------------------- |
-| Runner | `CreateGoSpecsSuite(1000)` (pre-built `Program`, `specs.NewRunner(prog).Run`) | 30x | 15.73x – 17.10x |
-| Describe | `specs.Describe(b, "suite", body)` (declares + runs 1000 specs every iteration) | 400x | 210.60x – 257.00x |
+| Check | Subject | Bound | Measured on GitHub Actions (10 `workflow_dispatch` runs, ubuntu-latest, go1.26.6) |
+| ----- | ------- | ----- | ---------------------------------------------------------------------------------- |
+| Runner | `CreateGoSpecsSuite(1000)` (pre-built `Program`, `specs.NewRunner(prog).Run`) | 25x | 14.02x – 18.41x (mean ~15.7x) |
+| Describe | `specs.Describe(b, "suite", body)` (declares + runs 1000 specs every iteration) | 150x | 79.40x – 115.29x (mean ~96.7x) |
 
-Describe's ratio is larger and noisier than Runner's because it pays suite *declaration* every
-iteration, where Runner's `Program` is built once before the timed loop -- the same reason
-`BenchmarkDescribeVariant_*` above documents. Both bounds sit below the doubled low end of their
-own observed range, so a #235-class single-commit ~2x jump starting anywhere in that range still
-trips the guard, while both keep roughly 1.5-1.75x headroom over their own noisiest local run (well
-above the ~9%/~22% run-to-run spread actually observed). See the constants and their comments in
-`regression_guard_test.go` for the full derivation.
+**The bounds are calibrated against the runner that actually executes this guard (GitHub Actions
+ubuntu-latest), not a developer's laptop.** That distinction turned out to matter: a first pass at
+these bounds was measured on a linux/amd64 laptop and looked comfortably generous there (Runner
+15.73x-17.10x, Describe 210.60x-257.00x), which is a similar band for Runner but **roughly half**
+for Describe once measured on the actual CI runner class. A same-process ratio cancels out CPU
+*speed*, but not every other difference between a desktop and a shared, virtualized runner --
+scheduling, allocator behavior and cache effects still land differently, and Describe (which pays
+suite declaration every iteration, not just execution) is far more exposed to that than Runner is.
+Bounds picked from laptop numbers would have shipped with roughly 2x more headroom on Describe than
+intended, which is exactly wide enough to *not* catch a #235-class 2x regression.
+
+Describe's CI-measured ratio is also noisier than Runner's (~45% spread across the 10 runs vs.
+Runner's ~31%, driven mostly by two runs that trended high), which puts real tension between "safe
+headroom above observed noise" and "reliably below a 2x regression from the observed floor":
+
+- **Runner (25x):** ~36% headroom over the observed ceiling (18.41x), and still below 2x the
+  observed floor (14.02x → 28.04x, ~12% margin) -- so a #235-class jump is caught starting from
+  anywhere in the 10 runs measured, and a smaller regression (as little as ~1.6x) is caught when it
+  starts from a typical, non-outlier run.
+- **Describe (150x):** only ~30% headroom over the observed ceiling (115.29x), and only ~6% margin
+  below 2x the observed floor (79.40x → 158.80x). This is a deliberate compromise, not a fully
+  generous bound: with just 10 CI samples behind it, an unobserved noise spike past 115.29x could
+  false-positive, and a regression smaller than ~1.9x starting from the single noisiest-fast run in
+  the sample could go uncaught. Starting from a typical (median ~93.8x) run, sensitivity is much
+  better, catching a regression as small as ~1.6x, same as Runner.
+
+In short: **Runner reliably catches a #235-class 2x regression across its whole observed range.
+Describe reliably catches one from a typical run, but is only marginally tuned to catch one from
+the noisiest run seen so far** -- stated plainly rather than claimed away, per the measurements in
+`regression_guard_test.go`'s constants.
+
+A consequence of the CI-vs-laptop gap above: **running `make bench-ratio-guard` on a machine other
+than CI can show a meaningfully different ratio, especially for Describe, and a local FAIL is not
+on its own evidence of a regression.** Treat `benchmarks.yml`'s `ratio-guard` job as authoritative;
+use `GOSPECS_BENCH_GUARD_BOUND_RUNNER` / `GOSPECS_BENCH_GUARD_BOUND_DESCRIBE` locally only for a
+same-machine before/after comparison, not to reproduce CI's verdict.
 
 The guard is opt-in (`GOSPECS_BENCH_GUARD=1`, or `make bench-ratio-guard`) and deliberately kept out
 of `ci.yml`/`make bench-smoke`, so it never sits on the PR critical path. It runs from its own
@@ -108,11 +137,13 @@ of `ci.yml`/`make bench-smoke`, so it never sits on the PR critical path. It run
 (see `CONTRIBUTING.md`'s branching model) -- `main` only moves on a release/hotfix PR -- so a
 main-only trigger would leave the guard checking a branch that barely moves while regressions like
 #235 accrue on `develop` commit by commit. The `ratio-guard` job is separate from the `bench` job
-above (chart generation and its commit-back step), which keeps its original main-only-push (plus
-manual dispatch) cadence: it is expensive and mutates the repo, and there is no reason to run it on
-every `develop` push just because the guard does. Override a bound locally or in CI with
-`GOSPECS_BENCH_GUARD_BOUND_RUNNER` / `GOSPECS_BENCH_GUARD_BOUND_DESCRIBE` if a deliberate, reviewed
-change moves the baseline.
+above (chart generation and its commit-back step), which keeps its original main-only cadence
+regardless of trigger: it is expensive and mutates the repo, and there is no reason to run it on
+every `develop` push, or on a manual dispatch against some other branch, just because the guard
+does. Override a bound locally or in CI with `GOSPECS_BENCH_GUARD_BOUND_RUNNER` /
+`GOSPECS_BENCH_GUARD_BOUND_DESCRIBE` if a deliberate, reviewed change moves the baseline -- ideally
+re-measured on GitHub Actions the same way (`gh workflow run benchmarks.yml --ref <branch>`,
+repeated a handful of times, reading the `ratio-guard` job's log), not on a laptop.
 
 ---
 
