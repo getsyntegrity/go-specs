@@ -36,6 +36,14 @@ jobs:
           cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
           cd ..
 
+      # In-process baseline ratio guard (#243): machine-independent because it compares the
+      # Runner/Describe cost against a hand-written no-framework loop in the same process, same
+      # run, rather than asserting a raw ns/op threshold. Opt-in (GOSPECS_BENCH_GUARD=1 via
+      # `make bench-ratio-guard`) and kept out of ci.yml/`make bench-smoke` deliberately, so it
+      # never sits on the PR critical path -- see BENCHMARKS.md.
+      - name: Benchmark ratio guard
+        run: make bench-ratio-guard
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

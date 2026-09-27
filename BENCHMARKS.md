@@ -34,6 +34,7 @@ Files:
 | hooks_bench_test.go             | before-each + assertion per spec  |
 | large_suite_bench_test.go       | scaling (100, 1000, 10000, 50000)  |
 | minimal_and_buildsuite_bench_test.go | BuildSuite runner, MinimalRunner, parallel, nested hooks |
+| regression_guard_test.go        | in-process baseline ratio guard against wall-clock regressions (opt-in, see below) |
 
 See [benchmarks/README.md](benchmarks/README.md) for categories and scripts.
 
@@ -69,6 +70,43 @@ threshold and cannot fail on a slow machine. It costs roughly three seconds.
 
 Correctness tests remain the primary contract. Benchmark execution is supplementary
 coverage — it proves the code runs, not that it runs fast.
+
+---
+
+# Wall-clock regression guard (ratio-based, opt-in)
+
+[`benchmarks/regression_guard_test.go`](benchmarks/regression_guard_test.go) closes the gap
+[#235](https://github.com/getsyntegrity/go-specs/issues/235) fell through: 134 commits regressed
+`BenchmarkRunner_GoSpecs` from ~4.0 µs to ~26.8 µs (individual commits jumping as much as ~2.1x) and
+nothing failed, because this project rightly refuses an absolute ns/op threshold on shared CI
+runners -- see "Not measured in shared CI at all" below and "Contractual vs observational" above.
+
+The guard is still not an absolute threshold. It is a **ratio against an in-process baseline**,
+measured in the same process, same `go test` invocation, back to back: a hand-written loop calling
+the same 1000 funcs (one passing comparison each, no framework) that the Runner and Describe paths
+call. Dividing the framework's ns/op by the baseline's ns/op cancels out CPU speed, so the ratio is
+comparable across a fast laptop and a throttled shared runner even though neither absolute number
+is. `TestBenchmarkRatioGuard` runs two checks this way:
+
+| Check | Subject | Bound | Measured locally (10 runs, linux/amd64, go1.26.6) |
+| ----- | ------- | ----- | -------------------------------------------------- |
+| Runner | `CreateGoSpecsSuite(1000)` (pre-built `Program`, `specs.NewRunner(prog).Run`) | 30x | 15.73x – 17.10x |
+| Describe | `specs.Describe(b, "suite", body)` (declares + runs 1000 specs every iteration) | 400x | 210.60x – 257.00x |
+
+Describe's ratio is larger and noisier than Runner's because it pays suite *declaration* every
+iteration, where Runner's `Program` is built once before the timed loop -- the same reason
+`BenchmarkDescribeVariant_*` above documents. Both bounds sit below the doubled low end of their
+own observed range, so a #235-class single-commit ~2x jump starting anywhere in that range still
+trips the guard, while both keep roughly 1.5-1.75x headroom over their own noisiest local run (well
+above the ~9%/~22% run-to-run spread actually observed). See the constants and their comments in
+`regression_guard_test.go` for the full derivation.
+
+The guard is opt-in (`GOSPECS_BENCH_GUARD=1`, or `make bench-ratio-guard`) and deliberately kept out
+of `ci.yml`/`make bench-smoke`, so it never sits on the PR critical path. It runs from
+`benchmarks.yml` on push to `main` and on `workflow_dispatch`, the same cadence as the rest of the
+timing-sensitive suite in that workflow. Override a bound locally or in CI with
+`GOSPECS_BENCH_GUARD_BOUND_RUNNER` / `GOSPECS_BENCH_GUARD_BOUND_DESCRIBE` if a deliberate, reviewed
+change moves the baseline.
 
 ---
 
@@ -133,9 +171,15 @@ These are true today and worth knowing. None of them fails a build.
 
 ## Not measured in shared CI at all
 
-Wall-clock regression detection. [`tools/perfcheck`](tools/perfcheck) can compare two
-benchmark runs against a threshold, but it belongs on a dedicated, quiet machine —
-running it on a shared GitHub runner would produce flakes, not signal.
+Cross-run absolute-threshold regression detection. [`tools/perfcheck`](tools/perfcheck) can compare
+two separate benchmark runs (e.g. current vs a saved baseline) against an ns/op threshold, but that
+comparison belongs on a dedicated, quiet machine — running it on a shared GitHub runner would
+produce flakes, not signal. It is not wired into any workflow.
+
+Same-run ratio-based regression detection *is* measured in shared CI — see "Wall-clock regression
+guard" above. The distinction is what makes it safe: `perfcheck` compares two different runs (so
+absolute machine speed has to be assumed constant), while the ratio guard compares two workloads
+inside the *same* run, which cancels machine speed out instead of assuming it away.
 
 ---
 
