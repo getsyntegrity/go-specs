@@ -17,7 +17,15 @@
 name: Set up Go
 description: >-
   Install the toolchain pinned in .go-version and fail fast if any go.mod's
-  `go` directive has drifted from that pin.
+  `go` directive has drifted from that pin, then restore the Go build cache.
+
+inputs:
+  cache-key:
+    description: >-
+      Which build-cache flavour this job produces: jobs that compile differently
+      (plain vs -race, test binaries vs vet) must not share a key, or each run
+      overwrites the others' entries with objects they cannot reuse.
+    required: true
 
 runs:
   using: composite
@@ -39,3 +47,21 @@ runs:
     - name: Check Go version pin
       shell: bash
       run: ./.github/scripts/check-go-version.sh
+
+    # Only the build cache (GOCACHE), never setup-go's own cache: setup-go's
+    # cache also restores the toolchain/module tree and failed with tar "File
+    # exists" when doing so, which is why `cache: false` stays above. Without
+    # any cache every job recompiled the whole module from scratch -- most of
+    # `race`'s 71s was race-instrumented compilation, not tests (2026-09-27
+    # measurement). The key ends in github.sha so each run saves a fresh entry;
+    # restore-keys falls back to the newest entry for the same toolchain,
+    # go.sum and flavour, and the Go build cache itself decides per package
+    # what is still valid, so a stale entry costs a recompile, never a wrong
+    # result.
+    - name: Restore Go build cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/go-build
+        key: go-build-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('.go-version', '**/go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('.go-version', '**/go.sum') }}-

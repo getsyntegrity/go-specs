@@ -1,15 +1,14 @@
-# CI: a staged job graph instead of one monolithic job.
-#
-# Stage 1 (no `needs`, all run in parallel): `verify` (Go version pin, module
-# path check, gofmt, `go vet`, `go build`), `lint`, `govulncheck`, and
-# `goreleaser` (check + dry-run release).
-#
-# Stage 2 (`needs: verify`): `unit` (`go test ./...`), `race` (`go test
-# -race ./...`), and `bench-smoke` (execute + race-check benchmark code
-# paths). Each only starts once `verify` is green, so a formatting or vet
-# failure surfaces in seconds without spending a runner on the test suite,
-# and each concern is its own check in the PR's status list instead of one
-# line item that could fail for any of eight different reasons.
+# CI: one job per concern instead of one monolithic job, all started in
+# parallel: `verify` (Go version pin, module path check, gofmt, `go vet`,
+# `go build`), `unit` (`go test ./...`), `race` (`go test -race ./...`),
+# `bench-smoke` (execute + race-check benchmark code paths), `lint`,
+# `govulncheck`, and `goreleaser` (check + dry-run release). Each concern is its
+# own check in the PR's status list instead of one line item that could fail
+# for any of eight different reasons. The test jobs used to wait for `verify`
+# (`needs:`); that put ~30s on every run's critical path for no correctness
+# gain, since `verify` fails the run on its own either way. Every Go job
+# restores its own flavour of the Go build cache (see
+# .github/actions/setup-go/action.yml).
 #
 # Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
@@ -64,9 +63,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Stage 1: everything that doesn't need a built/tested binary. Version pin,
-  # module path, formatting, vet, and build -- fast, deterministic checks that
-  # gate Stage 2 below.
+  # All jobs start in parallel. `verify` is the fast static gate (version pin,
+  # module path, formatting, vet, build); it no longer holds back `unit`,
+  # `race` and `bench-smoke` with `needs:`, because waiting for it put ~30s on
+  # the critical path of every run. A formatting-only failure now costs some
+  # extra runner minutes (free on a public repository) instead of wall time;
+  # `verify` still fails the run on its own.
   verify:
     runs-on: ubuntu-latest
     env:
@@ -81,6 +83,8 @@ jobs:
       # installs the pinned toolchain and runs check-go-version.sh.
       - name: Set up Go
         uses: ./.github/actions/setup-go
+        with:
+          cache-key: vet
 
       - name: Verify module path matches repository
         # go.mod's declared module path is what every external `go get` request
@@ -98,9 +102,8 @@ jobs:
 
       # Formatting is a gate, not a suggestion: gofmt output is canonical, so
       # drift is always a mechanical fix (`make fmt`) and never a judgement
-      # call. Running it before vet/build here, and before unit/race/bench-smoke
-      # even start (they declare `needs: verify`), means a formatting-only PR
-      # fails in seconds instead of after the full test suite.
+      # call. Running it before vet/build means `verify` reports a
+      # formatting-only failure in seconds, while the test jobs run alongside.
       - name: Check formatting
         run: make fmt-check
 
@@ -110,11 +113,10 @@ jobs:
       - name: Build
         run: go build ./...
 
-  # Stage 2: needs `verify` green before spending a runner on it. `go test
-  # ./...` only -- see `race` and `bench-smoke` below for the race detector
-  # and benchmark-path coverage split out of the old monolithic `test` job.
+  # `go test ./...` only -- see `race` and `bench-smoke` below for the race
+  # detector and benchmark-path coverage split out of the old monolithic
+  # `test` job.
   unit:
-    needs: verify
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -126,12 +128,13 @@ jobs:
       # composite action to resolve.
       - name: Set up Go
         uses: ./.github/actions/setup-go
+        with:
+          cache-key: test
 
       - name: Test
         run: go test ./...
 
   race:
-    needs: verify
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -141,12 +144,13 @@ jobs:
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
+        with:
+          cache-key: race
 
       - name: Test with race detector
         run: go test -race ./...
 
   bench-smoke:
-    needs: verify
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -156,6 +160,8 @@ jobs:
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
+        with:
+          cache-key: bench
 
       # Benchmark bodies are code, and until this step they were the only code
       # in the module that CI compiled but never ran: `go test ./...` skips

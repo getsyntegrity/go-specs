@@ -256,3 +256,7 @@ Strict TDD is on (user global config), with runner `go test`.
   Verified: `python3 -c 'import yaml; yaml.safe_load(open(f))'` on both new/changed files parses
   clean; `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings; `make fmt-check`,
   `go vet ./...`, `go build ./...`, `go test ./...` all pass unchanged (no Go source touched).
+- CI parallelism (maintainer request 2026-09-27): measured `race` at 71s, mostly race-instrumented
+  compilation, with `vet` at 24s. Dropped `needs: verify` from `unit`/`race`/`bench-smoke`, so all
+  jobs start together, and added a GOCACHE-only `actions/cache` in `.github/actions/setup-go`, one
+  key per compile flavour (vet/test/race/bench). setup-go's own cache stays off (tar "File exists").
