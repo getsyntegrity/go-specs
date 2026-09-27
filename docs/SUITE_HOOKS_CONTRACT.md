@@ -287,17 +287,25 @@ path with its last element dropped as for a real spec, since a hook case's `Path
 group and carries no separate leaf name. TXT and HTML print it as `<group path> [BeforeAll]`, e.g.
 `Checkout/when cart has items [BeforeAll]`; real specs keep printing their own name only.
 
-### H9 — Parallel and `FailFast` (normative now, implemented later)
+### H9 — Parallel and `FailFast`
 
-This rule is normative for any engine that supports parallel specs or `FailFast` — today that is
-the Builder/Runner engine, which implements it in a follow-up change, not in the `Describe` engine change:
+This rule is normative for any engine that supports parallel specs or `FailFast`. The `Describe`
+engine implements it via `CompiledSuite.SetFailFast`
+([#251](https://github.com/getsyntegrity/go-specs/issues/251)); `Builder`/`Runner` implements it via
+`Runner.FailFast`, which predates this rule.
 
 - `BeforeAll` completes before any spec of the group starts, including a parallel one.
 - `AfterAll` starts only after every spec of the group — including every parallel one — has
   finished (i.e., after the group's parallel batch has been waited on).
-- `FailFast` stops only at the next group boundary; it never skips the `AfterAll` of a group that
-  was already entered. A hook failure counts as a failure for `FailFast`, exactly like a spec
-  failure.
+- `FailFast` stops only at the next spec/group boundary, never mid-flight: a sequential spec that
+  fails still runs its own `AfterEach`, and the run stops before the *next* spec or group starts —
+  a spec that never starts is never reported at all. An already-launched `ItParallel` batch is never
+  cancelled partway through; every one of its siblings runs to completion, and only then does the
+  stop apply, before whatever comes after the batch. `FailFast` never skips the `AfterAll` of a
+  group that was already entered — that group finishes normally, including its own `AfterAll` — it
+  only keeps a *later* group, sibling to the one containing the failure or nested nowhere near it,
+  from ever starting. A hook failure (`BeforeAll` or `AfterAll`) counts as a failure for `FailFast`,
+  exactly like a spec failure.
 
 ### H10 — Cost: opt-in only
 

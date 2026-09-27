@@ -51,7 +51,7 @@ H10), and putting the flag on `ExecutionPlan` (pinned at exactly 192 bytes).
 - [x] T2 group path: RED tests (later groups cut, entered `AfterAll` runs, `BeforeAll`/`AfterAll`
       failure triggers, `ItParallel` siblings finish then stop), then GREEN. Check: `go test
       ./specs/...`. Route: same delegated writer.
-- [ ] T3 docs: `docs/EXECUTION_ENGINES.md` capability table and Stage 4, H9 wording in
+- [x] T3 docs: `docs/EXECUTION_ENGINES.md` capability table and Stage 4, H9 wording in
       `docs/SUITE_HOOKS_CONTRACT.md`, `CHANGELOG.md` Unreleased. Check: `make fmt-check`, `go vet`.
 
 ## Progress
@@ -82,6 +82,22 @@ H10), and putting the flag on `ExecutionPlan` (pinned at exactly 192 bytes).
   subprocess test, since a real per-spec subtest failure would otherwise mark the outer test
   failed). `go test ./...` green.
 
+- T3 done. Docs updated: `docs/EXECUTION_ENGINES.md` (FailFast row now ✅ for ExecutionPlan, Stage 4
+  item 3 marked done, the "unique capabilities"/"load-bearing fact"/classification-table prose no
+  longer claims `FailFast` is Builder/Runner-exclusive); `docs/SUITE_HOOKS_CONTRACT.md` H9 (title
+  and intro no longer say "implemented later"; clarified sequential-stops-before-next-spec vs.
+  parallel-batch-finishes-first vs. entered-`AfterAll`-still-runs); `docs/DSL.md` (the `ItParallel`
+  section's stale "`*Spec` does not have `FailFast` yet (#251)" corrected); `CHANGELOG.md` new
+  `[Unreleased]/Added` entry. `Runner.FailFast`'s own doc comment made no exclusivity claim, so it
+  was left unchanged. `make fmt-check` and `go vet ./...` both clean.
+
+## Progress notes
+
+Spec 1 of go-specs issue #251 (`CompiledSuite.SetFailFast`) is complete: T1 (flat path), T2 (group
+path / `BeforeAll`/`AfterAll`/`ItParallel`), T3 (docs) all done and committed on
+`feat/251-describe-failfast`. Spec 2 (`RunShard` re-expressed over `ExecutionPlan`) is a separate,
+already-named follow-up (`describe-shard`), out of scope here.
+
 ## Next step
 
-T3.
+None — this spec is done. `describe-shard` (issue #251 spec 2) is a separate feature document.

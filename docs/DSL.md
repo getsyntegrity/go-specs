@@ -241,9 +241,10 @@ process-global state must be touched, do it outside `ItParallel`, in a `BeforeAl
 runs before the group, or in a sequential `It`.
 
 Every spec in the parallel group always runs to completion before execution moves on; `FailFast`
-only takes effect at the next group (on `Builder.Runner`; `*Spec` does not have `FailFast` yet,
-tracked separately as [#251](https://github.com/getsyntegrity/go-specs/issues/251)) — it cannot
-cancel a sibling `ItParallel` spec mid-group, on either engine.
+only takes effect at the next group boundary — on `Builder`/`Runner` (`Runner.FailFast`) and, since
+[#251](https://github.com/getsyntegrity/go-specs/issues/251), on `*Spec`/`CompiledSuite`
+(`CompiledSuite.SetFailFast`) — it cannot cancel a sibling `ItParallel` spec mid-group, on either
+engine.
 
 ### `ctx.T.Parallel()` is not supported
 
