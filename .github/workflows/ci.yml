@@ -135,6 +135,29 @@ jobs:
       - name: Execute benchmark code paths
         run: make bench-smoke
 
+      # `go test -race ./...` above never invokes Benchmark* functions (no
+      # -bench flag, and go test's default -run skips them), and `make
+      # bench-smoke` above has no -race flag -- so neither required check
+      # ever puts a goroutine-spawning benchmark through the race detector
+      # (getsyntegrity/go-specs#218). The only benchmarks that spawn
+      # goroutines today are BenchmarkFalseSharing_* in
+      # specs/parallel_false_sharing_bench_test.go (runParallelPadded,
+      # runParallelLocalPlain), which share a *[]failureRecord and *uint32
+      # across workers -- exactly what a race detector run should cover.
+      #
+      # Scoped to -bench=FalseSharing ./specs/... rather than a full
+      # `-bench=. ./...` sweep: it is the only package with goroutine-
+      # spawning benchmarks (confirmed via `rg '^\s*go ' **/*_bench_test.go`),
+      # and -race adds real overhead per goroutine, so narrowing keeps this
+      # step in the neighborhood of a second instead of racing every
+      # benchmark in the module for no extra coverage. -benchtime=1x mirrors
+      # bench-smoke: enough to execute the goroutines once, not a timing
+      # measurement. If a future benchmark spawns goroutines outside
+      # specs/parallel_false_sharing_bench_test.go, widen this selector to
+      # cover it.
+      - name: Race-check goroutine-spawning benchmarks
+        run: go test -race -run='^$' -bench=FalseSharing -benchtime=1x ./specs/...
+
   shipwright:
     # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
     # single workflow step with "failed to acquire Dagger client: daemon connected but not
