@@ -5,34 +5,18 @@
 # had one, so it was pure CI runtime with no coverage payoff. If a real reason
 # shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
-# The `shipwright` job runs unit tests, lint, and govulncheck as one
-# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
-# executing in parallel instead of sequentially. .shipwright/workflow.yaml is
-# the canonical definition of what "go-specs passes CI" means; this file only
-# adds what Shipwright cannot express today. It complements rather than
-# replaces the `test` job below: Dagger only runs Linux containers and pins
-# its own Go toolchain (not the one pinned in .go-version), so it can't stand
-# in for the native build/vet/test step that actually builds and tests on the
-# exact patch pinned for the floor's minor. Both run in parallel, so the small overlap on `test` costs nothing.
-#
-# Build and vet stay native because Shipwright has no provider for either
-# on a library module: its only `build` provider compiles a single `main`
-# binary from `.` (go-specs has none), and no `go-vet` provider is
-# registered anywhere in Shipwright -- golangci-lint's default linter set
-# already runs vet-equivalent checks, but that's implicit coverage, not a
-# vet gate a manifest can request directly (pablogore/shipwright#273,
-# pablogore/shipwright#274).
-#
-# The job downloads+verifies the pinned shipwright binary itself instead of
-# using pablogore/shipwright's own composite action: that action's v0.12.0
-# action.yml has an unrelated bug (a literal `${{ secrets.DAGGER_CLOUD_TOKEN
-# }}` inside an input's `description:` string, which GitHub's own template
-# validator rejects with "Unrecognized named-value: 'secrets'" while just
-# parsing the manifest -- confirmed on this repo's own PR checks, and
-# re-confirmed against the v0.12.0 tag and main tip on 2026-09-10,
-# pablogore/shipwright#275). The steps below replicate exactly what that
-# action does (download -> verify checksums.txt -> run), minus the broken
-# manifest.
+# `lint` (golangci-lint) and `govulncheck` are native jobs below, running in parallel
+# with `test` and `goreleaser`. They used to run only inside Shipwright
+# (.shipwright/workflow.yaml, a Dagger-backed workflow that ran unit tests, lint, and
+# govulncheck concurrently), whose `shipwright` job here had been permanently disabled
+# (`if: false`) because the pinned runner (pablogore/shipwright v0.12.0) intermittently
+# failed before running a single workflow step ("failed to acquire Dagger client: daemon
+# connected but not ready ... context deadline exceeded after 1 attempts", despite
+# reporting max_retries=11 -- the configured retry was not honoured). In practice that
+# meant lint and govulncheck ran nowhere. Shipwright (.shipwright/ and the disabled job)
+# is dropped entirely rather than re-enabled: the underlying runner defect
+# (pablogore/shipwright#275) was never fixed, and native jobs don't depend on it or on
+# Dagger being available at all.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
 # every push/PR to develop/main, the same branches release.yml tags and
@@ -50,6 +34,20 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+
+# Least-privilege default: every job below only reads the checked-out repository. `lint`,
+# `govulncheck`, `test`, and `goreleaser` never write to the repo, open a PR, or use a
+# secret, so `contents: read` covers all of them and none needs a job-level override here.
+permissions:
+  contents: read
+
+# Cancel a PR's superseded runs (a new push on the same PR obsoletes the one in flight),
+# but never cancel a push run on develop/main: those are the record of what actually ran
+# against that commit, and GitHub Actions can't tell "superseded" from "a second commit
+# landed a second later" on a push trigger the way it can for a PR's head ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -175,24 +173,11 @@ jobs:
       - name: Race-check goroutine-spawning benchmarks
         run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
 
-  report-cli:
-    # AC-23 of #146: docs/REPORTING.md's "Running it in CI with go-specs-report" section is not
-    # just prose -- this job runs the documented GitHub Actions example for real, against the
-    # report/coordination e2e fixture packages (producera, producerb), so a change that breaks the
-    # documented flow fails CI instead of only being caught the next time someone copy-pastes it.
-    #
-    # The `go test` step is deliberately red: GO_SPECS_FIXTURE_HOOK_FAIL=1 makes producera's
-    # BeforeAll hook fail on purpose (report/coordination/internal/e2efixture/producera's own
-    # documented failure gate, the same one report/coordination/finalize_e2e_test.go uses).
-    # `continue-on-error: true` on that step is exactly what the doc's GitHub Actions example
-    # teaches: it lets the job keep going so `finalize` still runs against the two producers'
-    # shards, proving contract v1.2.9 §8's claim that a reporting result is independent of the test
-    # result -- `go test` failing must never make `finalize` fail, and `finalize` succeeding must
-    # never hide that `go test` failed.
-    #
-    # The final assertion step below is this job's equivalent of the doc's own "fail the job if go
-    # test failed" consumer step: it re-fails the job once both outcomes have been checked, instead
-    # of leaving it green. A green job here would mean the red-test path was never exercised.
+  # Replaces the lint step Shipwright used to run (golangci-lint via its own
+  # provider, see the file header). No .golangci.yml exists in this repo, so this
+  # runs with golangci-lint's own defaults -- the same defaults `make lint` falls
+  # into locally when golangci-lint is installed.
+  lint:
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -204,146 +189,38 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: .go-version
-          cache: false
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
-      - name: Build go-specs-report
-        run: go build -o "$RUNNER_TEMP/go-specs-report" ./cmd/go-specs-report
-
-      # A hand-written manifest, not the repo-wide `.go-specs/producers.txt` recipe from
-      # docs/REPORTING.md: this job only runs two fixture packages, not the whole module's
-      # producers, and finalize's `-producers` manifest must list exactly the producers a run's
-      # `go test` invocation actually covers.
-      - name: Write producer manifest
-        run: |
-          cat > "$RUNNER_TEMP/producers.txt" <<'EOF'
-          github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/producera
-          github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/producerb
-          EOF
-
-      # init's KEY=value stdout lines append straight onto $GITHUB_ENV, so every later step in
-      # this job inherits GO_SPECS_REPORT_SHARDS/_RUN_ID/_RUN_TOKEN/_REPORT_DIR automatically --
-      # same recipe as the doc's GitHub Actions example.
-      - name: go-specs-report init
-        run: |
-          "$RUNNER_TEMP/go-specs-report" init \
-            -run-id="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
-            -report-dir="$RUNNER_TEMP/go-specs-runs" >> "$GITHUB_ENV"
-
-      # $GITHUB_ENV is not masked automatically the way a declared `secrets:` value is, and the run
-      # token is a credential in everything but name. Read it as a shell variable, not a
-      # `${{ env.* }}` expression: Actions prints a step's script with expressions already
-      # expanded, which would log the token before the mask took effect.
-      - name: mask the run token
-        run: echo "::add-mask::$GO_SPECS_RUN_TOKEN"
-
-      - name: go test
-        id: test
-        continue-on-error: true
-        env:
-          GO_SPECS_FIXTURE_HOOK_FAIL: "1"
-        run: |
-          go test -count=1 \
-            -coverpkg=github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/shared \
-            -coverprofile="$RUNNER_TEMP/cover.out" \
-            ./report/coordination/internal/e2efixture/producera/... \
-            ./report/coordination/internal/e2efixture/producerb/...
-
-      - name: go-specs-report finalize
-        id: finalize
-        if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/report"
-          "$RUNNER_TEMP/go-specs-report" finalize \
-            -producers="$RUNNER_TEMP/producers.txt" \
-            -coverprofile="$RUNNER_TEMP/cover.out" \
-            -json="$RUNNER_TEMP/report/report.json" \
-            -xml="$RUNNER_TEMP/report/report.xml" \
-            -html="$RUNNER_TEMP/report/report.html" \
-            -txt="$RUNNER_TEMP/report/report.txt" \
-            -cleanup
-
-      - name: upload report artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      # Pinned to the exact golangci-lint release this repo lints with locally
+      # (`golangci-lint --version` on a contributor machine), so a lint pass here
+      # means the same pass would happen at a contributor's desk, and a version-only
+      # false positive/negative can't appear silently on an unpinned "latest".
+      # Bump deliberately, alongside re-running `make lint` locally to catch any new
+      # findings the newer linter version surfaces.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
         with:
-          name: go-specs-report-cli-fixture
-          path: ${{ runner.temp }}/report/
+          version: v2.13.1
 
-      # Combine both outcomes explicitly, the same way docs/REPORTING.md insists a real pipeline
-      # must (contract v1.2.9 §8: neither exit code stands in for the other), then check the
-      # merged report.json actually carries the fixture's known totals (Total 4, Failed 1,
-      # Skipped 1, Passed 2 -- report/coordination/finalize_e2e_test.go) so a merge regression that
-      # still exits 0 does not slip through unnoticed.
-      - name: assert the documented flow behaved as documented
-        if: always()
-        env:
-          TEST_OUTCOME: ${{ steps.test.outcome }}
-          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
-        run: |
-          set -u
-          status=0
-
-          if [ "$TEST_OUTCOME" != "failure" ]; then
-            echo "::error::expected the go test step to fail (GO_SPECS_FIXTURE_HOOK_FAIL=1 makes producera's BeforeAll fail on purpose); got outcome=$TEST_OUTCOME" >&2
-            status=1
-          fi
-
-          if [ "$FINALIZE_OUTCOME" != "success" ]; then
-            echo "::error::expected go-specs-report finalize to succeed despite the red go test (contract v1.2.9 §8: reporting and test results are independent); got outcome=$FINALIZE_OUTCOME" >&2
-            status=1
-          fi
-
-          REPORT_JSON="$RUNNER_TEMP/report/report.json"
-          if [ ! -f "$REPORT_JSON" ]; then
-            echo "::error::$REPORT_JSON was not written by finalize" >&2
-            status=1
-          else
-            total=$(jq -r '.execution.total' "$REPORT_JSON")
-            failed=$(jq -r '.execution.failed' "$REPORT_JSON")
-            skipped=$(jq -r '.execution.skipped' "$REPORT_JSON")
-            passed=$(jq -r '.execution.passed' "$REPORT_JSON")
-            if [ "$total" != "4" ] || [ "$failed" != "1" ] || [ "$skipped" != "1" ] || [ "$passed" != "2" ]; then
-              echo "::error::report.json execution totals = total=$total failed=$failed skipped=$skipped passed=$passed, want total=4 failed=1 skipped=1 passed=2 (see report/coordination/finalize_e2e_test.go)" >&2
-              status=1
-            fi
-          fi
-
-          exit "$status"
-
-  shipwright:
-    # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
-    # single workflow step with "failed to acquire Dagger client: daemon connected but not
-    # ready ... context deadline exceeded after 1 attempts", despite reporting
-    # max_retries=11 — the configured retry is not honoured. Observed twice on unrelated
-    # PRs, each cleared by a plain re-run, so it gates merges on luck rather than on the
-    # code. `test` and `goreleaser` are independent jobs and keep running.
-    # To re-enable: delete this `if` line. Nothing else was changed.
-    if: false
+  # Replaces the govulncheck step Shipwright used to run (see the file header).
+  # Scans the whole module, matching `govulncheck ./...` -- the action's default target.
+  govulncheck:
     runs-on: ubuntu-latest
     env:
-      SHIPWRIGHT_VERSION: v0.12.0
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Download Shipwright
-        run: |
-          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/shipwright-linux-amd64" -o shipwright
-          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/checksums.txt" -o checksums.txt
-          chmod +x shipwright
-
-      - name: Verify checksum
-        run: |
-          EXPECTED="$(grep -E '[[:space:]]\*?shipwright-linux-amd64$' checksums.txt | awk '{print $1}')"
-          [ -n "$EXPECTED" ]
-          ACTUAL="$(sha256sum shipwright | awk '{print $1}')"
-          [ "$EXPECTED" = "$ACTUAL" ]
-
-      - name: Run unit/lint/vuln workflow
-        run: ./shipwright --workflow .shipwright/workflow.yaml --branch "${{ github.ref_name }}"
+      # repo-checkout is disabled because the step above already checked the repository
+      # out the same way every other job in this file does; go-version-file still tells
+      # the action which Go toolchain to install to build and run govulncheck itself,
+      # respecting the GOTOOLCHAIN=local pin like every other job.
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: .go-version
+          repo-checkout: false
 
   goreleaser:
     runs-on: ubuntu-latest

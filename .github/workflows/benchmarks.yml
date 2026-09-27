@@ -5,6 +5,18 @@ on:
     branches: [main, develop]
   workflow_dispatch:
 
+# Least-privilege default. `bench` overrides to `contents: write` at the job level (below)
+# because it commits generated charts back to the repo; `ratio-guard` only reads.
+permissions:
+  contents: read
+
+# One in-flight run per ref: `bench` commits charts back to the same branch a second overlapping
+# run would also push to, and there's no PR head ref here to make cancellation safe the way
+# ci.yml's does, so this only de-duplicates queued runs rather than cancelling one already running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   bench:
     # Chart generation and the commit-back step below are expensive and mutate the repo, so they

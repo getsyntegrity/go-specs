@@ -68,12 +68,12 @@ var (
 	cmpString = "syntegrity"
 	cmpStruct = point{X: 7, Y: "seven"}
 	cmpSlice  = []int{1, 2, 3, 4, 5}
-	cmpErr    = errors.New("boom")
+	errCmp    = errors.New("boom")
 	// The idiomatic wrap, and the exact shape the correctness section of COMPARISON.md
-	// analyses. An earlier revision used errors.Join(cmpErr), which unwraps through
+	// analyses. An earlier revision used errors.Join(errCmp), which unwraps through
 	// Unwrap() []error and is not what a caller writes when adding context to an error.
-	cmpWrapped  = fmt.Errorf("layer: %w", cmpErr)
-	cmpNilError error
+	errCmpWrapped = fmt.Errorf("layer: %w", errCmp)
+	cmpNilError   error
 )
 
 // --- Scenario: comparable equality (int) ---
@@ -433,7 +433,7 @@ func BenchmarkCompare_ErrorIs_Baseline(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if !errors.Is(cmpWrapped, cmpErr) {
+		if !errors.Is(errCmpWrapped, errCmp) {
 			b.Fatal("not the same error")
 		}
 	}
@@ -444,7 +444,7 @@ func BenchmarkCompare_ErrorIs_GoSpecsTyped(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		specs.EqualTo(ctx, errors.Is(cmpWrapped, cmpErr), true)
+		specs.EqualTo(ctx, errors.Is(errCmpWrapped, errCmp), true)
 	}
 }
 
@@ -453,7 +453,7 @@ func BenchmarkCompare_ErrorIs_GoSpecsMatcher(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ctx.Expect(cmpWrapped).To(specs.MatchError(cmpErr))
+		ctx.Expect(errCmpWrapped).To(specs.MatchError(errCmp))
 	}
 }
 
@@ -461,7 +461,7 @@ func BenchmarkCompare_ErrorIs_Testify(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		assert.ErrorIs(b, cmpWrapped, cmpErr)
+		assert.ErrorIs(b, errCmpWrapped, errCmp)
 	}
 }
 
@@ -470,6 +470,6 @@ func BenchmarkCompare_ErrorIs_Gomega(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		g.Expect(cmpWrapped).To(gomega.MatchError(cmpErr))
+		g.Expect(errCmpWrapped).To(gomega.MatchError(errCmp))
 	}
 }
