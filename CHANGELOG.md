@@ -6,6 +6,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-27
+
 ### Removed
 
 - **Breaking (targeted for v0.2.0).** Removed the entire path-generation / property-exploration
@@ -1014,3 +1016,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   exposed — see `docs/EXECUTION_MODEL.md`'s "Adaptive strategies" section for the full mechanism.
   Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
+
+[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/getsyntegrity/go-specs/compare/v0.1.0...v0.2.0
