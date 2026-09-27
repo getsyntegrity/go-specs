@@ -1,0 +1,109 @@
+# Benchmark charts: regenerate benchmarks/results/*.png on every push to develop and roll the
+# result into a single, reused pull request instead of committing straight to develop -- the rule
+# that main and develop only change through pull requests (CONTRIBUTING.md's Branching Model)
+# applies to a bot commit exactly as much as a human one.
+#
+# This job used to live in benchmarks.yml as `bench`, gated to push-to-main and committing the
+# charts directly. Split into its own file for one reason: loop safety. Benchmark numbers differ
+# on every run (this repo's ubuntu-latest shared runners are not perfectly reproducible), so
+# without ignoring the chart output paths on this workflow's own trigger, merging its rolling PR
+# into develop would immediately retrigger this same workflow, regenerate slightly different
+# numbers, push a new commit to the PR branch, and reopen the PR -- forever. The `paths-ignore`
+# below breaks that loop by never re-triggering on a push whose only change is the chart files
+# themselves. `paths-ignore` applies to the whole workflow it's attached to, though, and
+# benchmarks.yml's `ratio-guard` job must keep running on *every* develop push, chart-only or not
+# (it is the regression guard, not decorative); the two jobs cannot share `on:` triggers with
+# conflicting path filters, which is why `ratio-guard` stays in benchmarks.yml, unaffected, and
+# this file exists at all.
+name: Benchmark charts
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - "benchmarks/results/*.png"
+  workflow_dispatch:
+
+# Least-privilege: this job's only write (the rolling PR branch and the PR itself) goes through
+# RELEASE_TOKEN via peter-evans/create-pull-request's `token:` input, not GITHUB_TOKEN -- the same
+# reasoning as release-prep.yml's header (Decision 3 of native-ci-pipeline.md): a GITHUB_TOKEN
+# push/PR would not retrigger this PR's own required checks.
+permissions:
+  contents: read
+
+# One in-flight run per ref, queued rather than cancelled: a cancelled mid-push could leave the
+# rolling branch half-updated. Matches benchmarks.yml's own concurrency reasoning.
+concurrency:
+  group: benchmark-charts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      # Checked before anything else, so a missing token fails in seconds with an actionable
+      # message instead of peter-evans/create-pull-request failing deep inside a push with an
+      # opaque authentication error.
+      - name: Verify RELEASE_TOKEN is configured
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Benchmark numbers are only comparable across runs when the toolchain is, so this job
+      # installs the same pinned version as CI rather than a floating minor.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+      - name: Create results directory
+        run: mkdir -p benchmarks/results
+
+      - name: Run benchmarks
+        run: |
+          cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
+          cd ..
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install matplotlib
+        run: pip install matplotlib
+
+      - name: Generate charts
+        run: python3 scripts/bench_to_chart.py
+
+      # Rolls every run's regenerated charts into the same open PR (branch: below is fixed, not
+      # derived per run) instead of opening a new PR every push -- Decision 3 of
+      # docs/investigations/odd-tasks/hotfix-release-and-charts.md: one PR per push is noise for a
+      # single maintainer, and it's this same loop-safety concern as the file header again --
+      # without a single reused branch, a PR-per-push and a chart-only retrigger would compound.
+      # No `[skip ci]` on the commit message (unlike the old direct-to-main commit this replaces):
+      # this now becomes a real pull request, and CI must run on it like any other PR.
+      - name: Open or update the rolling benchmark-charts PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          add-paths: benchmarks/results/*.png
+          commit-message: "chore: update benchmark charts"
+          branch: chore/benchmark-charts
+          delete-branch: true
+          base: develop
+          title: "chore: update benchmark charts"
+          body: >-
+            Regenerated benchmark charts from the latest push to `develop`
+            (`${{ github.sha }}`). This PR is reused across runs -- see
+            `.github/workflows/benchmark-charts.yml`'s header for why -- so it always reflects
+            the most recent benchmark numbers rather than accumulating one commit per push.
