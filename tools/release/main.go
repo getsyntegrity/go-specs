@@ -16,6 +16,7 @@
 //
 //	go run ./tools/release next-version -last v0.1.0 -commits commits.txt
 //	go run ./tools/release next-version -last v0.1.0 -commits -   # read from stdin
+//	go run ./tools/release next-version -last v0.1.2 -commits commits.txt -patch-only   # hotfix
 //	go run ./tools/release changelog -version v0.2.0 -date 2026-10-01 -file CHANGELOG.md
 //	go run ./tools/release latest-heading -file CHANGELOG.md
 //	go run ./tools/release notes -version v0.2.0 -file CHANGELOG.md
@@ -67,6 +68,7 @@ func runNextVersion(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	fs.SetOutput(stderr)
 	last := fs.String("last", "", "last released tag, strict SemVer (e.g. v1.2.3)")
 	commitsPath := fs.String("commits", "", `commit records file, or "-" for stdin (NUL-delimited "git log --format='%B%x00'" output)`)
+	patchOnly := fs.Bool("patch-only", false, "hotfix mode: always bump patch, and fail if the range contains a breaking change or a feat commit")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -86,7 +88,12 @@ func runNextVersion(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		return 1
 	}
 
-	next, err := NextVersion(*last, raw)
+	var next string
+	if *patchOnly {
+		next, err = NextVersionPatchOnly(*last, raw)
+	} else {
+		next, err = NextVersion(*last, raw)
+	}
 	switch {
 	case err == nil:
 		logf(stdout, "%s\n", next)
