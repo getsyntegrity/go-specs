@@ -38,12 +38,20 @@ const (
 // recorded for importPath, or -1 if that package never appears in pkgs at all — distinguishing "no
 // entry" from "an entry with zero statements", which a plain 0 would not.
 func packageCoverageTotal(pkgs []report.PackageCoverage, importPath string) int {
-	for _, p := range pkgs {
-		if p.ImportPath == importPath {
-			return p.Total
-		}
+	if p, ok := findPackageCoverage(pkgs, importPath); ok {
+		return p.Total
 	}
 	return -1
+}
+
+// findPackageCoverage returns the entry pkgs records for importPath, if any.
+func findPackageCoverage(pkgs []report.PackageCoverage, importPath string) (report.PackageCoverage, bool) {
+	for _, p := range pkgs {
+		if p.ImportPath == importPath {
+			return p, true
+		}
+	}
+	return report.PackageCoverage{}, false
 }
 
 // findHookCase returns the first case anywhere in rep whose Hook marker is set.
@@ -165,6 +173,16 @@ func TestFinalizeMergesRealShardsWithDeduplicatedCoverageAndAHookCase(t *testing
 		t.Fatalf("deduplicated shared Total (%d) is not less than the raw, non-deduplicated Total (%d); "+
 			"the real -coverpkg overlap was not collapsed by Finalize's merge (contract v1.2.8 §9, finding F7)",
 			dedupedSharedTotal, sharedRawTotal)
+	}
+	// Deduplicating the denominator is only half of the merge: each producer executed a different
+	// branch of shared.Compute (producera's BeforeAll the n > 0 block, producerb the other), so the
+	// merged counts must be their union. A merge that kept only the first duplicate block and dropped
+	// the second producer's execution count would still pass the Total check above while
+	// underreporting Covered.
+	sharedMerged, _ := findPackageCoverage(result.Merged.Coverage.Packages, fixtureShared)
+	if sharedMerged.Covered != sharedMerged.Total {
+		t.Fatalf("merged shared Covered = %d, want %d (= Total): the two producers' executions of "+
+			"shared.Compute were not unioned by Finalize's merge", sharedMerged.Covered, sharedMerged.Total)
 	}
 
 	assertRenderersAgreeOnTheMerge(t, targets, result.Merged)
