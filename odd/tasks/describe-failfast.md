@@ -48,7 +48,7 @@ H10), and putting the flag on `ExecutionPlan` (pinned at exactly 192 bytes).
       runs, unreported rest, no stop without the option, filtered/skipped do not trigger), then
       GREEN. Check: `go test ./specs/...`, size and allocation pins. Route: delegated writer
       (2+ non-trivial files).
-- [ ] T2 group path: RED tests (later groups cut, entered `AfterAll` runs, `BeforeAll`/`AfterAll`
+- [x] T2 group path: RED tests (later groups cut, entered `AfterAll` runs, `BeforeAll`/`AfterAll`
       failure triggers, `ItParallel` siblings finish then stop), then GREEN. Check: `go test
       ./specs/...`. Route: same delegated writer.
 - [ ] T3 docs: `docs/EXECUTION_ENGINES.md` capability table and Stage 4, H9 wording in
@@ -67,7 +67,21 @@ H10), and putting the flag on `ExecutionPlan` (pinned at exactly 192 bytes).
   `TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath`,
   `TestGroupHookStorageAddsNoBytesToAlwaysAllocatedStructs`,
   `TestSuiteWithoutGroupHooksAllocatesNoGroupStorage` all green.
+- T2 done. `planGroups.failFast` (new bool field, no size pin on `planGroups` itself) plus
+  `groupRun.failFastStopped`/`markFailFast()` (specs/group_hooks.go): a plain, non-atomic bool set
+  only from the calling goroutine (after an `ItParallel` batch is `wg.Wait()`ed, never from a
+  sibling's own goroutine), checked at the top of every `runRange` loop iteration so a stop set
+  anywhere unwinds every enclosing scope without a `Goexit`/`FailNow` — a group already entered
+  still runs its own `AfterAll` (defers), and a group never entered never starts. Wired into
+  `runSpec` (both `r.real` and fake-backend paths), `runBeforeAlls`' actual-failure branch,
+  `reportAfterAll`, the cleanup-only-failure branch in `runGroup`, and `runParallelGroup` (decided
+  after the whole batch has finished). Tests: `specs/group_hooks_failfast_test.go` (RED: compile
+  failure, `suite.SetFailFast undefined`; GREEN after implementation) — later
+  groups/specs cut, entered `AfterAll` runs, `BeforeAll`/`AfterAll` failure triggers the stop, an
+  `ItParallel` batch runs every sibling to completion before the stop applies (real-process
+  subprocess test, since a real per-spec subtest failure would otherwise mark the outer test
+  failed). `go test ./...` green.
 
 ## Next step
 
-T2.
+T3.
