@@ -83,7 +83,8 @@ const (
 	// typical (median ~93.8x) run, sensitivity is much better, catching a regression as small as
 	// ~1.6x. With only 10 CI samples behind it, an unobserved noise spike above 115.29x (or a
 	// regression smaller than ~1.9x starting from the observed floor) could go either uncaught or
-	// falsely flagged; see BENCHMARKS.md's "Known risks" for that tradeoff stated plainly.
+	// falsely flagged; see BENCHMARKS.md's "Wall-clock regression guard (ratio-based, opt-in)" for
+	// that tradeoff stated plainly.
 	guardDescribeBound = 150.0
 )
 
