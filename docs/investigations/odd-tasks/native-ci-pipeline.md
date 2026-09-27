@@ -66,7 +66,7 @@ release to happen automatically when `develop` is merged into `main`.
 - [x] T3 — `tools/release`: next version from commits, and the CHANGELOG rewrite. Behaviour tests
   (strict TDD). Plus the `release-prep` workflow on `develop` → `main` PRs. Check:
   `go test ./tools/release/...`, YAML parses.
-- [ ] T4 — `release` workflow on a merged `develop` → `main` PR (tag, GoReleaser, installability);
+- [x] T4 — `release` workflow on a merged `develop` → `main` PR (tag, GoReleaser, installability);
   `hotfix-sync` workflow; update CONTRIBUTING.md's release section. Check: YAML parses, dry-run of
   the tool on the real history.
 - [ ] T5 — Ruleset for `main`/`develop` (only with explicit authorization); open the PR. Check: CI
@@ -156,3 +156,57 @@ Strict TDD is on (user global config), with runner `go test`.
   going forward once releases stop being ad hoc `workflow_dispatch` runs (T4); this pair predates
   T1-T4 and both are ignored by `next-version`'s classification (a bot commit exact-match and a
   merge-commit subject) regardless.
+- T4 done. Added `tools/release/info.go` (+ `info_test.go`, strict TDD: `go test ./tools/release/...`
+  failed to build first — `undefined: LatestHeadingVersion` etc. — then implemented) with two more
+  read-only subcommands wired into `main.go`: `latest-heading -file CHANGELOG.md` (the version
+  from the top heading below `## [Unreleased]`, normalized to `vX.Y.Z`, falling back to the first
+  heading in the file when there is no `Unreleased` section at all) and `notes -version vX.Y.Z
+  -file CHANGELOG.md` (that version's own section body, for GoReleaser's `--release-notes`).
+  `ReleaseNotes` matches the heading with or without a leading `v`, so it finds this repository's
+  existing `## [0.1.0]` heading (no `v`) as well as every new `## [vX.Y.Z]` heading this tool
+  writes going forward.
+
+  Rewrote `.github/workflows/release.yml`: trigger is now `pull_request: types: [closed]` on
+  `main` (the `workflow_dispatch` input is gone — Decision 2, single path); job gated on
+  `merged == true && head.ref == 'develop' && head.repo.full_name == github.repository`; checks
+  out `github.event.pull_request.merge_commit_sha` (not main's moving HEAD, so a second PR merging
+  into `main` between job start and the version-determination step can't shift which commit this
+  run is about); a new "Determine the version to release" step recomputes the version from
+  commits (`tools/release next-version`, same last-tag lookup as release-prep.yml) *and* reads it
+  from `tools/release latest-heading`, and fails with `::error::` on any disagreement (this is the
+  safety net for "release-prep.yml never ran, or a later commit invalidated what it wrote");
+  idempotency guard unchanged in spirit (skip if the computed version's tag already exists); tags
+  the merge commit directly (not `HEAD`) and pushes; a new "Extract release notes" step tries
+  `tools/release notes`, passing `--release-notes <file>` to GoReleaser only when that section is
+  non-empty, otherwise logging an `::notice::` and falling back to GoReleaser's own git-log
+  changelog exactly as before; the "Verify external installability" step is unchanged, just
+  re-pointed at the computed version output. `permissions: contents: write` moved from
+  workflow-level to job-level only (no other job in this file needs it).
+
+  Added `.github/workflows/hotfix-sync.yml`: `pull_request: types: [closed]` on `main`, gated on
+  `merged == true && startsWith(head.ref, 'hotfix/') && head.repo.full_name == github.repository`
+  (disjoint from `release.yml`'s condition, since a hotfix branch is never named `develop`); opens
+  a `main` → `develop` PR via `gh pr create` using `RELEASE_TOKEN` (reused rather than asking for
+  a second secret with the same Pull-requests-write scope), or comments on an already-open one if
+  a second hotfix lands before the first sync PR is merged; fails fast with `::error::` if
+  `RELEASE_TOKEN` is missing, same message shape as release-prep.yml's check. No release step —
+  by design, per the task.
+
+  Rewrote CONTRIBUTING.md's Releasing section (previously the `gh workflow run release.yml --ref
+  main` manual-dispatch instructions) into: the new develop→main-PR-is-the-release model in 4
+  steps, a "Prerequisite: RELEASE_TOKEN" subsection (what scopes the fine-grained PAT needs and
+  why GITHUB_TOKEN-authored pushes don't work — Decision 3), a "Version rules" table restating
+  Decision 4 for contributors, and a "Hotfixes" subsection describing the hotfix→main→(sync
+  PR)→develop flow. Left every other CONTRIBUTING.md section untouched.
+
+  Dry run on real history, continuing from T3's dry-run artifacts: `go run ./tools/release
+  latest-heading -file CHANGELOG.md` (the real, unmodified file on this branch) → `v0.1.0`
+  (correctly falls back to the pre-existing `## [0.1.0]` heading — no release has been prepared on
+  this branch); on T3's `/tmp/dryrun-CHANGELOG.md` (already rewritten to `v0.2.0`) →
+  `v0.2.0`. Cross-check: `next-version -last v0.1.2 -commits <same 69-commit range as T3>` →
+  `v0.2.0`, `latest-heading -file /tmp/dryrun-CHANGELOG.md` → `v0.2.0` — **MATCH**, confirming
+  `release.yml`'s consistency check would pass on this exact prepared state. `go run
+  ./tools/release notes -version v0.2.0 -file /tmp/dryrun-CHANGELOG.md` → 68741 bytes, the entire
+  real (very large) Unreleased section this repository currently carries, starting `### Removed`
+  and ending with the `v0.1.0 is broken` notice right before `## [0.1.0]` — correct given the
+  actual file content, and confirms `ReleaseNotes` stops exactly at the next `## ` heading.

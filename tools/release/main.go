@@ -17,6 +17,8 @@
 //	go run ./tools/release next-version -last v0.1.0 -commits commits.txt
 //	go run ./tools/release next-version -last v0.1.0 -commits -   # read from stdin
 //	go run ./tools/release changelog -version v0.2.0 -date 2026-10-01 -file CHANGELOG.md
+//	go run ./tools/release latest-heading -file CHANGELOG.md
+//	go run ./tools/release notes -version v0.2.0 -file CHANGELOG.md
 package main
 
 import (
@@ -41,7 +43,7 @@ func logf(w io.Writer, format string, a ...any) {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		logf(stderr, "release: expected a subcommand (next-version, changelog)\n")
+		logf(stderr, "release: expected a subcommand (next-version, changelog, latest-heading, notes)\n")
 		return 1
 	}
 
@@ -50,8 +52,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runNextVersion(args[1:], stdin, stdout, stderr)
 	case "changelog":
 		return runChangelog(args[1:], stdout, stderr)
+	case "latest-heading":
+		return runLatestHeading(args[1:], stdout, stderr)
+	case "notes":
+		return runNotes(args[1:], stdout, stderr)
 	default:
-		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog)\n", args[0])
+		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog, latest-heading, notes)\n", args[0])
 		return 1
 	}
 }
@@ -149,6 +155,60 @@ func runChangelog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	logf(stdout, "release changelog: prepared %s in %s\n", *version, *file)
+	return 0
+}
+
+func runLatestHeading(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("latest-heading", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "CHANGELOG.md", "changelog file to read")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	content, err := os.ReadFile(*file)
+	if err != nil {
+		logf(stderr, "release latest-heading: %v\n", err)
+		return 1
+	}
+
+	version, err := LatestHeadingVersion(string(content))
+	if err != nil {
+		logf(stderr, "release latest-heading: %v\n", err)
+		return 1
+	}
+
+	logf(stdout, "%s\n", version)
+	return 0
+}
+
+func runNotes(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	version := fs.String("version", "", "version whose section to extract, e.g. v0.2.0")
+	file := fs.String("file", "CHANGELOG.md", "changelog file to read")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	if *version == "" {
+		logf(stderr, "release notes: -version is required\n")
+		return 1
+	}
+
+	content, err := os.ReadFile(*file)
+	if err != nil {
+		logf(stderr, "release notes: %v\n", err)
+		return 1
+	}
+
+	notes, err := ReleaseNotes(string(content), *version)
+	if err != nil {
+		logf(stderr, "release notes: %v\n", err)
+		return 1
+	}
+
+	logf(stdout, "%s\n", notes)
 	return 0
 }
 

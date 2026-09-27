@@ -119,6 +119,45 @@ func TestRun_Changelog_EmptyUnreleasedExitsThree(t *testing.T) {
 	}
 }
 
+func TestRun_LatestHeading_Success(t *testing.T) {
+	changelogPath := writeTempFile(t, fixtureWithOneRelease)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"latest-heading", "-file", changelogPath}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run(latest-heading) exit = %d, want 0; stderr:\n%s", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "v0.1.0" {
+		t.Errorf("run(latest-heading) stdout = %q, want %q", got, "v0.1.0")
+	}
+}
+
+func TestRun_Notes_Success(t *testing.T) {
+	changelogPath := writeTempFile(t, fixtureWithOneRelease)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"notes", "-version", "v0.1.0", "-file", changelogPath}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run(notes) exit = %d, want 0; stderr:\n%s", code, stderr.String())
+	}
+	want := "### Added\n\n- the first release"
+	if got := strings.TrimSpace(stdout.String()); got != want {
+		t.Errorf("run(notes) stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRun_Notes_MissingVersionFlagExitsOne(t *testing.T) {
+	changelogPath := writeTempFile(t, fixtureWithOneRelease)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"notes", "-file", changelogPath}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run(notes) with no -version exit = %d, want 1", code)
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "input.txt")
