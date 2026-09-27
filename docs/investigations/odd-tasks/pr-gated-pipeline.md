@@ -182,10 +182,12 @@ not the same check re-run for nothing.
   beyond the intentional develop → main PR case (Decision 4).
 - T4 done. Added `docs/CI.md`; linked from `CONTRIBUTING.md`'s Pull Requests section.
 - T5 done. Ran the full Verification list above after T4: `actionlint` — 0 findings (whole repo).
-  `rg -n 'uses: [^.].*@v[0-9]' .github` — empty. The shipwright-name search — empty (this document's
-  own first draft of that line accidentally contained the literal search term inside its own
-  description, tripping the check on itself; reworded to describe the check instead of quoting the
-  command, the same fix applied to workflow-hardening.md's own verification note during the Part 1
-  rebase). `python3` YAML parse of every workflow file — all OK. `make fmt-check` — exit 0.
+  `rg -n 'uses: [^.].*@v[0-9]' .github` — empty. The retired CI runner's old-name search — empty
+  (this document's own first draft of that line accidentally quoted the literal search term inside
+  its own description, tripping the check on itself; reworded, twice, to describe the check instead
+  of quoting the command it runs — the same class of self-reference `workflow-hardening.md`'s own
+  verification note needed fixing for during the Part 1 rebase, and worth remembering: never quote
+  this particular search term literally in a document this search term's own check will scan).
+  `python3` YAML parse of every workflow file — all OK. `make fmt-check` — exit 0.
   `make lint` — 0 issues. `go build ./...` — exit 0. `go test ./...` — all packages `ok` (no
   failures, no skips beyond the pre-existing packages with no test files).
