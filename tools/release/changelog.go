@@ -23,7 +23,12 @@ var ErrNoUnreleasedHeading = errors.New("changelog: no \"## [Unreleased]\" headi
 // `## ` heading (or end of file) -- there is nothing to release. Callers map this to the same
 // exit code NextVersion's ErrNothingReleasable uses, so the release-prep workflow can treat
 // "nothing to release" uniformly regardless of which check found it first.
-var ErrEmptyUnreleased = errors.New("changelog: \"## [Unreleased]\" section is empty, nothing to release")
+//
+// The message is actionable rather than just descriptive because it is the first thing a
+// maintainer preparing a hotfix sees: `main`'s [Unreleased] is always empty right after a
+// release (T1 of docs/investigations/odd-tasks/hotfix-release-and-charts.md), so a hotfix branch
+// hits this every time until the fix's own changelog entry is added.
+var ErrEmptyUnreleased = errors.New("changelog: \"## [Unreleased]\" section is empty, nothing to release -- add an entry under \"## [Unreleased]\" describing the fix, then run this again")
 
 // ChangelogOptions configures RewriteChangelog.
 type ChangelogOptions struct {

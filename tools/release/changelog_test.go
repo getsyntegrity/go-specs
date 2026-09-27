@@ -188,3 +188,15 @@ func TestRewriteChangelog_EmptyUnreleasedSection(t *testing.T) {
 		t.Fatalf("RewriteChangelog: error = %v, want ErrEmptyUnreleased", err)
 	}
 }
+
+// TestErrEmptyUnreleased_MessageIsActionable covers T1's changelog part
+// (docs/investigations/odd-tasks/hotfix-release-and-charts.md): a hotfix branch always starts
+// with an empty [Unreleased] right after a release, so hitting this error is the expected first
+// thing a maintainer preparing a hotfix sees -- the message must say what to do about it, not
+// just that something is wrong.
+func TestErrEmptyUnreleased_MessageIsActionable(t *testing.T) {
+	want := "add an entry under \"## [Unreleased]\" describing the fix"
+	if !strings.Contains(ErrEmptyUnreleased.Error(), want) {
+		t.Errorf("ErrEmptyUnreleased.Error() = %q, want it to contain %q", ErrEmptyUnreleased.Error(), want)
+	}
+}

@@ -20,6 +20,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -30,6 +31,14 @@ import (
 // release-prep workflow) can tell "nothing to do" from "this input is broken" and exit 3 instead
 // of 1.
 var ErrNothingReleasable = errors.New("release: nothing releasable since the last tag")
+
+// ErrPatchOnlyDisallowedCommit is returned by NextVersionPatchOnly when the range being released
+// as a hotfix contains a breaking change or a feat commit -- Decision 1 of
+// docs/investigations/odd-tasks/hotfix-release-and-charts.md: a hotfix must not change the API,
+// so those commit kinds are rejected outright rather than silently downgraded to a patch bump.
+// The returned error wraps this sentinel with the offending commit subjects appended, so
+// errors.Is still matches it while main.go's error log line stays actionable on its own.
+var ErrPatchOnlyDisallowedCommit = errors.New("release: hotfix commits must not contain a breaking change or a feat")
 
 // commitKind classifies a recognized Conventional Commit by the bump it contributes, ordered by
 // severity: kindOther < kindFeat < kindBreaking.
@@ -120,6 +129,36 @@ func classifyCommit(msg string) (kind commitKind, valid bool) {
 	}
 }
 
+// parseLastTag validates and decomposes -last (strict SemVer vMAJOR.MINOR.PATCH), shared by
+// NextVersion and NextVersionPatchOnly so both reject a malformed last tag identically.
+func parseLastTag(lastTag string) (major, minor, patch int, err error) {
+	sub := strictSemver.FindStringSubmatch(lastTag)
+	if sub == nil {
+		return 0, 0, 0, errors.New("release: -last must be strict SemVer vMAJOR.MINOR.PATCH, got " + strconv.Quote(lastTag))
+	}
+	major, err = strconv.Atoi(sub[1])
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	minor, err = strconv.Atoi(sub[2])
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	patch, err = strconv.Atoi(sub[3])
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return major, minor, patch, nil
+}
+
+// commitSubject returns a commit record's subject line (the first line, trimmed) -- used to name
+// the offending commits in NextVersionPatchOnly's error, since the full multi-line record is not
+// useful in a one-line CLI error message.
+func commitSubject(record string) string {
+	lines := strings.Split(record, "\n")
+	return strings.TrimSpace(lines[0])
+}
+
 // NextVersion computes the next `vX.Y.Z` tag from lastTag (the most recently released tag,
 // strict SemVer) and rawCommits (NUL-delimited commit records, per the format documented above).
 //
@@ -127,19 +166,7 @@ func classifyCommit(msg string) (kind commitKind, valid bool) {
 // Conventional Commit -- callers map that to a distinct exit code (3) rather than a generic
 // failure (1), since it is an expected, non-error outcome for a range with nothing to release.
 func NextVersion(lastTag string, rawCommits string) (string, error) {
-	sub := strictSemver.FindStringSubmatch(lastTag)
-	if sub == nil {
-		return "", errors.New("release: -last must be strict SemVer vMAJOR.MINOR.PATCH, got " + strconv.Quote(lastTag))
-	}
-	major, err := strconv.Atoi(sub[1])
-	if err != nil {
-		return "", err
-	}
-	minor, err := strconv.Atoi(sub[2])
-	if err != nil {
-		return "", err
-	}
-	patch, err := strconv.Atoi(sub[3])
+	major, minor, patch, err := parseLastTag(lastTag)
 	if err != nil {
 		return "", err
 	}
@@ -184,5 +211,52 @@ func NextVersion(lastTag string, rawCommits string) (string, error) {
 		patch++
 	}
 
+	return "v" + strconv.Itoa(major) + "." + strconv.Itoa(minor) + "." + strconv.Itoa(patch), nil
+}
+
+// NextVersionPatchOnly computes the next `vX.Y.Z` tag for a hotfix release: always a patch bump
+// of lastTag, regardless of which recognized Conventional Commit types are present, per T1 of
+// docs/investigations/odd-tasks/hotfix-release-and-charts.md.
+//
+// A hotfix must not change the API, so a breaking change (`!` or a BREAKING CHANGE/BREAKING-CHANGE
+// footer) or a feat commit anywhere in rawCommits fails the whole call with
+// ErrPatchOnlyDisallowedCommit, naming every offending commit's subject, rather than silently
+// downgrading them to a patch bump the way the ordinary NextVersion rules never would either --
+// those commits belong on develop, not on a hotfix branch.
+//
+// Like NextVersion, it returns ErrNothingReleasable when no commit in rawCommits is a recognized,
+// non-ignored Conventional Commit, mapped by the CLI to the same exit code (3) as the ordinary
+// path -- "nothing to release" means the same thing on a hotfix branch as it does on develop.
+func NextVersionPatchOnly(lastTag string, rawCommits string) (string, error) {
+	major, minor, patch, err := parseLastTag(lastTag)
+	if err != nil {
+		return "", err
+	}
+
+	validCount := 0
+	var offending []string
+	for _, record := range strings.Split(rawCommits, "\x00") {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		kind, valid := classifyCommit(record)
+		if !valid {
+			continue
+		}
+		validCount++
+		if kind == kindBreaking || kind == kindFeat {
+			offending = append(offending, commitSubject(record))
+		}
+	}
+
+	if len(offending) > 0 {
+		return "", fmt.Errorf("%w: %s", ErrPatchOnlyDisallowedCommit, strings.Join(offending, "; "))
+	}
+	if validCount == 0 {
+		return "", ErrNothingReleasable
+	}
+
+	patch++
 	return "v" + strconv.Itoa(major) + "." + strconv.Itoa(minor) + "." + strconv.Itoa(patch), nil
 }
