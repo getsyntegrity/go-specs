@@ -7,7 +7,7 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-smoke bench-report bench-e2e bench-compare fmt fmt-check lint build tidy clean check-go-version
+.PHONY: help test test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version
 
 # Default target: show all tasks with short descriptions
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  make bench-report  Benchmarks with 10 iterations → benchmarks/results/current.txt"
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
 	@echo "  make bench-e2e     End-to-end cost on the real *testing.T path (every spec a subtest)"
+	@echo "  make bench-ratio-guard  In-process baseline ratio guard (#243, off the PR critical path)"
 	@echo "  make fmt           Rewrite tracked Go files with gofmt"
 	@echo "  make fmt-check     Fail when any tracked Go file is not gofmt-clean"
 	@echo "  make lint          Lint with golangci-lint (go vet only when it is not installed)"
@@ -79,6 +80,20 @@ bench-report:
 # a user's `go test` run actually pays. Observational only -- see benchmarks/e2e_test.go.
 bench-e2e:
 	GOSPECS_E2E=1 GOSPECS_E2E_RUNS=31 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$$' ./benchmarks | grep '^E2E'
+
+# In-process baseline ratio guard (#243): fails the Runner or Describe check if its per-spec cost
+# grows beyond a bound (25x / 150x) relative to a hand-written no-framework loop measured in the
+# same process, same run. The ratio cancels out machine speed for the *shape* of the comparison,
+# but the bounds themselves are calibrated against GitHub Actions (ubuntu-latest) specifically --
+# see BENCHMARKS.md and benchmarks/regression_guard_test.go for the CI measurements they come from.
+# Running this target on a different machine (a laptop, say) can show a meaningfully different
+# ratio, especially for Describe: a local FAIL here is not on its own evidence of a regression,
+# only benchmarks.yml's ratio-guard job (or a same-machine before/after comparison, e.g. via
+# GOSPECS_BENCH_GUARD_BOUND_DESCRIBE) is. Opt-in (GOSPECS_BENCH_GUARD=1) so it never sits on the PR
+# critical path; benchmarks.yml runs it on push to develop, main, and workflow_dispatch, in its own
+# `ratio-guard` job.
+bench-ratio-guard:
+	GOSPECS_BENCH_GUARD=1 go test -count=1 -v -run '^TestBenchmarkRatioGuard$$' ./benchmarks
 
 # Compare previous vs current benchmark report (requires: go install golang.org/x/perf/cmd/benchstat@latest)
 bench-compare:
