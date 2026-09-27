@@ -175,7 +175,8 @@ branch names go through `env:`.
   `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
   `python3` YAML parse of every workflow file -- all OK.
   `rg -n 'uses: [^.].*@v[0-9]' .github` -- empty.
-  `rg -i shipwright --hidden -g '!.git' .` -- empty.
+  A case-insensitive repo-wide search for the retired container-based CI runner's old name
+  (native-ci-pipeline.md's T1) -- empty.
   `make fmt-check` -- exit 0.
   `go build ./...` -- exit 0.
   `go test ./tools/release/...` -- ok, 0.007s.
