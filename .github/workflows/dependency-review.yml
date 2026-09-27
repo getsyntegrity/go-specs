@@ -26,9 +26,18 @@ on:
 permissions:
   contents: read
 
+# Cancel a PR's superseded runs, the same reasoning as ci.yml's own concurrency block: a new push
+# on the same PR obsoletes the dependency diff the previous run computed. This workflow only
+# triggers on pull_request, so there is no push run to protect from an over-eager cancellation.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-review:
     runs-on: ubuntu-latest
+    # 10 minutes: a manifest diff against the advisory database, nothing that compiles or builds.
+    timeout-minutes: 10
     permissions:
       contents: read
       # Lets comment-summary-in-pr below post the failure summary as a PR comment; the action's
@@ -40,6 +49,8 @@ jobs:
       # manifests (go.mod/go.sum here), and needs the checked-out working tree to read them from.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Dependency review
         uses: actions/dependency-review-action@v4

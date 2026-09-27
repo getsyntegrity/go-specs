@@ -41,6 +41,10 @@ concurrency:
 jobs:
   chart:
     runs-on: ubuntu-latest
+    # 30 minutes: -count=5 across the whole benchmark suite is the slowest step in this repo's
+    # workflows, deliberately -- see benchmarks.yml's own reasoning for why a shared runner needs
+    # repeated samples rather than a single pass.
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
     steps:
@@ -71,6 +75,11 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # peter-evans/create-pull-request below authenticates its own push and PR with the
+          # `token:` input passed to it directly, not with credentials left behind by this
+          # checkout, so nothing here needs them persisted.
+          persist-credentials: false
 
       # Benchmark numbers are only comparable across runs when the toolchain is, so this job
       # installs the same pinned version as CI rather than a floating minor.

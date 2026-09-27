@@ -27,6 +27,13 @@ on:
     types: [closed]
     branches: [main]
 
+# Workflow-level floor, matching every sibling file: the release job below still declares its own
+# contents: write, since a workflow-level default can't grant write and this is the one workflow
+# that needs it -- this block exists so a future job added here starts from read-only, not from
+# whatever the org/repo default happens to be.
+permissions:
+  contents: read
+
 jobs:
   release:
     # A genuinely merged (not just closed) develop -> main or hotfix/* -> main PR from this
@@ -34,6 +41,10 @@ jobs:
     # from anywhere other than develop or hotfix/* all no-op.
     if: github.event.pull_request.merged == true && (github.event.pull_request.head.ref == 'develop' || startsWith(github.event.pull_request.head.ref, 'hotfix/')) && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # 30 minutes: tag + GoReleaser + the external installability check, plus a hotfix's sync
+    # branch and PR -- the heaviest single job in the repo, at the top of the
+    # release/release-prep/goreleaser band.
+    timeout-minutes: 30
     # Job-level only, not a workflow-level default: this is the one workflow in the repository
     # that pushes a tag and publishes a GitHub Release, and scoping the write permission to the
     # single job that needs it keeps every other workflow's contents: read default meaningful by
@@ -104,6 +115,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0  # full history and tags: needed for both the tag lookup and next-version
+          # persist-credentials stays at its default (true): "Create and push tag" below pushes
+          # with plain `git push origin`, relying on the GITHUB_TOKEN auth header actions/checkout
+          # configures by default. The hotfix sync push further down authenticates separately,
+          # with the release App's own token embedded in an explicit URL -- see that step's
+          # comment for why it must still clear the header this checkout leaves behind.
 
       # Same gate as ci.yml, repeated here because a release is the one run that must not build on
       # a toolchain the repo never declared.

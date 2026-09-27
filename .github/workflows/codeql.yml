@@ -34,14 +34,27 @@ permissions:
   contents: read
   security-events: write
 
+# Cancel a PR's superseded runs, the same reasoning as ci.yml's own concurrency block; never
+# cancel a scheduled or push run, since those are the record of what actually ran and a cancelled
+# scheduled scan would silently skip the week it was meant to cover.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # 20 minutes, not the 10 most jobs in this repo get: a CodeQL database build (Initialize +
+    # Build + analysis) does real static-analysis work on top of the Go build this job already
+    # runs, and is slower than a plain `go build`/`go vet` check.
+    timeout-minutes: 20
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7

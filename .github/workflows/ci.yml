@@ -53,6 +53,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Timeout policy: every job below gets an explicit timeout-minutes so a hang runs for minutes
+# instead of GitHub's 6-hour default. Static/fast jobs (verify, unit, bench-smoke, govulncheck)
+# get 10; jobs with more to compile or check (report-cli, lint) get 15; race gets 20, since
+# race-instrumented compilation is the slowest step in this file (see
+# .github/actions/setup-go/action.yml's own comment); goreleaser gets 25, matching a real build
+# plus a --snapshot release across every configured target.
+#
+# Checkout policy: every checkout below sets persist-credentials: false. No job in this file
+# pushes a commit, a tag or a branch, so nothing needs the credential actions/checkout would
+# otherwise leave in .git/config for any later step, or tool invoked by a step, to read.
 jobs:
   # All jobs start in parallel. `verify` is the fast static gate (version pin,
   # module path, formatting, vet, build); it no longer holds back `unit`,
@@ -62,11 +72,14 @@ jobs:
   # `verify` still fails the run on its own.
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Local composite actions resolve from the already-checked-out working
       # tree, so Checkout above must run first -- see
@@ -109,11 +122,14 @@ jobs:
   # `test` job.
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # See verify's Set up Go step: Checkout must run first for a local
       # composite action to resolve.
@@ -127,11 +143,14 @@ jobs:
 
   race:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -143,11 +162,14 @@ jobs:
 
   bench-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -243,11 +265,14 @@ jobs:
     # the expected totals. Any other combination fails it, including a green `go test`, which would
     # mean the red-test path was never exercised.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # See verify's Set up Go step: Checkout must run first for a local
       # composite action to resolve.
@@ -362,11 +387,14 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -388,11 +416,14 @@ jobs:
   # Scans the whole module, matching `govulncheck ./...` -- the action's default target.
   govulncheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # repo-checkout is disabled because the step above already checked the repository
       # out the same way every other job in this file does; go-version-file still tells
@@ -406,6 +437,7 @@ jobs:
 
   goreleaser:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       GOTOOLCHAIN: local
     steps:
@@ -413,6 +445,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0  # goreleaser needs tag history to compute the changelog
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
