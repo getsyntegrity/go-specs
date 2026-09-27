@@ -8,10 +8,12 @@ on:
 jobs:
   bench:
     # Chart generation and the commit-back step below are expensive and mutate the repo, so they
-    # keep the original main-only cadence (plus manual dispatch on any ref, unchanged from before
-    # `develop` was added to the push trigger). The lightweight ratio-guard job below is the one
-    # that also runs on develop -- see its comment for why.
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # stay restricted to main regardless of trigger: push-to-main, or a manual dispatch targeting
+    # main. A manual dispatch on another ref (e.g. a feature branch, to collect ratio-guard numbers
+    # from GitHub Actions) must not also regenerate and commit charts back onto that branch -- it
+    # did, once, before this condition was tightened to check github.ref unconditionally. The
+    # lightweight ratio-guard job below is the one that also runs on develop -- see its comment.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
