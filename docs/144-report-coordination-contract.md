@@ -1,6 +1,6 @@
 # REPORT-002A: Native multi-package reporting coordination contract
 
-Contract version: **v1.2.8** (amended by #148, #194, #197)
+Contract version: **v1.2.9** (amended by #148, #194, #197, #146)
 Status: amended (design gate for #143; unblocks #145, #146)
 Scope: activation, completion barrier, run identity/filesystem lifecycle, cache semantics, exit
 semantics, and coverage-merge responsibilities for module-wide `go test ./...` reporting. Does
@@ -15,6 +15,7 @@ so `§8` alone resolves to different normative text depending on when it was rea
 
 | Version | PR | Change |
 |---|---|---|
+| v1.2.9 | #146 (spec 3) | Closes the decisions §13 left to #146 before the `cmd/go-specs-report` CLI exposes them. (1) §8 gains a row for a **finalize-side** ownership failure (`run.json` missing, wrong `RunID`/token, relative `BaseDir`) and an empty or unreadable producer list: both are invalid configuration and exit `78`, the same code the preflight row already used. `ExitCode` has done this since #146 spec 1; only the contract text was missing. (2) §8's reporting-failure rows now name the code, `1`. It is emitted by the separate finalize process, so it cannot collide with `go test`'s own status, which is what "distinct" was protecting. (3) §13's CLI, missing-shard strictness, `RunID` recipe and producer-manifest recipe items are resolved: strict-only with no permissive flag, and the recipes live in `docs/REPORTING.md`. |
 | v1.2.8 | #197 | Three corrections surfaced by building the producer, two of them defects in v1.2.7 itself. (1) §5 claimed the mandated fake-`environment` seam test "asserts the rule exactly". **It does not.** The fake pins which method the resolver *calls* — a name — not what the method does underneath: rewriting the real scan's body as `os.LookupEnv` leaves the seam assertion green while reintroducing the cache-enrollment regression, and the production readers were referenced by no test at all. This is #194's own defect shape one layer deeper, reproduced inside the amendment that diagnosed it. §5 now additionally requires pinning the reader's **body** from a position where the test log is live — inside a test function, never `TestMain` — with a **mandatory control arm**. (2) `GO_SPECS_REPORT_DIR` MUST be absolute at every producer boundary: `go test` gives each test binary its own package source directory as cwd, so a relative value resolves differently per package and to a directory the preflight never created. It fails as `marker-missing`, not as a rejected path. The preflight resolves once and exports the absolute result. (3) `invalid-report-dir` joins §5's closed reason vocabulary. |
 | v1.2.7 | #194 | Withdraws two normative claims about toolchain behaviour that did not survive being run, both verified on `go1.26.8` rather than inferred. (1) §5's cache-enrollment claim: environment reads performed in `TestMain` **before** `m.Run()` never reach `go test`'s cache key, because the testlog logger is installed by `m.deps.StartTestLog` inside `M.before()`, which runs inside `m.Run()` — so at the call site §3 step 3 mandates, neither `os.Getenv`/`os.LookupEnv` nor `os.Environ` affects cache validity. `-count=1` (§6) was already mandatory and is now the **sole** cache-correctness mechanism, not a supplement to a second one. The `os.Environ()` access rule is **kept** as defence-in-depth for reads made from inside a test or a helper it calls, but the cache-stability regression test v1.2.3 mandated is withdrawn as **vacuous** — it passes even with `os.Getenv` everywhere — and replaced by a direct `Lookup`-vs-`Scan` assertion through the `environment` seam plus a process-level test that a cached package under an enabled gate publishes neither a shard nor `config-error.json`. (2) §8's correction note: `cmd/go` leaves **no trace** of a test binary's exit code in its output, not merely an unpropagated status, so `config-error.json` is the **only** carrier of the configuration-failure distinction and no log-scraping fallback exists. |
 | v1.0 | #147 | Original contract: activation, completion barrier, shard filesystem layout, cache/exit/coverage semantics. |
@@ -1123,11 +1124,12 @@ no run can start without it.
 |---|---|---|---|
 | Tests pass, reporting succeeds | unchanged (0) | 0 | |
 | Tests fail, reporting succeeds | unchanged (1) | 0 | Per-process shard write still happens (`TestMain`'s post-`m.Run()` code runs on ordinary failure, including a panic recovered by the testing package; only abrupt process termination bypasses it — F5) so the failure is fully represented in the merged report. |
-| Tests pass, reporting fails (finalize) | unchanged (0) | non-zero, distinct from `go test`'s codes | |
-| Tests fail and reporting also fails | unchanged (1) | non-zero | Two independent signals, never collapsed into one. |
+| Tests pass, reporting fails (finalize) | unchanged (0) | `1` (v1.2.9), never `78` | Emitted by the separate finalize process, so it never collides with `go test`'s own status. |
+| Tests fail and reporting also fails | unchanged (1) | `1` (v1.2.9), never `78` | Two independent signals from two processes, never collapsed into one. |
 | Abrupt process termination: timeout/SIGKILL/OOM/unrecovered out-of-band panic (F5) | whatever `go test`/the OS already reports for a kill/timeout | Finalize reports that package under `PackagesMissing` or `Rejected`, not silently | The killed package's shard was never written; finalize's job is to make that fact loud, not to guess. |
 | Invalid protocol configuration detected in the **preflight** step: `InitializeRun` marker-creation failure, or invalid `GO_SPECS_RUN_ID`/`GO_SPECS_RUN_TOKEN`/`GO_SPECS_REPORT_SHARDS` validated there (§3 steps 1–2) | does not run — the invoker aborts before launching it | n/a; the preflight command exits `78` (`EX_CONFIG`) | The preflight command owns its own exit status, so here a distinct code is genuinely available. |
 | Invalid protocol configuration detected **inside a package binary** before `m.Run()`: a per-package ownership check that fails against `run.json`, or a partial/invalid variable set observed there (§3 step 3, §5) | non-zero, **but not distinguishable from an ordinary test failure** — see the note below | `78` (`EX_CONFIG`), on discovering `config-error.json` | The binary writes `config-error.json` (§5) and fails; the record, not the exit code, carries the distinction. Finalize must therefore be run even on a red `go test` (§3 step 5). |
+| Invalid protocol configuration detected **by finalize itself** (v1.2.9): its own ownership check against `run.json` fails (marker missing, `RunID` or token mismatch, relative `BaseDir`), or the invoker's expected-producer list is empty or unreadable | unchanged — whatever `go test` already reported | `78` (`EX_CONFIG`); nothing is merged or rendered | Finalize never reads a shard it cannot prove belongs to this run (§3 step 6), and it never substitutes `go list ./...` for a missing producer list (§5). Both are configuration the invoker must fix, not a reporting failure. |
 | Normal failure publishing a shard (write/publish error, unexpected/duplicate producer, create-no-replace rejection) after a valid, ownership-verified `m.Run()` | original test result preserved, unchanged | non-zero, due to a missing or rejected producer (`PackagesMissing`/`Rejected`) | Reporting failure never overwrites or falsifies the test result that already happened. |
 
 > **Correction in contract v1.2.** v1.1 of this section stated that a pre-test
@@ -1486,15 +1488,22 @@ line should be restated as:
 
 ## 13. Unresolved decisions (non-blocking, flagged for a quick maintainer call)
 
-- **Run ID generation recipe**: left to the invoking CI wrapper (uuidgen, CI-native build ID,
+- **Run ID generation recipe** — *resolved in v1.2.9*: `docs/REPORTING.md` documents three
+  recipes (CI-native ID plus job/matrix, `uuidgen`, timestamp plus randomness); the CLI's `init`
+  still never generates a `RunID`. Original note: left to the invoking CI wrapper (uuidgen, CI-native build ID,
   timestamp+random) — go-specs only validates, never generates, since no in-process mechanism
   can produce a value shared across independently-launched binaries (F8). Recommend documenting
   2–3 concrete recipes in #146's docs rather than prescribing one.
-- **Thin CLI vs. library-only finalizer**: recommend shipping both (a small `cmd/go-specs-report`
+- **Thin CLI vs. library-only finalizer** — *resolved in v1.2.9*: both ship. `cmd/go-specs-report`
+  (`init`, `finalize`, `gc`) only parses input and prints results over the library. Original note:
+  recommend shipping both (a small `cmd/go-specs-report`
   wrapping `InitializeRun` and `Finalize` — see §7 for the `init`/`finalize`/`gc` verb set), since
   #141 names GitHub Actions/Shipwright/generic CI as consumers and a CLI is the lowest-friction
   integration point — but this is an implementation-time call.
-- **Strict vs. lenient missing-shard default**: the producer list itself is mandatory and
+- **Strict vs. lenient missing-shard default** — *resolved in v1.2.9*: strict, with **no**
+  permissive option. A local run that wants a partial report passes a shorter producer list, which
+  stays explicit on the command line; a lenient flag could be inherited by CI unnoticed. Original
+  note: the producer list itself is mandatory and
   authoritative; recommend strict-by-default (fail the finalize step when an expected producer
   has no valid shard) with an explicit opt-out for local/dev use. The finalizer must never replace
   that list with `go list ./...`; final strictness is a #146/product call.
@@ -1564,7 +1573,9 @@ line should be restated as:
 
   This is a #145 planning item, not a blocker for this contract; recorded here so the question is
   asked while the code is being written rather than after.
-- **Producer-manifest generation recipe** (v1.2): §5 defines *what* belongs in the
+- **Producer-manifest generation recipe** (v1.2) — *resolved in v1.2.9*: the invoker keeps a
+  checked-in manifest, produced by a documented `go list` pipeline it runs itself and re-checks in
+  CI (`docs/REPORTING.md`); the CLI reads only the file. Original note: §5 defines *what* belongs in the
   expected-producer set and what is excluded, but deliberately does not prescribe the tooling that
   produces it (a checked-in file, a `go list` pipeline filtered by a go-specs import check, a
   generator). That is a #146/docs call; what must not happen is the finalizer deriving the list
