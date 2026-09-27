@@ -78,7 +78,7 @@ that `main` and `develop` only change through pull requests.
 - [x] T3 — `benchmarks.yml`: charts through a rolling PR into `develop`, with no direct push and
   loop-safe path filtering. CONTRIBUTING.md release and hotfix section updated, including the
   `delete_branch_on_merge` hazard and why sync uses a temporary branch. Check: actionlint.
-- [ ] T4 — `.github/workflows/dependency-review.yml` (Decision 7); `.github/settings.yml` comment
+- [x] T4 — `.github/workflows/dependency-review.yml` (Decision 7); `.github/settings.yml` comment
   on the security settings enabled live 2026-09-27. Check: actionlint, YAML parse.
 - [ ] T5 — Stacked PR against `ci/native-pipeline`, with CI green. Do not merge.
 
@@ -217,3 +217,22 @@ real hotfix PR is opened. The logic is proven with unit tests and a dry run.
   findings. `python3 -c 'import yaml; yaml.safe_load(open(f))'` on all 4 changed/added workflow
   files -- parses clean. `make fmt-check`, `go vet ./...`, `go build ./...`, `go test ./...` (whole
   repo), `make lint` -- all clean.
+- T4 done (added mid-stream by the maintainer, Decision 7). Added
+  `.github/workflows/dependency-review.yml`: `pull_request` on `develop`/`main`,
+  `actions/dependency-review-action@v4`, `fail-on-severity: moderate`,
+  `comment-summary-in-pr: on-failure`; workflow-level `permissions: contents: read`, job-level adds
+  `pull-requests: write` only for the comment-summary step. Header comment explains why this
+  doesn't overlap `govulncheck`/CodeQL/Dependabot (each catches a different stage: reachable-only,
+  own-code-only, after-the-fact-only, vs. this one blocking the introducing PR itself).
+
+  Updated `.github/settings.yml`: added `enable_vulnerability_alerts: true` and
+  `enable_automated_security_fixes: true` (probot/settings' documented schema exposes these as
+  plain `repository:` booleans, reasonably confident of this from prior knowledge of the schema);
+  deliberately did *not* add keys for secret scanning / push protection, since those live under
+  GitHub's `security_and_analysis` object and probot/settings' documented schema does not cover
+  it -- added a comment explaining the omission instead, per the instruction to comment rather than
+  guess at an unverified key.
+
+  Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` over the whole repo -- 0
+  findings (repeated after this task, on top of T3's clean run). `python3 -c 'import yaml;
+  yaml.safe_load(open(f))'` on `dependency-review.yml` and `settings.yml` -- parses clean.
