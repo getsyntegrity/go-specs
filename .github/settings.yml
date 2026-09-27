@@ -43,3 +43,20 @@ repository:
   delete_branch_on_merge: true
 
   allow_auto_merge: false
+
+  # Dependabot alerts and security updates, enabled live on the repository 2026-09-27 alongside
+  # dependency-review.yml (T4 of docs/investigations/odd-tasks/hotfix-release-and-charts.md).
+  # probot/settings' documented schema exposes these two as plain booleans directly under
+  # `repository:`, mapping to GitHub's vulnerability-alerts and automated-security-fixes
+  # endpoints respectively — declared here so a fresh clone of this repository gets them too.
+  enable_vulnerability_alerts: true
+  enable_automated_security_fixes: true
+
+  # Secret scanning and push protection were also enabled live on the repository 2026-09-27, but
+  # are deliberately NOT declared as keys above: GitHub exposes them through the
+  # `security_and_analysis` object (PATCH /repos/{owner}/{repo}), and probot/settings' documented
+  # schema does not cover that object. Adding an undocumented key here risks the app silently
+  # ignoring it, or failing the whole apply, rather than actually setting it — worse than this
+  # file staying honestly incomplete about a setting it cannot express. Enable or verify secret
+  # scanning and push protection in Settings → Code security and analysis directly if this file is
+  # ever used to bootstrap a fresh clone.
