@@ -79,7 +79,7 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
 - [x] T4 — Docs: CLI reference, three `RunID` recipes, the manifest recipe, and generic CI, GitHub
   Actions and Shipwright examples. Route: delegated writer. Check: readback, and the example
   commands run against the fixture.
-- [ ] T5 — PR against `develop` referencing #146, with CI results. Route: inline. Check: CI green.
+- [x] T5 — PR against `develop` referencing #146, with CI results. Route: inline. Check: CI green.
   Do not merge.
 
 Out of this cut, to become a follow-up issue: AC-21's panicking and filtered specs through the real
@@ -182,3 +182,5 @@ state is observed, then GREEN.
   (`report.json` totals `total=4 failed=1 skipped=1 passed=2`, matching
   `report/coordination/finalize_e2e_test.go`). Combined script exit: `0` — the assertion confirmed
   both outcomes matched what the job expects.
+- T5: PR #279 opened; CI green on `2b5ca60` (run 36325013626): `test` incl. `-race`, `report-cli`,
+  `goreleaser` pass; `shipwright` skipped (disabled on `develop`). Left for review, not merged.
