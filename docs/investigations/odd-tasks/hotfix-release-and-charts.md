@@ -159,14 +159,6 @@ real hotfix PR is opened. The logic is proven with unit tests and a dry run.
   hotfix path, so keeping it as a second workflow reacting to the same `pull_request: closed` event
   would just be dead/duplicate code.
 
-  *(2026-09-27, rebase onto develop: the token mechanism above was written against the original
-  `RELEASE_TOKEN` fine-grained PAT design. `develop` had since superseded that PAT with the release
-  GitHub App (native-ci-pipeline.md's Decision 3 supersession); rebasing this branch carried that
-  App-based token forward into these same two steps rather than reintroducing the PAT, so the
-  mechanism described above now reads `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY` and mints a
-  short-lived installation token exactly like release-prep.yml, instead of reading a
-  `RELEASE_TOKEN` secret directly.)*
-
   Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` (both changed files, then
   the whole repo) -- 0 findings. `python3 -c 'import yaml; yaml.safe_load(open(f))'` on both files
   -- parses clean. Every `run:` block in both files additionally checked with `bash -n` (extracted
@@ -236,3 +228,26 @@ real hotfix PR is opened. The logic is proven with unit tests and a dry run.
   Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` over the whole repo -- 0
   findings (repeated after this task, on top of T3's clean run). `python3 -c 'import yaml;
   yaml.safe_load(open(f))'` on `dependency-review.yml` and `settings.yml` -- parses clean.
+- Rebased onto `ci/native-pipeline` after it picked up `dc17a94` ("ci: mint release tokens from a
+  GitHub App instead of a personal access token"), which replaced `RELEASE_TOKEN` with the release
+  GitHub App across `release-prep.yml` and the now-removed `hotfix-sync.yml` (see
+  `native-ci-pipeline.md`'s Decision 3 supersession). This branch's own `RELEASE_TOKEN` usages --
+  added independently, before `dc17a94` landed -- needed the same conversion: `release.yml`'s
+  hotfix path (`Verify RELEASE_TOKEN is configured` -> `Verify the release GitHub App is
+  configured` + a new `Mint a release GitHub App installation token` step, both gated
+  `is_hotfix == 'true'`; the sync-branch push and the sync PR's `GH_TOKEN` now read
+  `steps.app-token.outputs.token`; the tag step's own `github-actions[bot]`/`GITHUB_TOKEN` identity
+  was left untouched, since only the sync steps ever used `RELEASE_TOKEN`) and
+  `benchmark-charts.yml` (same verify+mint steps added, `peter-evans/create-pull-request`'s
+  `token:` input repointed at the minted token). CONTRIBUTING.md's Hotfixes and Benchmark charts
+  prose, and this file's own Limits section and Progress bullets above, updated to describe the
+  App-token flow instead of `RELEASE_TOKEN`.
+- 2026-09-27, rebased a second time, this branch directly onto `develop` (PR #281/#282 merged; this
+  work continues as its own PR against `develop`, per the maintainer's "PR is the only gate"
+  decision -- see `pr-gated-pipeline.md`). `develop` had by then bumped
+  `actions/create-github-app-token` from v2 to v3 (#285) on top of the App conversion above; that
+  bump carried through to this branch's own two `create-github-app-token` uses
+  (`release.yml`'s hotfix path and `benchmark-charts.yml`) so every workflow in the repository
+  pins the same major. No other functional change to the hotfix or chart flow was needed --
+  `develop`'s own history (#280's staged CI jobs, the Dependabot action-major bumps, v0.2.0's
+  release-prep commit) had already landed everything this branch built on top of.

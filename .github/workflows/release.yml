@@ -236,7 +236,8 @@ jobs:
           # `-c http.https://github.com/.extraheader=` clears it for this one invocation only,
           # so the push actually authenticates as the release App -- needed so this branch's
           # later PR can retrigger required checks (Decision 3 of native-ci-pipeline.md: a
-          # GITHUB_TOKEN-authored push does not).
+          # GITHUB_TOKEN-authored push does not, and only the App can bypass protect-main-develop
+          # in the first place).
           git -c http.https://github.com/.extraheader= push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
 
       # Idempotent like release-prep.yml's own writes: reuse an already-open PR for this exact
