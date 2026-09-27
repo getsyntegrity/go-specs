@@ -56,6 +56,16 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
    process, so it cannot collide with `go test`'s own status.
 9. **Feature document location.** This file lives in `docs/investigations/odd-tasks/`, following
    the repo relocation in #268, instead of `odd/tasks/`.
+10. **Shipwright dropped by maintainer decision (2026-09-27).** "Shipwright" in T4's scope meant
+    this repository's own `pablogore/shipwright` tool (`.shipwright/workflow.yaml`), not
+    shipwright.io's Kubernetes `Build`/`ClusterBuildStrategy` CRDs — the original doc example used
+    the wrong tool's API shape entirely. The maintainer decided to drop the Shipwright example
+    because v0.12.0 cannot express this flow: no arbitrary shell-command step, no always-run step
+    (both required to guarantee `finalize` still runs after a failing `go test`), and its
+    `go-test` provider hardcodes `go test`'s flags without `-count=1` (mandatory per "`-count=1`
+    is mandatory" above). `docs/REPORTING.md` now states these reasons briefly instead of carrying
+    a non-working example; `.shipwright/` and the disabled `shipwright` job in `ci.yml` are left
+    untouched, per the maintainer's instruction that a separate CI PR owns those.
 
 ## Tasks
 
@@ -150,3 +160,25 @@ state is observed, then GREEN.
   documented); drift check exits 0 when clean and 1 when stale; the generic script exits
   test=1/finalize=0/script=1 and test=0/finalize=1/script=1; the Shipwright script exits 1 with
   hook failure on and 0 with it off, and writes `report.json` both times; both YAML blocks parse.
+- Shipwright drop and `report-cli` CI job (2026-09-27): removed the Shipwright worked example from
+  `docs/REPORTING.md` per decision #10 above, replacing it with a short "Other CI runners"
+  paragraph; fixed the remaining "generic shell script, GitHub Actions, and Shipwright" mention to
+  name only the two examples that remain. Added a new `report-cli` job to `.github/workflows/ci.yml`
+  that dogfoods the documented GitHub Actions example for real: builds `cmd/go-specs-report`, runs
+  it against `report/coordination/internal/e2efixture/{producera,producerb}` with
+  `GO_SPECS_FIXTURE_HOOK_FAIL=1` (deliberately red `go test`), runs `finalize`, uploads the report
+  directory, and asserts `steps.test.outcome == 'failure'` and `steps.finalize.outcome ==
+  'success'` plus `report.json`'s execution totals (Total 4, Failed 1, Skipped 1, Passed 2) via
+  `jq`. `.github/workflows/ci.yml` parses under `python3 -c "import yaml; yaml.safe_load(...)"`;
+  `actionlint` is not installed on this machine, so the job was not additionally linted with it.
+
+  Local emulation (temp dir under `/tmp/claude-1000/`, cleaned up after): built the CLI, wrote the
+  two-line producer manifest, ran `init` against a `chmod 700` report base dir (this workstation's
+  `umask 002` would otherwise make a fresh temp dir group-writable, which `init` itself correctly
+  refuses per the "`GO_SPECS_REPORT_DIR`" section above — not a bug in the job, a property of a
+  GitHub-hosted runner's already-private `$RUNNER_TEMP` that a local `/tmp` tree does not share),
+  ran the gated-red `go test` (exit `1`, `TestProducerA` failing as expected), ran `finalize` (exit
+  `0`, "found 2, missing 0, rejected 0"), and ran the same assertion logic as the new CI step
+  (`report.json` totals `total=4 failed=1 skipped=1 passed=2`, matching
+  `report/coordination/finalize_e2e_test.go`). Combined script exit: `0` — the assertion confirmed
+  both outcomes matched what the job expects.
