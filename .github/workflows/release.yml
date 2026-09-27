@@ -1,12 +1,25 @@
-# Release: tag the merge commit and run GoReleaser, automatically, the moment a develop -> main
-# PR merges -- Decision 2 of docs/investigations/odd-tasks/native-ci-pipeline.md. There is a
-# single path to a release now: no workflow_dispatch, no manual "did we remember to run it"
-# step. The version and its changelog section already exist on this commit, written by
-# release-prep.yml while the PR was open (its header explains why that happens before merge
-# rather than after); this workflow's own job re-derives the version from commit history and
-# cross-checks it against what release-prep.yml wrote, so a PR merged without going through
-# release-prep.yml (or merged after a later commit release-prep.yml never got a chance to
+# Release: tag the merge commit and run GoReleaser, automatically, the moment a develop -> main or
+# hotfix/* -> main PR merges -- Decision 2 of docs/investigations/odd-tasks/native-ci-pipeline.md
+# for the develop path, Decision 1 of docs/investigations/odd-tasks/hotfix-release-and-charts.md
+# for the hotfix path. There is a single path to a release now: no workflow_dispatch, no manual
+# "did we remember to run it" step. The version and its changelog section already exist on this
+# commit, written by release-prep.yml while the PR was open (its header explains why that happens
+# before merge rather than after); this workflow's own job re-derives the version from commit
+# history and cross-checks it against what release-prep.yml wrote, so a PR merged without going
+# through release-prep.yml (or merged after a later commit release-prep.yml never got a chance to
 # re-prepare for) fails loudly here instead of tagging the wrong version.
+#
+# A hotfix/* merge additionally gets a `develop` sync at the end of this same job (Decisions 5-6
+# of hotfix-release-and-charts.md): once the patch is tagged and published, the job pushes a
+# disposable `sync/hotfix-vX.Y.Z` branch and opens (or reuses) a PR from it into `develop`, so the
+# fix lands back on develop too -- CONTRIBUTING.md's Branching Model already says a hotfix "is
+# merged down into develop"; this is what actually does that instead of relying on someone
+# remembering to open the PR by hand. There used to be a separate hotfix-sync.yml workflow for
+# this, triggered by the same pull_request-closed event as this one; it is gone now (Decision 6)
+# -- doing the sync as this job's own last step guarantees it runs strictly after the tag and
+# publish steps above it, by construction, rather than by racing a second workflow's trigger
+# against this one or chaining through workflow_run's less direct "was this a hotfix merge"
+# re-derivation from github.event.workflow_run.pull_requests.
 name: Release
 
 on:
@@ -16,20 +29,52 @@ on:
 
 jobs:
   release:
-    # Only a genuinely merged (not just closed) develop -> main PR from this repository releases.
-    # A closed-without-merging PR, a PR from a fork, or a PR targeting main from anywhere other
-    # than develop (a hotfix, handled by hotfix-sync.yml instead, never releases) all no-op.
-    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository
+    # A genuinely merged (not just closed) develop -> main or hotfix/* -> main PR from this
+    # repository releases. A closed-without-merging PR, a PR from a fork, or a PR targeting main
+    # from anywhere other than develop or hotfix/* all no-op.
+    if: github.event.pull_request.merged == true && (github.event.pull_request.head.ref == 'develop' || startsWith(github.event.pull_request.head.ref, 'hotfix/')) && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # Job-level only, not a workflow-level default: this is the one workflow in the repository
     # that pushes a tag and publishes a GitHub Release, and scoping the write permission to the
     # single job that needs it keeps every other workflow's contents: read default meaningful by
-    # contrast.
+    # contrast. The hotfix sync steps at the end of this job authenticate separately with
+    # RELEASE_TOKEN (see their own comments), so they need no addition here.
     permissions:
       contents: write
     env:
       GOTOOLCHAIN: local
+      # See release-prep.yml's HEAD_REF comment: a branch name is attacker-controlled, so it is
+      # read into this env var once and expanded as a normal shell variable in every later
+      # script, never re-interpolated as a raw `${{ ... }}` expression inside `run:` text.
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
+      # No checkout needed yet: this only distinguishes which of the two branches this job
+      # condition already narrowed to, for the -patch-only cross-check and the hotfix-only sync
+      # steps further down.
+      - name: Determine release kind
+        id: kind
+        run: |
+          if [[ "$HEAD_REF" == hotfix/* ]]; then
+            echo "is_hotfix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_hotfix=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only a hotfix needs RELEASE_TOKEN -- the develop path publishes with GITHUB_TOKEN exactly
+      # as before (Decision 2 of native-ci-pipeline.md did not change), and requiring a secret an
+      # ordinary release never used would be a needless new failure mode for it. Checked before
+      # checkout (no checkout needed to check a secret) so a missing token fails in seconds with
+      # an actionable message, matching release-prep.yml's own check.
+      - name: Verify RELEASE_TOKEN is configured
+        if: steps.kind.outputs.is_hotfix == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+            exit 1
+          fi
+
       # The merge commit, not main's moving HEAD: between this job starting and its "Determine
       # the version to release" step running, another PR could in principle merge into main first
       # (GitHub does not serialize merges against workflow starts). Pinning to
@@ -56,11 +101,12 @@ jobs:
 
       # Two independent ways to name the version being released must agree before anything is
       # tagged: recomputing it from Conventional Commits since the last tag (the same computation
-      # release-prep.yml did while the PR was open) versus reading it back out of CHANGELOG.md's
-      # top heading (what release-prep.yml actually wrote there). They can disagree if the PR was
-      # merged without release-prep.yml ever running on it, or if a commit landed on develop after
-      # release-prep.yml's last run and the PR was merged before it re-triggered -- in either case
-      # CHANGELOG.md's heading is stale, and tagging that stale version would be wrong.
+      # release-prep.yml did while the PR was open, including its -patch-only flag for a hotfix)
+      # versus reading it back out of CHANGELOG.md's top heading (what release-prep.yml actually
+      # wrote there). They can disagree if the PR was merged without release-prep.yml ever running
+      # on it, or if a commit landed after release-prep.yml's last run and the PR was merged
+      # before it re-triggered -- in either case CHANGELOG.md's heading is stale, and tagging that
+      # stale version would be wrong.
       - name: Determine the version to release
         id: version
         run: |
@@ -71,11 +117,15 @@ jobs:
           LAST_TAG="$(git describe --tags --abbrev=0 "$MERGE_SHA" 2>/dev/null || echo v0.0.0)"
 
           git log --format='%B%x00' "${LAST_TAG}..${MERGE_SHA}" > /tmp/release-commits.txt
-          FROM_COMMITS="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          if [ "${{ steps.kind.outputs.is_hotfix }}" = "true" ]; then
+            FROM_COMMITS="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt -patch-only)"
+          else
+            FROM_COMMITS="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          fi
           FROM_CHANGELOG="$(go run ./tools/release latest-heading -file CHANGELOG.md)"
 
           if [ "$FROM_COMMITS" != "$FROM_CHANGELOG" ]; then
-            echo "::error::Version mismatch: commits since ${LAST_TAG} compute ${FROM_COMMITS}, but CHANGELOG.md's top heading says ${FROM_CHANGELOG}. This usually means release-prep.yml did not run (or did not get to re-run after a later commit) on this PR before it was merged. Re-open a develop -> main PR, let release-prep.yml prepare it, and merge again." >&2
+            echo "::error::Version mismatch: commits since ${LAST_TAG} compute ${FROM_COMMITS}, but CHANGELOG.md's top heading says ${FROM_CHANGELOG}. This usually means release-prep.yml did not run (or did not get to re-run after a later commit) on this PR before it was merged. Re-open the PR, let release-prep.yml prepare it, and merge again." >&2
             exit 1
           fi
 
@@ -83,7 +133,8 @@ jobs:
 
       # Idempotency guard only, matching the same guard the old workflow_dispatch version carried:
       # protects a redelivered or manually re-run webhook from tagging the same version twice, not
-      # a gate on whether to publish.
+      # a gate on whether to publish. Every step below it, including the hotfix sync steps at the
+      # end, shares this same guard: a version that is already tagged has already been synced too.
       - name: Skip if already tagged
         id: skip
         run: |
@@ -145,3 +196,55 @@ jobs:
           cd "$WORKDIR"
           go mod init consumer-smoke-test
           GOPROXY=direct GOSUMDB=off go get "${MODULE}@${TAG}"
+
+      # Decision 5 of hotfix-release-and-charts.md: this PR's head must never be `main` itself.
+      # .github/settings.yml sets delete_branch_on_merge: true, and `main` is neither this
+      # repository's default branch (`develop` is, per CONTRIBUTING.md's Branching Model) nor
+      # branch-protected today, so nothing stops GitHub from deleting a merged PR's head branch --
+      # a head of `main` would mean GitHub deletes `main` itself the instant this sync PR merges.
+      # A release-specific temporary branch, forked from the commit just tagged above, carries the
+      # exact same content into the sync PR and is *meant* to be deleted once merged, which is
+      # exactly what delete_branch_on_merge is for. Its name is derived from the release version
+      # (already validated as plain vX.Y.Z by tools/release, never from the attacker-controlled
+      # PR head ref), so it needs no separate sanitizing.
+      - name: Push the hotfix sync branch
+        if: steps.kind.outputs.is_hotfix == 'true' && steps.skip.outputs.already_tagged != 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SYNC_BRANCH: sync/hotfix-${{ steps.version.outputs.version }}
+        run: |
+          # actions/checkout above persisted an Authorization header for GITHUB_TOKEN (its
+          # default persist-credentials: true), configured for any https://github.com/ URL by
+          # prefix -- which would otherwise silently win over the RELEASE_TOKEN credentials
+          # embedded in the URL below, since git applies a matching http.<url>.extraheader
+          # regardless of how the URL was written. `-c http.https://github.com/.extraheader=`
+          # clears it for this one invocation only, so the push actually authenticates as
+          # RELEASE_TOKEN -- needed so this branch's later PR can retrigger required checks
+          # (Decision 3 of native-ci-pipeline.md: a GITHUB_TOKEN-authored push does not).
+          git -c http.https://github.com/.extraheader= push "https://x-access-token:${RELEASE_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
+
+      # Idempotent like release-prep.yml's own writes: reuse an already-open PR for this exact
+      # sync branch instead of erroring on a second attempt (a manual workflow re-run, say) trying
+      # to create the same PR twice. In the ordinary case this branch name is unique per release
+      # (Decision 5), so there is nothing to reuse; this check only matters for that re-run case.
+      - name: Open or reuse the hotfix sync PR
+        if: steps.kind.outputs.is_hotfix == 'true' && steps.skip.outputs.already_tagged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SYNC_BRANCH: sync/hotfix-${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          EXISTING="$(gh pr list --base develop --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::Reusing existing open sync PR #${EXISTING} for ${SYNC_BRANCH}."
+          else
+            gh pr create \
+              --base develop \
+              --head "$SYNC_BRANCH" \
+              --title "chore: sync hotfix ${VERSION} into develop" \
+              --body "Automatic sync after hotfix \`${HEAD_REF}\` was released as \`${VERSION}\` on \`main\` (CONTRIBUTING.md's Branching Model: a hotfix is merged down into \`develop\` once it ships). No further release is triggered by merging this PR.
+
+          Possible \`CHANGELOG.md\` conflict: \`main\` now has a \`## [${VERSION}]\` section while \`develop\`'s own \`## [Unreleased]\` has kept growing since the hotfix branched -- both edit the top of the file. Resolve any conflict by keeping \`develop\`'s \`[Unreleased]\` above the hotfix's released section, not the other way around.
+
+          This PR's head, \`${SYNC_BRANCH}\`, is a disposable branch created from the tagged release commit, not \`main\` itself -- see release.yml's own comment for why."
+          fi

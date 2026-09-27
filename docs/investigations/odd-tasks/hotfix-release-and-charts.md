@@ -20,7 +20,9 @@ that `main` and `develop` only change through pull requests.
 - **Hotfix releases a patch automatically.** `release-prep.yml` also runs for a `hotfix/*` → `main`
   PR. It prepares the version and changelog on the hotfix branch, with the version forced to the
   next patch of the last tag. `release.yml` also runs when a `hotfix/*` PR is merged. It tags the
-  merge commit and publishes, then `hotfix-sync.yml` opens the `main` → `develop` sync PR as today.
+  merge commit and publishes, then, as the final step of that same job, pushes a disposable
+  `sync/hotfix-vX.Y.Z` branch and opens the `develop` sync PR from it (Decisions 5-6) -- replacing
+  the separate `hotfix-sync.yml` workflow.
 - **Charts go to `develop` through one rolling PR.** On a push to `develop`, the chart job
   regenerates the charts and opens or updates a single PR from the fixed branch
   `chore/benchmark-charts` into `develop`. It never pushes to `main` or `develop` itself.
@@ -42,17 +44,43 @@ that `main` and `develop` only change through pull requests.
    `develop`'s `[Unreleased]` keeps growing, and both edit the top of the file. The sync PR is
    opened anyway, and its body says so. A human resolves it by keeping `develop`'s `[Unreleased]`
    above the hotfix's released section.
+5. **The sync PR's head must never be `main` (maintainer decision 2026-09-27).**
+   `.github/settings.yml` sets `delete_branch_on_merge: true`, and `main` is neither this
+   repository's default branch (`develop` is) nor protected today, so a merged PR whose head is
+   `main` would make GitHub delete `main` itself. `release.yml`'s hotfix path instead pushes the
+   just-tagged commit to a disposable branch named from the release, `sync/hotfix-vX.Y.Z`, and
+   opens the sync PR from that branch into `develop`. That branch existing only to be deleted on
+   merge is exactly what `delete_branch_on_merge` is for.
+6. **Sync folded into `release.yml`, not a separate `hotfix-sync.yml` triggered by `workflow_run`
+   (maintainer decision 2026-09-27).** The sync PR must open *after* the release (so it carries the
+   tagged state), and a `workflow_run` trigger on `release.yml`'s completion would need to
+   re-derive "was this a hotfix merge" from `github.event.workflow_run.pull_requests` -- a second,
+   less direct read of the same fact `release.yml` already computed once. Doing the sync as the
+   last step of `release.yml`'s own hotfix path guarantees the ordering by construction (it is
+   later in the same job) instead of by two workflows' triggers racing or a `workflow_run`
+   completion filter. `hotfix-sync.yml` is removed; its logic moved into `release.yml`.
+7. **Dependency review added alongside `govulncheck`/CodeQL/Dependabot (maintainer decision
+   2026-09-27).** `govulncheck` (native-ci-pipeline.md's T1) only flags a vulnerability that is
+   actually *reachable* from this repository's own code; CodeQL scans this repository's own code
+   for flaws, not its dependencies' advisories; Dependabot (enabled 2026-09-27) opens fix PRs after
+   a vulnerable dependency is already in `go.mod`. None of the three blocks a PR from introducing a
+   dependency version that already carries a known advisory, which is what
+   `actions/dependency-review-action` does, on the PR that adds the dependency, before it merges.
 
 ## Tasks
 
 - [x] T1 — `tools/release next-version -patch-only`: bump patch; fail on breaking/`feat` with a
   clear message. Strict TDD. Check: `go test ./tools/release/...`.
-- [ ] T2 — `release-prep.yml` and `release.yml` also handle `hotfix/*` → `main` (prepare on the
-  hotfix branch; publish on merge); `hotfix-sync.yml` runs after the release and mentions the
-  possible CHANGELOG conflict. Check: actionlint, YAML parse, dry run of the tool.
+- [x] T2 — `release-prep.yml` and `release.yml` also handle `hotfix/*` → `main` (prepare on the
+  hotfix branch; publish on merge, then open the `sync/hotfix-vX.Y.Z` → `develop` sync PR as the
+  last step of the hotfix path, mentioning the possible CHANGELOG conflict); `hotfix-sync.yml`
+  removed (Decision 6). Check: actionlint, YAML parse, dry run of the tool.
 - [ ] T3 — `benchmarks.yml`: charts through a rolling PR into `develop`, with no direct push and
-  loop-safe path filtering. CONTRIBUTING.md release and hotfix section updated. Check: actionlint.
-- [ ] T4 — Stacked PR against `ci/native-pipeline`, with CI green. Do not merge.
+  loop-safe path filtering. CONTRIBUTING.md release and hotfix section updated, including the
+  `delete_branch_on_merge` hazard and why sync uses a temporary branch. Check: actionlint.
+- [ ] T4 — `.github/workflows/dependency-review.yml` (Decision 7); `.github/settings.yml` comment
+  on the security settings enabled live 2026-09-27. Check: actionlint, YAML parse.
+- [ ] T5 — Stacked PR against `ci/native-pipeline`, with CI green. Do not merge.
 
 ## Limits
 
@@ -88,3 +116,51 @@ opened. The logic is proven with unit tests and a dry run.
   change or a feat: feat: add something`, exit 1. Real-history dry run skipped as not meaningful:
   `git log v0.1.2..origin/main` is empty (`origin/main`'s tip is the `v0.1.2` tag itself, no
   hotfix has ever landed there), matching this feature doc's own Limits section.
+- T2 done. Rewrote `.github/workflows/release-prep.yml`: job `if` now accepts
+  `head.ref == 'develop'` OR `startsWith(head.ref, 'hotfix/')` (same-repo check kept unchanged); a
+  new `Determine release kind` step (no checkout needed) sets `is_hotfix` from a job-level
+  `HEAD_REF` env var (never `${{ github.event.pull_request.head.ref }}` interpolated directly into
+  a `run:` script -- a branch name is attacker-controlled, and GitHub Actions pastes an expression
+  into the script's source text before bash runs it, so a branch cleverly named with shell
+  metacharacters would execute as code; `$HEAD_REF` expanding inside a quoted shell string carries
+  no such risk). Checkout's `ref:` now follows the PR's own head (`develop` or the hotfix branch)
+  instead of the hardcoded `develop` -- develop's behavior is unchanged since its head literally is
+  `develop`. `Compute last tag and next version` adds `-patch-only` when `is_hotfix`. The push at
+  the end targets `"HEAD:${HEAD_REF}"` (the env var, not a literal `develop`) so a hotfix's prepare
+  commit lands on the hotfix branch. Job summary now also names which kind of release it was.
+
+  Rewrote `.github/workflows/release.yml`: job `if` accepts a merged PR from `develop` or
+  `hotfix/*` (same-repo check kept); the same `Determine release kind`/`HEAD_REF` pattern as
+  release-prep.yml; a new `Verify RELEASE_TOKEN is configured` step gated `is_hotfix == 'true'`
+  only (develop's publish still uses `GITHUB_TOKEN` exactly as before, so it needs no new secret);
+  `Determine the version to release`'s cross-check adds `-patch-only` for a hotfix. Everything
+  from `Skip if already tagged` through `Verify external installability` is unchanged for both
+  paths. Two new steps at the end, both gated
+  `is_hotfix == 'true' && already_tagged != 'true'`, fold what `hotfix-sync.yml` used to do
+  (Decision 6, chosen over a `workflow_run`-triggered separate workflow because it guarantees the
+  sync runs strictly after the tag/publish steps *by construction* -- later in the same job --
+  instead of by a second trigger racing this one or re-deriving "was this a hotfix merge" from
+  `github.event.workflow_run.pull_requests`): `Push the hotfix sync branch` pushes the just-tagged
+  commit to `sync/hotfix-${VERSION}` (never `main` itself -- Decision 5: `.github/settings.yml`'s
+  `delete_branch_on_merge: true` plus `main` being unprotected and non-default means a PR headed
+  `main` would get `main` deleted by GitHub on merge; the branch name comes from the
+  tool-validated `vX.Y.Z` version, never the attacker-controlled PR head ref, so it needs no extra
+  sanitizing), authenticated as `RELEASE_TOKEN` via an explicit URL with
+  `-c http.https://github.com/.extraheader=` clearing the `GITHUB_TOKEN` header `actions/checkout`
+  persisted (confirmed this matters: without the override, git applies the persisted header by URL
+  prefix regardless of the literal push URL, silently pushing as `GITHUB_TOKEN` instead). `Open or
+  reuse the hotfix sync PR` mirrors the old `hotfix-sync.yml` `gh pr list`/`gh pr create` logic
+  against `sync/hotfix-${VERSION}` -> `develop`, with the PR body naming the possible
+  `CHANGELOG.md` conflict and its resolution (Decision 4) plus why the head branch isn't `main`.
+  Deleted `.github/workflows/hotfix-sync.yml` -- its logic now lives at the end of `release.yml`'s
+  hotfix path, so keeping it as a second workflow reacting to the same `pull_request: closed` event
+  would just be dead/duplicate code.
+
+  Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` (both changed files, then
+  the whole repo) -- 0 findings. `python3 -c 'import yaml; yaml.safe_load(open(f))'` on both files
+  -- parses clean. Every `run:` block in both files additionally checked with `bash -n` (extracted
+  via a small PyYAML script) -- no syntax errors. One real YAML bug caught this way before
+  actionlint even ran: the multi-paragraph `gh pr create --body` heredoc's continuation lines
+  started at column 0, which is *below* the enclosing `run: |` block scalar's indentation, so YAML
+  read it as ending the block scalar early (`could not find expected ':'`) -- fixed by indenting
+  those lines to the block's own indentation.
