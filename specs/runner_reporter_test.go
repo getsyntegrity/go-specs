@@ -278,8 +278,8 @@ func TestRunSpecsRecoveredReportsPanicMessageAndOutput(t *testing.T) {
 	if got.Message != "panic: boom" {
 		t.Errorf("expected Message %q, got %q", "panic: boom", got.Message)
 	}
-	if !strings.Contains(got.Output, "runStepRecovered") {
-		t.Errorf("expected Output to contain a stack trace naming runStepRecovered, got %q", got.Output)
+	if !strings.Contains(got.Output, "runSpecWithHooks") {
+		t.Errorf("expected Output to contain a stack trace naming runSpecWithHooks, got %q", got.Output)
 	}
 	if len(backend.errors) != 1 || backend.errors[0] != got.Message+"\n"+got.Output {
 		t.Fatalf("expected backend.Errorf to receive exactly message+\"\\n\"+output, got %v", backend.errors)
