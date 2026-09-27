@@ -354,6 +354,11 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
+- `mock.Spy.CalledTimes` now takes `testing.TB` instead of `*testing.T`, so it can be called from
+  benchmarks, with `ctx.T` from a `specs.Context`, and with a fake TB. Existing callers passing a
+  `*testing.T` compile unchanged. The call count is now read once, so the value in the failure
+  message is the one that was checked, even while other goroutines keep calling the spy
+  ([#246](https://github.com/getsyntegrity/go-specs/issues/246)).
 - Every built-in assertion entry point — `specs.EqualTo`, `specs.ExpectT(ctx, x).ToEqual`,
   `specs.ExpectT(ctx, x).To`, `ctx.Expect(x).ToEqual`, `ctx.Expect(x).To` and `ctx.Snapshot` — now
   records its failure through one internal path instead of each call site independently mutating

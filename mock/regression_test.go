@@ -69,3 +69,46 @@ func TestZeroValueMockIsUsable(t *testing.T) {
 		t.Fatal("expected the call recorded on the zero-value Mock's spy")
 	}
 }
+
+// fakeTB records Fatal/Fatalf instead of stopping the goroutine, so a test can observe them.
+type fakeTB struct {
+	testing.TB
+	fatals []string
+}
+
+func (f *fakeTB) Helper() {}
+
+func (f *fakeTB) Fatal(args ...any) { f.fatals = append(f.fatals, fmt.Sprint(args...)) }
+
+func (f *fakeTB) Fatalf(format string, args ...any) {
+	f.fatals = append(f.fatals, fmt.Sprintf(format, args...))
+}
+
+// Issue #246: CalledTimes must accept any testing.TB, not only *testing.T.
+func TestCalledTimesAcceptsTestingTB(t *testing.T) {
+	spy := NewSpy()
+	spy.Call()
+	spy.Call()
+
+	pass := &fakeTB{}
+	spy.CalledTimes(pass, 2)
+	if len(pass.fatals) != 0 {
+		t.Fatalf("matching count must not fail, got %q", pass.fatals)
+	}
+
+	fail := &fakeTB{}
+	spy.CalledTimes(fail, 3)
+	if len(fail.fatals) != 1 || fail.fatals[0] != "expected 3 calls, got 2" {
+		t.Fatalf("fatals = %q, want [\"expected 3 calls, got 2\"]", fail.fatals)
+	}
+}
+
+// Issue #246: a nil spy fails once and stops, even when the TB's Fatal returns.
+func TestCalledTimesNilSpyFailsOnce(t *testing.T) {
+	var spy *Spy
+	tb := &fakeTB{}
+	spy.CalledTimes(tb, 1)
+	if len(tb.fatals) != 1 || tb.fatals[0] != "spy is nil" {
+		t.Fatalf("fatals = %q, want [\"spy is nil\"]", tb.fatals)
+	}
+}
