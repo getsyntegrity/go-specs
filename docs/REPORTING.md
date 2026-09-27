@@ -387,56 +387,57 @@ comments ignored — **the CLI never runs `go list` itself** (decision #4 in the
 `docs/investigations/odd-tasks/report-cli.md`). You generate it, review it like any other source
 file, and commit it; a CI step regenerates and diffs it to catch drift.
 
-Contract v1.2.9 §5 defines the expected-producer set precisely, and the pipeline below follows it
-in two stages, matching the four inclusion rules and the exclusions that follow them:
+Contract v1.2.9 §5 defines the expected-producer set precisely. A package is a producer when its
+test binary publishes a shard, which in practice means its `TestMain` calls
+`coordination.ShardWriterFromEnv`. The pipeline below selects exactly those packages:
 
 ```sh
-# 1. Every package in your own package selection (./... below — narrow it to match whatever
-#    pattern you actually pass to `go test`) that has at least one test file for the current
-#    build configuration. `go list` already evaluates GOOS/GOARCH/-tags for you, so packages with
-#    no test files and packages excluded by build tags are both naturally absent from $candidates
-#    — the first two exclusions in §5 need no extra code.
-candidates=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+# 1. `go list` lists every package in your selection (./... below — narrow it to the pattern you
+#    actually pass to `go test`) that has test files under the current build configuration. It
+#    already evaluates GOOS/GOARCH/-tags, so packages with no test files and packages excluded by
+#    build tags never appear — the first two exclusions in §5 need no extra code.
+# 2. A package stays only if one of its test files calls ShardWriterFromEnv, i.e. it wires a
+#    shard writer into TestMain. Merely importing report/coordination is not enough: a helper or
+#    tool whose tests use the package without publishing a shard would otherwise be listed, and
+#    finalize would report it missing on every run.
+#
+# The function writes to stdout, so the same code generates the file and checks it for drift.
+# It assumes package directories contain no whitespace.
+go_specs_producers() {
+  go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}} {{.Dir}}{{range .TestGoFiles}} {{.}}{{end}}{{range .XTestGoFiles}} {{.}}{{end}}{{end}}' ./... |
+    while read -r pkg dir files; do
+      for f in $files; do
+        if grep -q 'ShardWriterFromEnv' "$dir/$f"; then
+          echo "$pkg"
+          break
+        fi
+      done
+    done | sort -u
+}
 
-# 2. Keep only the candidates whose test binary actually links report/coordination — the fourth
-#    inclusion rule (wiring a ShardWriter into TestMain). `go list -test -deps` lists every
-#    transitive dependency of a package's *test* binary, which is what a plain `go list -deps`
-#    would miss.
-: > .go-specs/producers.txt
-for pkg in $candidates; do
-  if go list -test -deps "$pkg" 2>/dev/null \
-      | grep -qx 'github.com/getsyntegrity/go-specs/report/coordination'; then
-    echo "$pkg" >> .go-specs/producers.txt
-  fi
-done
-sort -u -o .go-specs/producers.txt .go-specs/producers.txt
+mkdir -p .go-specs
+go_specs_producers > .go-specs/producers.txt
 ```
 
-Two things worth stating explicitly, both confirmed by running this pipeline against this
-repository's own fixtures while writing this section:
+Two consequences worth stating explicitly:
 
-- **A package skipped by the build cache is *not* excluded**, deliberately: `go list` is a static
-  analysis over source, so a package `go test` would serve from cache still appears in the
-  manifest. That is exactly right — a cached package with the gate on is the failure mode contract
-  v1.2.9 §5/§6 needs to stay loud (see `-count=1` above), and a manifest that quietly dropped
-  cached packages would defeat that.
-- **If your own repository's test suite includes a package that itself lives under
-  `report/coordination`** (as this repository's does, in `internal/e2efixture` and
-  `internal/shardfixture`), step 2's `go list -test -deps` naturally also matches the
-  `report/coordination` package's own tests, because a package's test binary trivially "depends
-  on" the package under test. That one entry is not a real producer — the library's own tests
-  never call `ShardWriterFromEnv` on themselves as part of a CI run — so exclude it by import path
-  if your manifest generator walks this module itself. A downstream consumer module will not hit
-  this case at all, since it has no package literally named `.../report/coordination`.
+- **A package served from the build cache is *not* excluded**, deliberately. `go list` reads
+  source, not the cache, so a package `go test` would serve from cache still appears in the
+  manifest. That is the point: a cached package with the gate on publishes nothing, and contract
+  v1.2.9 §5/§6 needs that to fail loudly as a missing producer (see `-count=1` above).
+- **The match is textual.** A test file that mentions `ShardWriterFromEnv` without calling it from
+  `TestMain` (a unit test of the library itself, say) is still listed. In go-specs' own repository
+  that is `report/coordination`, whose `config_test.go` exercises the function directly; remove
+  such entries from the committed file by hand. A wrong entry is never silent: `finalize` names
+  it as `missing` and exits `1`.
 
 Commit the generated `.go-specs/producers.txt`, and add a CI step that regenerates it into a
 temporary file and fails the build on drift, so a new producer package added without updating the
 manifest is caught immediately rather than silently missing from the next report:
 
 ```sh
-go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... > /tmp/candidates.txt
-# ...(the same filtering loop as above, writing to /tmp/producers.txt)...
-diff -u .go-specs/producers.txt /tmp/producers.txt || {
+# go_specs_producers is the function defined above.
+go_specs_producers | diff -u .go-specs/producers.txt - || {
   echo "producer manifest is stale; regenerate and commit .go-specs/producers.txt" >&2
   exit 1
 }
@@ -464,6 +465,8 @@ set -u
 : "${GSR:=go-specs-report}"
 : "${GO_SPECS_RUN_ID:=proof-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 : "${PRODUCERS_FILE:?set PRODUCERS_FILE to the checked-in producer manifest}"
+: "${TEST_PACKAGES:=./...}"   # the package pattern you pass to go test
+: "${COVERPKG:=./...}"        # the packages to instrument for coverage
 
 REPORT_DIR="$(mktemp -d)"
 export GO_SPECS_REPORT_DIR="$REPORT_DIR"
@@ -547,8 +550,10 @@ jobs:
 
       # $GITHUB_ENV is not masked automatically the way a declared `secrets:` value is, and the
       # run token is a credential in everything but name — mask it explicitly, once it is loaded.
+      # Read it as a shell variable, not a `${{ env.* }}` expression: Actions prints a step's
+      # script with expressions already expanded, which would log the token before the mask.
       - name: mask the run token
-        run: echo "::add-mask::${{ env.GO_SPECS_RUN_TOKEN }}"
+        run: echo "::add-mask::$GO_SPECS_RUN_TOKEN"
 
       # `continue-on-error: true` plus `id:` is what lets a later step read this step's outcome
       # without the job stopping here — the alternative this section's intro promised.
@@ -608,16 +613,19 @@ spec:
       args:
         - |
           set -u
-          export GO_SPECS_RUN_ID="${BUILD_NAME:-build}-$(date -u +%Y%m%dT%H%M%SZ)"
+          export GO_SPECS_RUN_ID="${BUILD_NAME:-build}-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
           export GO_SPECS_REPORT_DIR="$(mktemp -d)"
-          set -a; . <(go run ./cmd/go-specs-report init \
-            -run-id="$GO_SPECS_RUN_ID" -report-dir="$GO_SPECS_REPORT_DIR"); set +a
+          GSR="go run github.com/getsyntegrity/go-specs/cmd/go-specs-report@<version>"
+          # POSIX sh has no `<(...)`: write init's KEY=value lines to a file, then source it.
+          $GSR init -run-id="$GO_SPECS_RUN_ID" \
+            -report-dir="$GO_SPECS_REPORT_DIR" > "$GO_SPECS_REPORT_DIR/init.env" || exit $?
+          set -a; . "$GO_SPECS_REPORT_DIR/init.env"; set +a
 
           go test -count=1 -coverprofile=cover.out ./...
           test_status=$?
 
           mkdir -p artifacts
-          go run ./cmd/go-specs-report finalize \
+          $GSR finalize \
             -producers=.go-specs/producers.txt -coverprofile=cover.out \
             -json=artifacts/report.json -cleanup
           finalize_status=$?
