@@ -63,7 +63,7 @@ release to happen automatically when `develop` is merged into `main`.
   available, CI green on the PR.
 - [x] T2 — CodeQL workflow; dependabot `target-branch: develop` plus groups. Check: YAML parses, CodeQL
   runs on the PR.
-- [ ] T3 — `tools/release`: next version from commits, and the CHANGELOG rewrite. Behaviour tests
+- [x] T3 — `tools/release`: next version from commits, and the CHANGELOG rewrite. Behaviour tests
   (strict TDD). Plus the `release-prep` workflow on `develop` → `main` PRs. Check:
   `go test ./tools/release/...`, YAML parses.
 - [ ] T4 — `release` workflow on a merged `develop` → `main` PR (tag, GoReleaser, installability);
@@ -107,3 +107,52 @@ Strict TDD is on (user global config), with runner `go test`.
   the ci.yml/benchmarks.yml `contents: read` default doesn't cover SARIF upload). Added
   `target-branch: develop` and a minor+patch update group to both `dependabot.yml` ecosystems
   (`gomod`, `github-actions`); major bumps stay ungrouped.
+- T3 done, strict TDD. Wrote `tools/release/version_test.go` and `changelog_test.go` against
+  not-yet-existing `NextVersion`/`classifyCommit`/`RewriteChangelog`/`ChangelogOptions` first;
+  `go test ./tools/release/...` failed to build (RED):
+  `tools/release/changelog_test.go:38:23: undefined: RewriteChangelog` (and 6 more `undefined:`
+  errors) before any implementation existed. Implemented `version.go` (Conventional Commit
+  classification + Decision 4's bump rules; commits are NUL-delimited `git log --format='%B%x00'`
+  records) and `changelog.go` (Unreleased rewrite + Keep-a-Changelog compare links — this
+  repository's CHANGELOG.md had no prior link-reference style, so the format follows Keep a
+  Changelog directly), then `main.go` (CLI: `next-version`, `changelog`; exit 0/1/3). All GREEN:
+  `go test ./tools/release/...` — 43 subtests across `TestNextVersion_BumpRules` (22),
+  `TestNextVersion_NothingReleasable` (4), `TestNextVersion_StrictSemverLastTag` (7),
+  `TestClassifyCommit` (12), 8 `TestRewriteChangelog_*` cases, and 8 `TestRun_*` CLI-level cases —
+  all pass. `make lint` clean on the new package (fixed 6 errcheck findings on the CLI's own
+  stderr/stdout writes via a `logf` helper that discards the write error deliberately, documented
+  inline).
+
+  Added `.github/workflows/release-prep.yml`: triggers on `pull_request`
+  `[opened, synchronize, reopened, ready_for_review]` to `main`; job gated on
+  `head.ref == 'develop' && head.repo.full_name == github.repository`; fails fast with `::error::`
+  before checkout if `RELEASE_TOKEN` is empty; checks out `develop` with `fetch-depth: 0` and the
+  PAT; computes the last tag (`git describe --tags --abbrev=0 origin/main`, falling back to the
+  latest local `v*` tag, then `v0.0.0`); runs `tools/release next-version`, treating exit 3 as a
+  green no-op (`::notice::` + job summary, every later step skipped); runs `tools/release
+  changelog`; commits `chore(release): prepare vX.Y.Z` as `github-actions[bot]` and pushes to
+  `develop` only when `git diff` shows a change (the tool's own idempotency, exercised by
+  `TestRewriteChangelog_Idempotent`/`TestRun_Changelog_IdempotentSecondRunExitsZero`, is what
+  makes the retriggered run after that push a no-op: same last tag, same computed next version,
+  changelog already carries that heading, no diff, no second push — verified by reasoning through
+  the retrigger with the actual regex/classification rules, not by running the workflow itself,
+  since that needs a real PR and `RELEASE_TOKEN`, see Limits). `permissions: contents: read`
+  (write goes through the PAT); `concurrency` keyed on the PR number, `cancel-in-progress: false`.
+
+  Dry run on real history (`git fetch origin main develop --tags`, then run from this worktree):
+  `origin/main` is at `v0.1.2`; `git log v0.1.2..origin/develop` has 69 commits, including two
+  breaking changes (`feat(specs)!: add BeforeAll/AfterAll...` #207,
+  `refactor(specs)!: replace interface{} DSL bodies...` #224) — `go run ./tools/release
+  next-version -last v0.1.2 -commits <that range>` → `v0.2.0` (breaking, pre-1.0 → minor bump;
+  correct per Decision 4). `go run ./tools/release changelog -version v0.2.0 -date 2026-09-27
+  -file <temp copy of CHANGELOG.md>` → rewrote the heading, inserted a fresh `[Unreleased]`, and
+  added `[Unreleased]: .../compare/v0.2.0...HEAD` and `[v0.2.0]: .../compare/v0.1.0...v0.2.0` (prev
+  correctly derived from the existing `## [0.1.0] - 2026-09-16` heading, normalized to `v0.1.0`);
+  re-running the same command against its own output was a no-op (`already has a heading for
+  v0.2.0, nothing to do`, byte-identical file). Noted, not fixed (out of scope): `origin/main` and
+  `origin/develop` have already diverged by one commit each — main carries a
+  `chore: update benchmark charts [skip ci]` commit develop never received, and a `Merge pull
+  request #160` merge commit — the exact main/develop drift this whole change is meant to prevent
+  going forward once releases stop being ad hoc `workflow_dispatch` runs (T4); this pair predates
+  T1-T4 and both are ignored by `next-version`'s classification (a bot commit exact-match and a
+  merge-commit subject) regardless.

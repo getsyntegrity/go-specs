@@ -1,0 +1,153 @@
+# Release prep: while a develop -> main release PR is open, compute the next version from
+# Conventional Commits and rewrite CHANGELOG.md's [Unreleased] section into a dated release
+# heading, then push that commit back to develop -- Decision 1 of
+# docs/investigations/odd-tasks/native-ci-pipeline.md: the version and changelog are visible in
+# the PR *before* it merges, rather than written after the merge and synced back with a second PR.
+#
+# Runs on every PR event that can change what should be prepared (opened, a new push, reopened,
+# or taken out of draft) targeting main, but only actually does anything when the job condition
+# below narrows it to a genuine develop -> main release PR from this repository -- a PR from a
+# fork, or one targeting main from any other branch (a hotfix, say), skips every step.
+#
+# release.yml (the workflow that tags and publishes once this PR is merged) reads the version this
+# workflow prepared back out of CHANGELOG.md's top heading, rather than recomputing it, and fails
+# if the two disagree -- see release.yml's header for why.
+name: Release prep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# contents: read only: this job's one write (the prepare commit) goes through RELEASE_TOKEN, a
+# fine-grained PAT set up per CONTRIBUTING.md's Releasing section, not the ephemeral GITHUB_TOKEN.
+# GITHUB_TOKEN-authored commits and PRs do not retrigger other workflows or required checks
+# (Decision 3), so pushing the prepare commit with GITHUB_TOKEN would leave the PR's required
+# checks stuck on the pre-prepare commit and unable to pass.
+permissions:
+  contents: read
+
+# One run per PR at a time, queued rather than cancelled: this job pushes a commit mid-run, and
+# cancelling it partway could leave that push half-applied. A later event on the same PR (another
+# push) still gets its own queued run once the current one finishes, so the PR is never prepared
+# against stale commits for long.
+concurrency:
+  group: release-prep-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    # Narrows the four PR event types above down to exactly the release PR this workflow exists
+    # for: develop -> main (never a hotfix branch or any other base), and only when the PR's head
+    # is a branch of this repository, never a fork -- a fork's develop could not be pushed back to
+    # even with RELEASE_TOKEN, and a release must only ever be prepared from this repository's own
+    # develop.
+    if: github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      # Checked before anything else (no checkout needed to check a secret), so a missing token
+      # fails in seconds with an actionable message instead of failing deep inside a later git
+      # push with an opaque authentication error.
+      - name: Verify RELEASE_TOKEN is configured
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+            exit 1
+          fi
+
+      - name: Checkout develop
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+          fetch-depth: 0  # full history and tags: next-version needs every commit since the last tag
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+      # Finds the last released tag (preferring the one reachable from main, since that is what
+      # was actually published; falling back to the latest local vX.Y.Z tag, and then to v0.0.0
+      # for a repository with no tags at all -- a bootstrap case this repo does not currently need
+      # but next-version's strict SemVer input requires something well-formed), collects every
+      # commit since it in this tool's NUL-delimited format (version.go's doc comment), and asks
+      # tools/release for the next version. Exit 3 means nothing on develop is releasable yet
+      # (version.go/ErrNothingReleasable): that is a legitimate outcome, not a failure, so the
+      # step (and therefore the job) still exits 0, and every later step is skipped via the
+      # nothing_to_release output.
+      - name: Compute last tag and next version
+        id: version
+        run: |
+          LAST_TAG="$(git describe --tags --abbrev=0 origin/main 2>/dev/null || true)"
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          fi
+          LAST_TAG="${LAST_TAG:-v0.0.0}"
+          echo "last_tag=${LAST_TAG}" >> "$GITHUB_OUTPUT"
+
+          git log --format='%B%x00' "${LAST_TAG}..HEAD" > /tmp/release-commits.txt
+
+          set +e
+          NEXT_VERSION="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" -eq 3 ]; then
+            echo "::notice::Nothing to release since ${LAST_TAG} -- no commit on develop is a releasable Conventional Commit. Stopping without preparing a release."
+            echo "nothing_to_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$STATUS" -ne 0 ]; then
+            echo "::error::tools/release next-version failed (exit ${STATUS})." >&2
+            exit "$STATUS"
+          fi
+
+          echo "nothing_to_release=false" >> "$GITHUB_OUTPUT"
+          echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      # RewriteChangelog (changelog.go) is idempotent: on a retriggered run against a commit that
+      # already carries this exact version's heading, it reports "nothing to do" and leaves
+      # CHANGELOG.md untouched, so the diff check in the next step naturally finds nothing to
+      # commit and this workflow does not push a second time for the same version (its own header
+      # explains why that retrigger happens at all).
+      - name: Update CHANGELOG.md
+        if: steps.version.outputs.nothing_to_release == 'false'
+        run: |
+          go run ./tools/release changelog \
+            -version "${{ steps.version.outputs.next_version }}" \
+            -date "$(date -u +%Y-%m-%d)" \
+            -file CHANGELOG.md
+
+      # actions/checkout's token: input (above) configures an auth header for the origin remote,
+      # so this push authenticates as RELEASE_TOKEN without the token ever appearing in a command
+      # line or log line.
+      - name: Commit and push the prepared changelog
+        if: steps.version.outputs.nothing_to_release == 'false'
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "::notice::CHANGELOG.md already prepared for ${{ steps.version.outputs.next_version }} -- nothing to commit."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "chore(release): prepare ${{ steps.version.outputs.next_version }}"
+            git push origin HEAD:develop
+          fi
+
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ "${{ steps.version.outputs.nothing_to_release }}" = "true" ]; then
+            echo "### Release prep" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing to release since \`${{ steps.version.outputs.last_tag }}\`." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "${{ steps.version.outputs.next_version }}" ]; then
+            echo "### Release prep" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Next version: \`${{ steps.version.outputs.next_version }}\` (since \`${{ steps.version.outputs.last_tag }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          fi
