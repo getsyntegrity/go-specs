@@ -18,7 +18,7 @@
 # shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
 # `lint` (golangci-lint) and `govulncheck` are native jobs below, running in
-# Stage 1 alongside `verify` and `goreleaser`. They used to run only inside
+# parallel with the rest. They used to run only inside
 # Shipwright (.shipwright/workflow.yaml, a Dagger-backed workflow that ran unit
 # tests, lint, and govulncheck concurrently), whose `shipwright` job here had
 # been permanently disabled (`if: false`) because the pinned runner
@@ -27,9 +27,8 @@
 # ready ... context deadline exceeded after 1 attempts", despite reporting
 # max_retries=11 -- the configured retry was not honoured). In practice that
 # meant lint and govulncheck ran nowhere. Shipwright (.shipwright/ and the
-# disabled job) is dropped entirely rather than re-enabled: the underlying
-# runner defect (pablogore/shipwright#275) was never fixed, and native jobs
-# don't depend on it or on Dagger being available at all.
+# disabled job) is dropped entirely rather than re-enabled: native jobs don't
+# depend on that runner or on Dagger being available at all.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
 # every push/PR to develop/main, the same branches release.yml tags and
