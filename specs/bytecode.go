@@ -1,6 +1,6 @@
 // bytecode.go defines the bytecode execution model for the Describe/BeforeEach/AfterEach/It DSL.
 //
-// BYTECODE DESIGN
+// # BYTECODE DESIGN
 //
 // Opcodes (see instruction.go for type OpCode; bytecode uses these three):
 //
@@ -13,7 +13,7 @@
 // Instruction (program.go): struct { op OpCode; fn func(*Context) }.
 // Program (program.go): struct { code []instruction }.
 //
-// COMPILATION
+// # COMPILATION
 //
 // DSL:
 //
@@ -46,7 +46,7 @@
 //   - No allocations during execution (context from pool, code read-only).
 //   - Context reused across all instructions (or per worker in parallel).
 //
-// PERFORMANCE BENEFITS VS TREE TRAVERSAL
+// # PERFORMANCE BENEFITS VS TREE TRAVERSAL
 //
 // Tree traversal would: walk a tree of Describe nodes; at each node run BeforeEach list, then
 // recurse into children or run It, then run AfterEach list. That implies pointer chasing (node →

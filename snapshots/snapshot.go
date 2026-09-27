@@ -2,7 +2,9 @@ package snapshots
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,11 @@ import (
 )
 
 const UpdateSnapshotsEnv = "GO_SPECS_UPDATE_SNAPSHOTS"
+
+// warnOutput receives the warning Evaluate prints when update mode discards an unparseable snapshot
+// file. A passing Result carries no message, so the warning cannot travel through the verdict;
+// tests swap this writer to observe it.
+var warnOutput io.Writer = os.Stderr
 
 // Backend is used to report failures (e.g. testing.TB).
 type Backend interface {
@@ -89,7 +96,18 @@ func Evaluate(helper HelperBackend, callerFile string, name string, value any) R
 
 	update := os.Getenv(UpdateSnapshotsEnv) == "1"
 	data, err := Load(snapshotPath)
-	if err != nil && !os.IsNotExist(err) {
+	var parseErr *parseError
+	switch {
+	case err == nil, os.IsNotExist(err):
+	case update && errors.As(err, &parseErr):
+		// Regenerating is the documented way out of a bad merge, so an unparseable file must not
+		// block it (issue #242). Every other key in the file is lost, so say which file was reset.
+		// warnOutput is diagnostic-only (stderr by default); a write failure there must not
+		// block the recovery path this branch exists for, so the error is deliberately discarded.
+		_, _ = fmt.Fprintf(warnOutput, "snapshot: %s is not valid JSON (%v); %s=1 is rewriting it and discarding its other snapshots\n",
+			snapshotPath, parseErr.err, UpdateSnapshotsEnv)
+		data = nil
+	default:
 		return Result{Message: fmt.Sprintf("snapshot: load %s: %v", snapshotPath, err)}
 	}
 	if data == nil {
@@ -112,11 +130,14 @@ func Evaluate(helper HelperBackend, callerFile string, name string, value any) R
 		return Result{Message: fmt.Sprintf("snapshot %q missing; run with %s=1 to create", name, UpdateSnapshotsEnv)}
 	}
 
-	var existingVal, newVal any
-	if err := json.Unmarshal(existing, &existingVal); err != nil {
+	// Both sides are normalized before comparison, so key order and formatting are irrelevant while
+	// every digit of a number is preserved. See normalize.go for the full comparison semantics.
+	existingVal, err := normalizeJSON(existing)
+	if err != nil {
 		return Result{Message: fmt.Sprintf("snapshot: unmarshal existing: %v", err)}
 	}
-	if err := json.Unmarshal(newBytes, &newVal); err != nil {
+	newVal, err := normalizeJSON(newBytes)
+	if err != nil {
 		return Result{Message: fmt.Sprintf("snapshot: unmarshal new: %v", err)}
 	}
 	if !reflect.DeepEqual(existingVal, newVal) {
@@ -160,10 +181,20 @@ func Load(path string) (map[string]json.RawMessage, error) {
 	}
 	var data map[string]json.RawMessage
 	if err := json.Unmarshal(b, &data); err != nil {
-		return nil, fmt.Errorf("parse snapshot file: %w", err)
+		return nil, &parseError{err: err}
 	}
 	return data, nil
 }
+
+// parseError marks a snapshot file that was read but does not hold a JSON object, so Evaluate can
+// tell it apart from a read failure: only the former is safe to overwrite in update mode.
+type parseError struct {
+	err error
+}
+
+func (e *parseError) Error() string { return "parse snapshot file: " + e.err.Error() }
+
+func (e *parseError) Unwrap() error { return e.err }
 
 // renameSnapshot is Save's final replacement step, indirected so tests can simulate a failure that
 // must leave the previous snapshot intact.

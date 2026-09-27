@@ -1,7 +1,6 @@
 package specs
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -10,13 +9,19 @@ import (
 
 // Spec is the DSL handle for building describe/when/it trees.
 // The node tree is compiled into an ExecutionPlan once (Compile), then Run reuses it.
+//
+// A Spec is only usable when it carries a build target: either a bytecode compiler or a registry,
+// set by the entry point that created it (Describe, DescribeFlat, DescribeWithReporter,
+// DescribeFlatWithReporter, BuildSuite) and threaded into every nested Spec from there. Spec is
+// exported with unexported fields, so external code can still write &specs.Spec{}; such a Spec has
+// no build target, and its registration methods panic rather than accept an It, a hook or a nested
+// block and drop it, which would let a suite that registered nothing report green (issue #151).
+// Obtain a Spec from an entry point; never construct one.
 type Spec struct {
 	tb       testing.TB
 	backend  testBackend
 	reporter report.EventReporter
 	name     string // top-level Describe/DescribeFlat name, used as SuiteStartEvent/SuiteEndEvent.Name
-	seed     int64
-	hasSeed  bool
 
 	// compiler/registry are the exact build target this Spec (and any Spec it constructs for a
 	// nested Describe/When) writes into. Set once by the top-level entry point (Describe,
@@ -67,10 +72,6 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
 func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	describeWithCompilerContext(tb, nil, name, rep, fn)
-}
-
-func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec)) []proposalControllerResult {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
 	var backend testBackend
@@ -81,12 +82,14 @@ func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name str
 	if fn != nil {
 		fn(s)
 	}
-	s.plan = c.TakePlan()
+	var groups *planGroups
+	s.plan, groups = c.takePlanAndGroups()
+	validateHookGroups(s.plan, groups)
 	if tb != nil {
 		s.Compile()
-		return s.suite.run(tb, runCtx)
+		s.suite.groups = groups
+		s.suite.Run(tb)
 	}
-	return nil
 }
 
 // BuildSuite builds the spec tree and compiles it once; returns the CompiledSuite without running.
@@ -100,8 +103,11 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		if fn != nil {
 			fn(s)
 		}
-		s.plan = c.TakePlan()
+		var groups *planGroups
+		s.plan, groups = c.takePlanAndGroups()
+		validateHookGroups(s.plan, groups)
 		s.Compile()
+		s.suite.groups = groups
 		return s.suite
 	}
 	defer ensureRegistry()()
@@ -226,18 +232,6 @@ func DescribeFastWithReporter(tb testing.TB, name string, rep report.EventReport
 	DescribeFlatWithReporter(tb, name, rep, fn)
 }
 
-func newSpec(tb testing.TB, withReporter bool, rep report.EventReporter) *Spec {
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend}
-	if withReporter && rep != nil {
-		s.reporter = rep
-	}
-	return s
-}
-
 // Run runs the compiled suite. Call after Compile(); no-op if suite or tb is nil.
 func (s *Spec) Run() {
 	if s != nil && s.suite != nil && s.tb != nil {
@@ -262,9 +256,20 @@ func (s *Spec) Compile() {
 		scratch := planScratchPool.Get().(*planScratch)
 		defer planScratchPool.Put(scratch)
 		plan := newExecutionPlan(countSpecsArena(s.arena, s.rootID))
-		buildExecutionPlanFromArena(s.arena, s.rootID, plan, scratch)
-		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter}
+		groups := buildExecutionPlanFromArenaGroups(s.arena, s.rootID, plan, scratch, s.registry.groupHooksOf())
+		validateHookGroups(plan, groups)
+		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter, groups: groups}
 	})
+}
+
+// requireBuildTarget panics when s has neither a compiler nor a registry to write into. Every Spec
+// handed out by an entry point carries exactly one of the two; a Spec with neither was constructed
+// directly by external code, so there is no destination for the registration being made and no
+// outcome other than discarding it silently.
+func (s *Spec) requireBuildTarget(method string) {
+	if s.compiler == nil && s.registry == nil {
+		panic("specs: Spec." + method + " called on a Spec with no build target; obtain a *Spec from Describe/BuildSuite instead of constructing one")
+	}
 }
 
 // Describe starts a nested describe block.
@@ -275,53 +280,34 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
+		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
 		return
 	}
-	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
-	if s.registry == nil {
-		fn(child)
-		return
-	}
+	s.requireBuildTarget("Describe")
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
 	fn(child)
 }
 
-// When starts a when block. fn may be func(*Spec) or func() for legacy scope.
-func (s *Spec) When(name string, fn interface{}) {
+// When starts a when block. fn receives the nested *Spec to register hooks and specs on.
+func (s *Spec) When(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		switch f := fn.(type) {
-		case func(*Spec):
-			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
-		case func():
-			f()
-		}
+		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
 		return
 	}
-	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
-	runFn := func() {
-		switch f := fn.(type) {
-		case func(*Spec):
-			f(child)
-		case func():
-			f()
-		}
-	}
-	if s.registry == nil {
-		runFn()
-		return
-	}
+	s.requireBuildTarget("When")
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
 	defer pop()
-	runFn()
+	fn(child)
 }
 
 // It registers a spec.
@@ -330,14 +316,107 @@ func (s *Spec) It(name string, fn func(*Context)) {
 		return
 	}
 	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
 		c.EmitIt(name, fn)
 		return
 	}
-	if s.registry == nil {
-		return
-	}
+	s.requireBuildTarget("It")
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	pop()
+}
+
+// SkipIt registers a spec that is skipped at compile time (issue #245): fn is never compiled or
+// run — it may be nil — but name is kept so the suite still reports it, as StatusSkipped
+// (report/model.go), the same way Builder.SkipIt already does (specs/builder.go). If this
+// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is dropped
+// entirely instead, exactly like an unfocused It (see FIt).
+func (s *Spec) SkipIt(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
+		c.EmitSkip(name)
+		return
+	}
+	s.requireBuildTarget("SkipIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itSkip)
+	pop()
+}
+
+// PendingIt registers a spec that is pending at compile time (issue #245): the specification
+// exists but fn — which may be nil, and is never compiled or run either way — does not, or is not
+// wired up yet. name is kept so the suite still reports it, as StatusPending (report/model.go),
+// distinct from Skipped, the same way Builder.PendingIt already does. Dropped entirely by a
+// suite-wide FIt, exactly like SkipIt.
+func (s *Spec) PendingIt(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
+		c.EmitPending(name)
+		return
+	}
+	s.requireBuildTarget("PendingIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itPending)
+	pop()
+}
+
+// FIt registers a focused spec (issue #245): a nil fn is a no-op, exactly like Builder.FIt. If this
+// Describe/BuildSuite call registers at least one FIt anywhere in its tree, only focused specs
+// compile — every other It, SkipIt and PendingIt in the same call is dropped, never reported, the
+// same way Builder.finalize's focus filter already works. Hooks (BeforeEach/AfterEach,
+// BeforeAll/AfterAll) around a focused spec still run; a BeforeAll/AfterAll group left with zero
+// runnable specs after focus filtering is never entered, the same H3 rule that already applies to
+// a group declaring no It at all (docs/SUITE_HOOKS_CONTRACT.md).
+func (s *Spec) FIt(name string, fn func(*Context)) {
+	if s == nil || fn == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.closeOpenParallelRun()
+		c.EmitFocusedIt(name, fn)
+		return
+	}
+	s.requireBuildTarget("FIt")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itFocus)
+	pop()
+}
+
+// ItParallel registers a spec that runs concurrently with its adjacent ItParallel siblings (issue
+// #245's second spec, the *Spec equivalent of Builder.ItParallel). A nil fn follows It's existing
+// nil handling on *Spec (the spec is still registered, with no body instruction) rather than
+// Builder.ItParallel's early return — see docs/DSL.md.
+//
+// Consecutive ItParallel specs form one parallel group, launched from separate goroutines via their
+// own real Go subtest (testing.T.Run, never t.Parallel() — see spec_body_parallel.go) once the
+// suite reaches them: every spec gets its own pooled *Context and a real ctx.T, so -run selects or
+// excludes it like any other spec, BeforeEach/AfterEach still run around its body, and a fatal
+// ctx.T.Parallel() call inside it is still detected and stops the run. The group ends at any other
+// spec kind (It, FIt, SkipIt, PendingIt) or at a Describe/When boundary — including one that
+// registers no BeforeAll/AfterAll — never partway through one BeforeAll/AfterAll group. Under focus
+// (any FIt in this Describe/BuildSuite call's tree), every ItParallel is dropped, exactly like an
+// unfocused It; there is no FItParallel.
+func (s *Spec) ItParallel(name string, fn func(*Context)) {
+	if s == nil {
+		return
+	}
+	if c := s.compiler; c != nil {
+		c.EmitItParallel(name, fn)
+		return
+	}
+	s.requireBuildTarget("ItParallel")
+	file, line := callerLocation(2)
+	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setItKind(id, itParallel)
 	pop()
 }
 
@@ -350,9 +429,8 @@ func (s *Spec) BeforeEach(fn func(*Context)) {
 		c.AppendBefore(fn)
 		return
 	}
-	if s.registry != nil {
-		s.registry.appendBeforeHook(fn)
-	}
+	s.requireBuildTarget("BeforeEach")
+	s.registry.appendBeforeHook(fn)
 }
 
 // AfterEach appends an after-each hook to the current node.
@@ -364,44 +442,39 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 		c.AppendAfter(fn)
 		return
 	}
-	if s.registry != nil {
-		s.registry.appendAfterHook(fn)
-	}
+	s.requireBuildTarget("AfterEach")
+	s.registry.appendAfterHook(fn)
 }
 
-// RandomSeed sets the RNG seed for path/context in this spec subtree.
-func (s *Spec) RandomSeed(seed int64) {
-	if s != nil {
-		s.seed = seed
-		s.hasSeed = true
-	}
-}
-
-func (s *Spec) runPathWithContext(name string, gen *PathGenerator, _ interface{}, fn func(*Context)) {
+// BeforeAll registers a once-per-group setup hook (issue #207): it runs exactly once for this
+// Describe/When group, right before the group's first runnable spec — including a spec that
+// belongs to a nested group — never once per spec the way BeforeEach does. A group with no It
+// anywhere in its subtree never runs its BeforeAll at all. Multiple registrations in the same
+// group run in registration order. See docs/SUITE_HOOKS_CONTRACT.md for the full contract.
+func (s *Spec) BeforeAll(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
 	if c := s.compiler; c != nil {
-		c.SetPathGen(gen)
-		c.EmitIt(name, fn)
+		c.AppendBeforeAll(fn)
 		return
 	}
-	if s.registry == nil {
-		return
-	}
-	file, line := callerLocation(2)
-	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
-	s.registry.setPathGen(gen)
-	pop()
+	s.requireBuildTarget("BeforeAll")
+	s.registry.appendBeforeAllHook(fn)
 }
 
-// parseItArgs extracts the optional last func(*Context) from args. Returns (nil, fn).
-func parseItArgs(args []any) (ops interface{}, fn func(*Context)) {
-	if len(args) == 0 {
-		return nil, nil
+// AfterAll registers a once-per-group teardown hook (issue #207): it runs exactly once for this
+// Describe/When group, right after the group's last spec or subgroup finishes — guaranteed to run
+// once the group was entered, even after a BeforeAll or spec failure/panic. See
+// docs/SUITE_HOOKS_CONTRACT.md for the full contract.
+func (s *Spec) AfterAll(fn func(*Context)) {
+	if s == nil || fn == nil {
+		return
 	}
-	if f, ok := args[len(args)-1].(func(*Context)); ok {
-		return nil, f
+	if c := s.compiler; c != nil {
+		c.AppendAfterAll(fn)
+		return
 	}
-	return nil, nil
+	s.requireBuildTarget("AfterAll")
+	s.registry.appendAfterAllHook(fn)
 }

@@ -25,6 +25,20 @@ cd benchmarks
 go test -bench=. -benchmem
 ```
 
+## End-to-end: the real `go test` path
+
+Every `Benchmark*` function here runs on a `*testing.B`, and on that backend the go-specs runner
+skips its per-spec `t.Run` subtest. That isolates framework overhead, but it is not what a user's
+suite costs. `e2e_test.go` measures that path instead: 1000 specs, every one a `*testing.T`
+subtest, for go-specs, Testify, Gomega and a bare `t.Run` baseline.
+
+```bash
+make bench-e2e
+# or: GOSPECS_E2E=1 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$' ./benchmarks | grep '^E2E'
+```
+
+`GOSPECS_E2E_SPECS` and `GOSPECS_E2E_RUNS` override the suite size and the number of timed runs.
+
 ## Run by category
 
 ```bash
@@ -51,6 +65,7 @@ go test ./benchmarks -bench=BenchmarkSuite_ -benchmem
 | `helpers.go` | Suite generation: `BuildSpecsProgram(n)`, `CreateGoSpecsSuite(n)`, `SuiteSize100/1000/10000/50000` |
 | `assertion_bench_test.go` | `BenchmarkAssertion_GoSpecs_EqualTo`, `_ExpectToEqual`, `BenchmarkAssertion_Testify_Equal`, `BenchmarkAssertion_Gomega_ExpectToEqual` |
 | `matcher_bench_test.go` | `BenchmarkMatcher_GoSpecs`, `BenchmarkMatcher_Gomega` |
+| `comparison_bench_test.go` | `BenchmarkCompare_*_GoSpecs`, `_Testify`, `_Gomega` — see [COMPARISON.md](COMPARISON.md) |
 | `runner_bench_test.go` | `BenchmarkRunner_GoSpecs`, `BenchmarkRunner_Testify`, `BenchmarkRunner_Gomega` |
 | `hooks_bench_test.go` | `BenchmarkHooks_GoSpecs`, `BenchmarkHooks_Testify`, `BenchmarkHooks_Gomega` |
 | `large_suite_bench_test.go` | `BenchmarkSuite_100`, `_1000`, `_10000`, `_50000` (large-scale; suite creation outside timed region) |
@@ -61,6 +76,9 @@ go test ./benchmarks -bench=BenchmarkSuite_ -benchmem
 - **Deterministic**: Same N produces the same program shape; no randomness.
 - **Realistic**: Suite sizes 100, 1000, 10000 where applicable.
 - **go-specs target**: Zero allocations in assertion/runner fast path where possible (`0 allocs/op`).
+  Where that target is an actual guarantee it is pinned by `specs/allocation_contract_test.go`; see
+  [BENCHMARKS.md](../BENCHMARKS.md#contractual-vs-observational-claims). A benchmark printing `0 allocs/op`
+  never fails a build on its own — benchmarks measure, tests gate.
 - **Isolate setup**: Build suite / create runner before `b.ResetTimer()`; only the measured loop runs after.
 - **Avoid reflection** in go-specs benchmarks (use `EqualTo` / `ExpectT().ToEqual` for comparable types).
 

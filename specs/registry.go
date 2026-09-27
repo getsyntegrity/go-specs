@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type NodeType int
@@ -19,28 +20,16 @@ const (
 	ItNode
 )
 
-// Node is the legacy pointer-based node type. The registry now uses NodeArena (index-based);
-// Node is retained for reference and for any external use of SuiteTree that may still expect it.
-type Node struct {
-	Name        string
-	Type        NodeType
-	Children    []*Node
-	Parent      *Node
-	Fn          func(*Context)
-	File        string
-	Line        int
-	PathGen     *PathGenerator
-	BeforeHooks []func(*Context)
-	AfterHooks  []func(*Context)
-	BeforeAll   []func(*Context)
-	AfterAll    []func(*Context)
-}
-
 // registry holds an arena and a stack of node indices. All nodes are stored in the arena.
 type registry struct {
 	mu    sync.Mutex
 	arena *NodeArena
 	stack []int
+	// groupHooks holds BeforeAll/AfterAll registrations (issue #207), nil until the first one. It
+	// lives here rather than on NodeArena so a suite without group hooks allocates nothing for it
+	// (docs/SUITE_HOOKS_CONTRACT.md H10); registry had 8 bytes of slack in its allocation size class
+	// on develop, so this pointer costs nothing either (group_hook_cost_test.go).
+	groupHooks *arenaGroupHooks
 }
 
 // registryStack holds one Analyze/Describe registry stack per goroutine. A flat, ungoroutine-scoped
@@ -102,9 +91,28 @@ func (r *registry) currentSuite() *SuiteTree {
 	return &SuiteTree{Arena: r.arena, RootID: 0}
 }
 
+// currentNodeIDLocked returns the node the DSL is currently building into (the stack top). Callers
+// must hold r.mu.
+//
+// Stack invariant: r.stack is never empty. newRegistry seeds it with the suite root (index 0), the
+// pop closure returned by enterNode only shrinks it while len(r.stack) > 1, and registry is
+// unexported and constructed only by newRegistry, so no zero-value registry can reach this method.
+// The panic is therefore unreachable in correct code. It exists because the alternative the hook and
+// path-generator writers previously used — returning silently on an empty stack — would turn a
+// broken invariant into a discarded registration and a suite that reports green having registered
+// nothing, which is the failure this file is meant to make impossible (issue #151). enterNode
+// indexed the stack top unguarded while the other three guarded it; routing all four through here
+// makes the invariant one statement instead of four inconsistent ones.
+func (r *registry) currentNodeIDLocked() int {
+	if len(r.stack) == 0 {
+		panic("specs: registry node stack is empty; registry invariant violated")
+	}
+	return r.stack[len(r.stack)-1]
+}
+
 func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn func(*Context)) (int, func()) {
 	r.mu.Lock()
-	parentID := r.stack[len(r.stack)-1]
+	parentID := r.currentNodeIDLocked()
 	id := len(r.arena.Nodes)
 	r.arena.Nodes = append(r.arena.Nodes, ArenaNode{
 		Name: name, Parent: parentID, Type: nodeType, Fn: fn,
@@ -125,36 +133,63 @@ func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn 
 	}
 }
 
+// setItKind marks the ItNode at id as kind (issue #245): FIt/SkipIt/PendingIt call this right
+// after enterNode, before its pop, to classify a leaf node enterNode itself doesn't need to know
+// about — Describe/When and plain It never call it, so their nodes keep ArenaNode.Kind's zero
+// value, itNormal.
+func (r *registry) setItKind(id int, kind itKind) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id >= 0 && id < len(r.arena.Nodes) {
+		r.arena.Nodes[id].Kind = kind
+	}
+}
+
 func (r *registry) appendBeforeHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
-	}
-	id := r.stack[len(r.stack)-1]
+	id := r.currentNodeIDLocked()
 	r.arena.BeforeHooks[id] = append(r.arena.BeforeHooks[id], fn)
 }
 
 func (r *registry) appendAfterHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
-	}
-	id := r.stack[len(r.stack)-1]
+	id := r.currentNodeIDLocked()
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
 }
 
-func (r *registry) setPathGen(gen *PathGenerator) {
+// appendBeforeAllHook adds a once-per-group setup hook to the current node (issue #207). Unlike
+// appendBeforeHook, this hook is never flattened onto descendant It nodes — see arenaGroupHooks.
+func (r *registry) appendBeforeAllHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return
+	appendArenaGroupHook(&r.groupHooksLocked().before, r.currentNodeIDLocked(), fn)
+}
+
+// appendAfterAllHook adds a once-per-group teardown hook to the current node (issue #207).
+func (r *registry) appendAfterAllHook(fn func(*Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	appendArenaGroupHook(&r.groupHooksLocked().after, r.currentNodeIDLocked(), fn)
+}
+
+// groupHooksLocked returns r.groupHooks, allocating it on first use. r.mu must be held.
+func (r *registry) groupHooksLocked() *arenaGroupHooks {
+	if r.groupHooks == nil {
+		r.groupHooks = &arenaGroupHooks{}
 	}
-	id := r.stack[len(r.stack)-1]
-	if id < len(r.arena.Nodes) {
-		r.arena.Nodes[id].PathGen = gen
+	return r.groupHooks
+}
+
+// groupHooksOf returns r's group hooks, or nil for a nil registry or one without any.
+func (r *registry) groupHooksOf() *arenaGroupHooks {
+	if r == nil {
+		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.groupHooks
 }
 
 func pushRegistry(r *registry) func() {
@@ -195,6 +230,23 @@ func ensureRegistry() func() {
 	return pushRegistry(newRegistry())
 }
 
+// The Analyze extension surface
+//
+// Analyze, CurrentSuite, CurrentArena, AppendBeforeHook and AppendAfterHook are a
+// deliberate, supported extension API, not legacy residue: they let a custom DSL build a SuiteTree
+// against the registry without going through Describe. Analyze establishes the build context;
+// everything else reads or mutates the registry Analyze pushed for the calling goroutine.
+//
+// Their contract is fail-closed. A mutating helper called with no active registry has nowhere to
+// write, so it panics instead of discarding the registration and letting a suite that registered
+// nothing report green (issue #151). The read-only accessors (CurrentSuite, CurrentArena) return
+// nil outside Analyze, because "no suite is being built" is a legitimate answer to a question, not
+// a lost write.
+//
+// Valid context means "inside the fn passed to Analyze, or inside a Describe/BuildSuite nested in
+// one", on the same goroutine: the registry stack is keyed per goroutine, so a helper called from a
+// goroutine started inside Analyze sees no registry and panics.
+
 // CurrentArena returns the current registry's arena, or nil if none is active.
 func CurrentArena() *NodeArena {
 	reg := currentRegistry()
@@ -207,28 +259,28 @@ func CurrentArena() *NodeArena {
 	return a
 }
 
-// AppendBeforeHook appends a before-each hook to the current node (stack top). No-op if no registry.
+// requireRegistry returns the registry the calling goroutine is building into, and panics naming
+// the helper when there is none. A mutating extension helper has nowhere to record its argument
+// outside Analyze, so failing here is the only way to keep a suite that registered nothing from
+// reporting green.
+func requireRegistry(helper string) *registry {
+	reg := currentRegistry()
+	if reg == nil {
+		panic("specs: " + helper + " called with no active registry; call it inside Analyze(fn) on the same goroutine")
+	}
+	return reg
+}
+
+// AppendBeforeHook appends a before-each hook to the current node (stack top).
+// Panics when called outside Analyze: see "The Analyze extension surface" above.
 func AppendBeforeHook(fn func(*Context)) {
-	reg := currentRegistry()
-	if reg != nil {
-		reg.appendBeforeHook(fn)
-	}
+	requireRegistry("AppendBeforeHook").appendBeforeHook(fn)
 }
 
-// AppendAfterHook appends an after-each hook to the current node. No-op if no registry.
+// AppendAfterHook appends an after-each hook to the current node.
+// Panics when called outside Analyze: see "The Analyze extension surface" above.
 func AppendAfterHook(fn func(*Context)) {
-	reg := currentRegistry()
-	if reg != nil {
-		reg.appendAfterHook(fn)
-	}
-}
-
-// SetPathGen sets the PathGenerator on the current node. Used by path specs.
-func SetPathGen(gen *PathGenerator) {
-	reg := currentRegistry()
-	if reg != nil {
-		reg.setPathGen(gen)
-	}
+	requireRegistry("AppendAfterHook").appendAfterHook(fn)
 }
 
 // Analyze builds a suite tree by running fn with a fresh registry pushed for the calling goroutine.
@@ -245,6 +297,10 @@ func Analyze(fn func()) *SuiteTree {
 	return reg.currentSuite()
 }
 
+// CurrentSuite returns a SuiteTree view over the registry active on the calling goroutine, or nil
+// when none is active. With CurrentArena, AppendBeforeHook and AppendAfterHook it forms
+// the supported extension surface for code that builds into the registry Analyze or Describe pushed
+// — an external DSL or a generator — without needing the unexported registry type.
 func CurrentSuite() *SuiteTree {
 	it := currentRegistry()
 	if it == nil {
@@ -261,22 +317,12 @@ func enterAnalyzeNode(nodeType NodeType, name, file string, line int, fn func(*C
 	return reg.enterNode(nodeType, name, file, line, fn)
 }
 
-// PrintTree prints the pointer-based node tree (legacy).
-func PrintTree(node *Node, depth int, w io.Writer) {
-	if node == nil {
-		return
-	}
-	indent := strings.Repeat("  ", depth)
-	if w == nil {
-		w = io.Discard
-	}
-	_, _ = fmt.Fprintf(w, "%s%s\n", indent, node.Name)
-	for _, child := range node.Children {
-		PrintTree(child, depth+1, w)
-	}
-}
-
-// PrintTreeArena prints the arena-based tree from rootID. Skips suite root (id 0) children when rootID is 0.
+// PrintTreeArena writes the arena-backed declaration tree rooted at rootID to w, one node name per
+// line, indented two spaces per level. It is the supported way to inspect a built suite's shape from
+// outside the package — debugging a Describe/When/It nesting, or rendering the tree in tooling — and
+// it is the only tree printer, because the arena is the live node representation. Pass rootID 0 for
+// the suite root. A nil arena, an out-of-range rootID, and a nil w (treated as io.Discard) are all
+// no-ops rather than panics, so a possibly-absent tree can be printed unguarded.
 func PrintTreeArena(arena *NodeArena, rootID int, depth int, w io.Writer) {
 	if arena == nil || rootID < 0 || rootID >= len(arena.Nodes) {
 		return
@@ -291,23 +337,28 @@ func PrintTreeArena(arena *NodeArena, rootID int, depth int, w io.Writer) {
 	}
 }
 
-func Walk(node *Node, fn func(*Node)) {
-	if node == nil || fn == nil {
-		return
-	}
-	fn(node)
-	for _, child := range node.Children {
-		Walk(child, fn)
-	}
+// captureCallerLocation controls whether file/line are captured for nodes (Describe, When, It).
+// It is atomic because suite construction is safe across concurrent goroutines: a consumer may
+// flip the toggle while another goroutine is declaring specs.
+var captureCallerLocation atomic.Bool
+
+// SetCaptureCallerLocation enables or disables caller-location capture for declaration nodes
+// (Describe, When, It). When disabled (the default), callerLocation returns "", 0 without
+// calling runtime.Caller, saving ~21% of runner allocations. Enable it when ArenaNode.File and
+// ArenaNode.Line are needed (e.g. IDE integration, tree printing). It is safe to call from any
+// goroutine, including while suites are being declared.
+func SetCaptureCallerLocation(enabled bool) {
+	captureCallerLocation.Store(enabled)
 }
 
-// CaptureCallerLocation controls whether file/line are captured for nodes (Describe, When, It).
-// When false (default), callerLocation returns "", 0 without calling runtime.Caller, saving
-// ~21% of runner allocations. Set to true when locations are needed (e.g. IDE, tree printing).
-var CaptureCallerLocation bool
+// CaptureCallerLocationEnabled reports whether caller-location capture is currently enabled.
+// It is safe to call from any goroutine.
+func CaptureCallerLocationEnabled() bool {
+	return captureCallerLocation.Load()
+}
 
 func callerLocation(skip int) (string, int) {
-	if !CaptureCallerLocation {
+	if !captureCallerLocation.Load() {
 		return "", 0
 	}
 	_, file, line, ok := runtime.Caller(skip)

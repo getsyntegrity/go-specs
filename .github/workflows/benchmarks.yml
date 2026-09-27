@@ -2,11 +2,30 @@ name: Benchmark Suite
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
+
+# Least-privilege default. `bench` overrides to `contents: write` at the job level (below)
+# because it commits generated charts back to the repo; `ratio-guard` only reads.
+permissions:
+  contents: read
+
+# One in-flight run per ref: `bench` commits charts back to the same branch a second overlapping
+# run would also push to, and there's no PR head ref here to make cancellation safe the way
+# ci.yml's does, so this only de-duplicates queued runs rather than cancelling one already running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   bench:
+    # Chart generation and the commit-back step below are expensive and mutate the repo, so they
+    # stay restricted to main regardless of trigger: push-to-main, or a manual dispatch targeting
+    # main. A manual dispatch on another ref (e.g. a feature branch, to collect ratio-guard numbers
+    # from GitHub Actions) must not also regenerate and commit charts back onto that branch -- it
+    # did, once, before this condition was tightened to check github.ref unconditionally. The
+    # lightweight ratio-guard job below is the one that also runs on develop -- see its comment.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -19,10 +38,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Benchmark numbers are only comparable across runs when the toolchain
+      # is, so this job installs the same pinned version as CI rather than a
+      # floating minor.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Create results directory
@@ -55,3 +77,37 @@ jobs:
             git commit -m "chore: update benchmark charts [skip ci]"
             git push
           fi
+
+  ratio-guard:
+    # In-process baseline ratio guard (#243): compares the Runner/Describe cost against a
+    # hand-written no-framework loop in the same process, same run, rather than asserting a raw
+    # ns/op threshold. That reduces the effect of CPU speed, but the ratio is still not
+    # machine-independent (Describe measured ~210-257x on a laptop vs ~79-115x on this runner), so
+    # the bounds in benchmarks/regression_guard_test.go are calibrated for ubuntu-latest and must
+    # be re-measured if the runner image changes; a local `make bench-ratio-guard` result does not
+    # transfer to these bounds. See BENCHMARKS.md. Opt-in (GOSPECS_BENCH_GUARD=1 via
+    # `make bench-ratio-guard`) and kept out of ci.yml/`make bench-smoke` deliberately, so it never
+    # sits on the PR critical path (pull_request is not one of this workflow's triggers).
+    #
+    # Runs on push to develop, not just main: develop is the integration branch every feature, fix
+    # and refactor lands on (CONTRIBUTING.md), and main only moves on a release/hotfix PR, so
+    # main-only would leave the guard checking a branch that barely moves while regressions like
+    # #235 accrue on develop commit by commit. It is its own job, separate from `bench` above, so
+    # this more frequent trigger does not also run (or repeatedly no-op) the expensive chart
+    # generation/commit-back step, which stays main-only.
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+
+      - name: Benchmark ratio guard
+        run: make bench-ratio-guard

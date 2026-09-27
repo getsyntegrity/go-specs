@@ -21,13 +21,15 @@ func NewSpy() *Spy {
 	return &Spy{}
 }
 
-// Call records an invocation with the given arguments.
+// Call records an invocation with the given arguments. The argument slice is copied, so a caller
+// that passes a slice with args... and mutates it afterwards does not rewrite the recorded call.
 func (s *Spy) Call(args ...any) {
 	if s == nil {
 		return
 	}
+	recorded := append([]any(nil), args...)
 	s.mu.Lock()
-	s.calls = append(s.calls, Call{Args: args})
+	s.calls = append(s.calls, Call{Args: recorded})
 	s.mu.Unlock()
 }
 
@@ -92,12 +94,15 @@ func (s *Spy) CalledWith(matchers ...ArgMatcher) bool {
 }
 
 // CalledTimes asserts the spy was called exactly n times; calls t.Fatalf otherwise.
-func (s *Spy) CalledTimes(t *testing.T, n int) {
+// It accepts any testing.TB, so it works from tests, benchmarks, specs.Context (ctx.T), and fakes.
+// The count is read once, so the reported value is the one that was checked.
+func (s *Spy) CalledTimes(t testing.TB, n int) {
 	t.Helper()
 	if s == nil {
 		t.Fatal("spy is nil")
+		return
 	}
-	if s.CallCount() != n {
-		t.Fatalf("expected %d calls, got %d", n, s.CallCount())
+	if got := s.CallCount(); got != n {
+		t.Fatalf("expected %d calls, got %d", n, got)
 	}
 }

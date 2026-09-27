@@ -107,31 +107,3 @@ func TestInterfaceWithSpy(t *testing.T) {
 		})
 	})
 }
-
-// TestSpyWithPaths uses Paths() to automatically scan combinations; each run gets path values via ctx.Path().
-func TestSpyWithPaths(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
-	specs.Describe(t, "AlertService with paths", func(s *specs.Spec) {
-		s.Paths(func(p *specs.PathBuilder) {
-			p.Bool("notify")
-			p.IntRange("severity", 1, 3) // 1=low, 2=medium, 3=high
-		}).It("notifies with message built from path when notify is true", func(ctx *specs.Context) {
-			notify := ctx.Path().Bool("notify")
-			severity := ctx.Path().Int("severity")
-			spy := mock.NewSpy()
-			svc := &AlertService{Notifier: &SpyNotifier{Spy: spy}}
-			msg := "alert"
-			if notify {
-				svc.RaiseAlert(msg)
-			}
-			if notify {
-				ctx.Expect(spy.CallCount()).ToEqual(1)
-				ctx.Expect(spy.CalledWith(mock.Equal(msg))).To(specs.BeTrue())
-			} else {
-				ctx.Expect(spy.CallCount()).ToEqual(0)
-			}
-			// severity is available for building richer messages or assertions
-			ctx.Expect(severity >= 1 && severity <= 3).To(specs.BeTrue())
-		})
-	})
-}

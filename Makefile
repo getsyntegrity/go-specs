@@ -7,23 +7,35 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-report bench-compare lint build tidy clean
+.PHONY: help test test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version
 
 # Default target: show all tasks with short descriptions
 help:
 	@echo "go-specs Makefile targets (run from repo root):"
 	@echo ""
-	@echo "  make test          Run tests across all modules"
+	@echo "  make test          Run all tests"
 	@echo "  make test-race     Run tests with race detector"
 	@echo "  make coverage      Run tests with coverage report (coverage.out)"
 	@echo "  make bench         Quick benchmark run (terminal output)"
+	@echo "  make bench-smoke   Run every benchmark once (path coverage, no timings) -- what CI runs"
 	@echo "  make bench-report  Benchmarks with 10 iterations → benchmarks/results/current.txt"
 	@echo "  make bench-compare Compare previous.txt vs current.txt (benchstat)"
-	@echo "  make lint          Lint (golangci-lint or go vet)"
-	@echo "  make build         Build all modules and specs-cli"
+	@echo "  make bench-e2e     End-to-end cost on the real *testing.T path (every spec a subtest)"
+	@echo "  make bench-ratio-guard  In-process baseline ratio guard (#243, off the PR critical path)"
+	@echo "  make fmt           Rewrite tracked Go files with gofmt"
+	@echo "  make fmt-check     Fail when any tracked Go file is not gofmt-clean"
+	@echo "  make lint          Lint with golangci-lint (go vet only when it is not installed)"
+	@echo "  make build         Build all packages in the module"
 	@echo "  make tidy          go mod tidy"
-	@echo "  make clean         Remove specs-cli, coverage.*, benchmark results"
+	@echo "  make clean         Remove coverage.* and benchmark results"
+	@echo "  make check-go-version  Verify every go.mod matches the MAJOR.MINOR.0 floor derived from .go-version"
 	@echo ""
+
+# Fail when any go.mod's `go` directive is not MAJOR.MINOR.0 of .go-version
+# (the exact toolchain patch pin). Same script CI runs, so a bad bump is
+# caught before pushing.
+check-go-version:
+	./.github/scripts/check-go-version.sh
 
 # Run tests
 test:
@@ -42,11 +54,46 @@ coverage:
 bench:
 	go test ./benchmarks -run='^$$' -bench=. -benchmem
 
+# Execute every benchmark body exactly once, module-wide.
+#
+# This is coverage, not measurement. `go test ./...` never runs a Benchmark
+# function, so without this target benchmark-only code paths compile and are
+# never executed -- a panic in one ships green. -benchtime 1x runs each
+# benchmark for a single iteration: enough to execute the path, useless as a
+# timing, which is deliberate so that neither this target nor the CI step that
+# calls it ever fails on a slow or noisy machine.
+#
+# Real numbers come from `make bench-report` (or benchmarks.yml on main).
+# Allocation *guarantees* are gated by specs/allocation_contract_test.go under
+# `make test`, not here. See BENCHMARKS.md for contractual vs observational.
+bench-smoke:
+	go test -run='^$$' -bench=. -benchtime=1x -benchmem ./...
+
 # Run benchmarks with multiple iterations and write report to benchmarks/results/current.txt
 bench-report:
 	@mkdir -p $(BENCH_RESULTS)
 	go test ./benchmarks -run='^$$' -bench=. -benchmem -count=10 2>&1 | tee $(BENCH_RESULTS)/current.txt
 	@echo "Report written to $(BENCH_RESULTS)/current.txt"
+
+# End-to-end cost of a suite on the real *testing.T path, where every spec is a t.Run subtest.
+# The Benchmark* functions run on *testing.B, which skips the per-spec subtest; this is the number
+# a user's `go test` run actually pays. Observational only -- see benchmarks/e2e_test.go.
+bench-e2e:
+	GOSPECS_E2E=1 GOSPECS_E2E_RUNS=31 go test -count=1 -v -run '^TestEndToEnd_SubtestPath$$' ./benchmarks | grep '^E2E'
+
+# In-process baseline ratio guard (#243): fails the Runner or Describe check if its per-spec cost
+# grows beyond a bound (25x / 150x) relative to a hand-written no-framework loop measured in the
+# same process, same run. The ratio cancels out machine speed for the *shape* of the comparison,
+# but the bounds themselves are calibrated against GitHub Actions (ubuntu-latest) specifically --
+# see BENCHMARKS.md and benchmarks/regression_guard_test.go for the CI measurements they come from.
+# Running this target on a different machine (a laptop, say) can show a meaningfully different
+# ratio, especially for Describe: a local FAIL here is not on its own evidence of a regression,
+# only benchmarks.yml's ratio-guard job (or a same-machine before/after comparison, e.g. via
+# GOSPECS_BENCH_GUARD_BOUND_DESCRIBE) is. Opt-in (GOSPECS_BENCH_GUARD=1) so it never sits on the PR
+# critical path; benchmarks.yml runs it on push to develop, main, and workflow_dispatch, in its own
+# `ratio-guard` job.
+bench-ratio-guard:
+	GOSPECS_BENCH_GUARD=1 go test -count=1 -v -run '^TestBenchmarkRatioGuard$$' ./benchmarks
 
 # Compare previous vs current benchmark report (requires: go install golang.org/x/perf/cmd/benchstat@latest)
 bench-compare:
@@ -55,9 +102,46 @@ bench-compare:
 	@test -f $(BENCH_RESULTS)/current.txt || (echo "Run 'make bench-report' first" && exit 1)
 	$(BENCHSTAT) $(BENCH_RESULTS)/previous.txt $(BENCH_RESULTS)/current.txt
 
-# Lint (golangci-lint if available, else go vet)
+# Format every tracked Go file.
+#
+# The file list comes from `git ls-files`, not from `gofmt -l .`: gofmt walks
+# into dotted directories, and a developer checkout can hold nested clones
+# under .claude/worktrees/ whose formatting is not this tree's business. The
+# tracked set is exactly what a fresh CI checkout contains, so local and CI
+# agree while a developer's scratch worktrees stay out of it.
+fmt:
+	@files="$$(git ls-files '*.go')"; \
+	if [ -n "$$files" ]; then gofmt -w $$files; fi
+
+# Fail (non-zero) when any tracked Go file is not gofmt-clean, and name them.
+fmt-check:
+	@files="$$(git ls-files '*.go')"; \
+	if [ -z "$$files" ]; then exit 0; fi; \
+	drift="$$(gofmt -l $$files)"; \
+	if [ -n "$$drift" ]; then \
+		echo "gofmt drift in:"; \
+		echo "$$drift" | sed 's/^/  /'; \
+		echo ""; \
+		echo "Run 'make fmt' to fix."; \
+		exit 1; \
+	fi
+
+# Lint the whole module.
+#
+# This is a real if/else, not `which golangci-lint && golangci-lint run || go
+# vet`: in that shell pattern a golangci-lint run that *found lint errors*
+# falls through to `go vet`, and a passing vet makes the whole target exit 0 --
+# silently hiding the failure. Here go vet runs only when golangci-lint is
+# genuinely absent, so an installed linter's non-zero exit is the target's
+# non-zero exit.
 lint:
-	@which golangci-lint >/dev/null 2>&1 && golangci-lint run ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... || (go vet ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...)
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint run ./..."; \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not installed; falling back to: go vet ./..."; \
+		go vet ./...; \
+	fi
 
 # Build all packages
 build:
@@ -68,5 +152,5 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f specs-cli coverage.out coverage.html
+	rm -f coverage.out coverage.html
 	rm -f $(BENCH_RESULTS)/*.txt $(BENCH_RESULTS)/*.png

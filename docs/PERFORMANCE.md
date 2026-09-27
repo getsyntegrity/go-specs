@@ -73,7 +73,9 @@ flowchart LR
     Gomega[Gomega] --> ManyAlloc[matcher allocations]
 ```
 
-go-specs performs **no allocations during test execution** on the success path. Context and expectation objects are pooled; the runner reuses one Context per spec (or per group). Assertions use generics and direct comparison, so no heap allocations occur for typical equality checks.
+go-specs performs **no allocations during test execution** on the success path of its typed equality assertions — `EqualTo(ctx, x, y)` and `ExpectT(ctx, x).ToEqual(y)` — and that holds for a value of any type or size, not only for small integers. The Context is pooled and the runner reuses one per spec (or per group); expectations are not pooled — they never escape the assertion that consumes them, so escape analysis keeps them on the stack. Those assertions use generics and direct comparison, and hold the value at its own type, so nothing is converted to an interface.
+
+The two forms that do take an `any` pay for the conversion. `ExpectT(x).To(matcher)` costs one allocation and `ctx.Expect(x).ToEqual(y)` costs two, for any value Go cannot convert for free — every string, every struct, and every integer outside the runtime's static small-integer table. The matcher cost belongs to the `Matcher` interface being `Match(any)`: a typed value cannot reach a matcher without one conversion, and only a generic `Matcher[T]` would remove it. Exact per-shape counts are published in [../README.md](../README.md) and pinned by `TestAssertionAllocationsByValueShape`.
 
 Testify’s assertion path avoids reflection but still involves helper and formatting code paths that can allocate in failure cases; the success path is low-allocation. Gomega allocates matcher objects and supporting structures per expectation, leading to multiple allocations per assertion.
 
@@ -149,7 +151,7 @@ The main design choices that make go-specs extremely fast:
 | Choice | Effect |
 | ------ | ------ |
 | **Compiled execution plan** | Suites are compiled once into a flat step list. No hook resolution or tree traversal at run time. |
-| **Zero allocations** | Context and expectations are pooled; the assertion and runner success path allocate nothing. |
+| **Zero allocations** | The Context is pooled; expectations are stack-allocated. The assertion and runner success path allocate nothing. |
 | **No reflection** | Assertions use generics and direct comparison. No `reflect.DeepEqual` or type switches in the hot path. |
 | **Direct function dispatch** | Each step is invoked as `step(ctx)`. No indirection or dynamic dispatch in the inner loop. |
 | **Sequential memory access** | The plan is a contiguous slice; the runner walks it in order, which is cache-friendly. |

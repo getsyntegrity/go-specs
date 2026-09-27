@@ -51,8 +51,9 @@ func TestTotalsAdd(t *testing.T) {
 	tot.add(StatusError)
 	tot.add(StatusSkipped)
 	tot.add(StatusFiltered)
+	tot.add(StatusPending)
 
-	want := Totals{Total: 5, Passed: 1, Failed: 1, Error: 1, Skipped: 1, Filtered: 1}
+	want := Totals{Total: 6, Passed: 1, Failed: 1, Error: 1, Skipped: 1, Filtered: 1, Pending: 1}
 	if tot != want {
 		t.Fatalf("Totals = %+v, want %+v", tot, want)
 	}

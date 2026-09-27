@@ -13,10 +13,11 @@ type SuiteEndEvent struct {
 	Name          string
 	Time          time.Time
 	Duration      time.Duration // elapsed time between this suite's SuiteStartEvent and this event
-	TotalSpecs    int           // passed + failed + skipped + filtered
+	TotalSpecs    int           // passed + failed + skipped + filtered + pending
 	FailedSpecs   int
 	SkippedSpecs  int
 	FilteredSpecs int // specs excluded by external test selection (e.g. `go test -run`) before their body ran
+	PendingSpecs  int // compile-time PendingIt/Pending specs: declared but not implemented, body never ran
 }
 
 // SpecStartEvent captures the start of an individual spec (It/Then).
@@ -32,6 +33,36 @@ type SpecStartEvent struct {
 	Time time.Time
 }
 
+// HookKind marks whether a spec-shaped event is a synthetic group hook case emitted by a
+// BeforeAll/AfterAll failure (issue #207, docs/SUITE_HOOKS_CONTRACT.md H8), or a real spec. It is
+// a compact uint8 enum rather than a string so that adding it to SpecResultEvent (see below) costs
+// nothing: SpecResultEvent is copied by value once per spec on every engine, so any size growth is
+// paid by every suite, including one that never registers a BeforeAll/AfterAll at all — exactly
+// what H10 ("no cost for suites without BeforeAll/AfterAll") forbids. A string field here would
+// grow SpecResultEvent by 16 bytes; HookKind fits in existing struct padding instead (see
+// SpecResultEvent.Hook).
+type HookKind uint8
+
+const (
+	// HookNone is the zero value: an ordinary spec, not a synthetic hook case.
+	HookNone HookKind = iota
+	HookBeforeAll
+	HookAfterAll
+)
+
+// String returns "BeforeAll", "AfterAll", or "" for HookNone — the same text callers already read
+// off Case.Hook as a plain string.
+func (k HookKind) String() string {
+	switch k {
+	case HookBeforeAll:
+		return "BeforeAll"
+	case HookAfterAll:
+		return "AfterAll"
+	default:
+		return ""
+	}
+}
+
 // SpecResultEvent captures the result of an individual spec.
 //
 // SpecStartEvent is always the exact event this spec's SpecStarted call sent (same Time, not
@@ -39,16 +70,45 @@ type SpecStartEvent struct {
 // SpecStartEvent here instead of reusing the original would silently corrupt Duration too.
 type SpecResultEvent struct {
 	SpecStartEvent
-	Failed  bool
-	Skipped bool // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
+	Failed bool
+	// Skipped is true for a compile-time SkipIt/Skip spec (body never ran, Duration is 0) or for a
+	// spec whose own subtest skipped at runtime via ctx.T.Skip/Skipf/SkipNow (issue #254): the body
+	// did start running there, so Duration may be non-zero. Failed is always false either way — a
+	// body that fails and then calls SkipNow is reported Failed instead, matching go test itself
+	// (a failed test that later skips still prints FAIL, not SKIP; see the testing package's
+	// tRunner). Both causes share this one field rather than a separate runtime-skip marker: nothing
+	// downstream (report.Status, JUnit's <skipped>) can distinguish them anyway, and no consumer
+	// depends on Duration being 0 for a skipped case.
+	Skipped bool
 	// Filtered is true when a runnable spec was excluded by external test selection — e.g. a `go test
 	// -run` pattern that does not match this spec's subtest name — so its body never ran either.
-	// Failed is always false and Duration is always 0, exactly as for Skipped, but the cause differs:
-	// Skipped is a decision the suite itself made (XIt/Skip), Filtered is a decision made outside it.
-	// A spec is never both Skipped and Filtered.
+	// Failed is always false and Duration is always 0, exactly as for a compile-time Skipped spec,
+	// but the cause differs: Skipped is a decision the suite itself made (XIt/Skip, or a runtime
+	// ctx.T.Skip), Filtered is a decision made outside it. A spec is never both Skipped and Filtered.
 	Filtered bool
-	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped or Filtered
-	Message  string        // short failure summary; empty when not Failed, and also empty for an
+	// Pending is true for a compile-time PendingIt/Pending spec: the specification exists but its
+	// implementation does not. Body never ran, Duration is always 0, and Failed is always false —
+	// same shape as a compile-time Skipped spec — but the cause differs: Skipped is "intentionally
+	// not executed", Pending is "not implemented yet". A spec is never more than one of
+	// Skipped/Filtered/Pending.
+	Pending bool
+	// Hook marks this result as a synthetic group hook case (issue #207, docs/SUITE_HOOKS_CONTRACT.md
+	// H8): HookBeforeAll or HookAfterAll, HookNone for a real spec. It lives only here, on the
+	// result event — the matching SpecStartEvent this spec's SpecStarted call carried is never
+	// marked, so a consumer that wants to distinguish a hook case structurally (never by pattern
+	// matching Name's bracketed "[BeforeAll]"/"[AfterAll]" text, which is presentation, not
+	// identity) must attribute at SpecFinished. Only a failed hook produces an event at all: a
+	// passing BeforeAll/AfterAll emits nothing, so a suite that registers no group hooks never sets
+	// this field and its report is unaffected. Placed next to Failed/Skipped/Filtered/Pending
+	// deliberately: it occupies padding those bools already leave before Duration, so
+	// SpecResultEvent's size is unchanged from before this field existed (H10) — see
+	// report/hook_case_test.go's TestSpecResultEventSizeUnchanged.
+	Hook     HookKind
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when
+	// Filtered or Pending, and for a compile-time Skipped spec, since none of those ever ran a body.
+	// A runtime-Skipped spec (ctx.T.Skip/Skipf/SkipNow, issue #254) is the one Skipped case where
+	// Duration may be non-zero: its body did start running before it skipped.
+	Message string // short failure summary; empty when not Failed, and also empty for an
 	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the
 	// goroutine right there, before the message this event would carry is ever built (see
 	// specs.runStepRecovered). This event is still emitted for that spec — Failed reflects it — as

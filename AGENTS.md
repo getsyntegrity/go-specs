@@ -23,7 +23,6 @@ If any of those files exist, they are considered part of the effective repositor
 - deterministic execution
 - low allocations
 - typed expectations
-- path/combinatorial exploration
 
 Agents must optimize and extend the framework **without degrading correctness, determinism, or benchmark integrity**.
 
@@ -77,5 +76,4 @@ specs.Describe(...)
 specs.When(...)
 specs.It(...)
 ctx.Expect(...).ToEqual(...)
-specs.Paths(...)
 ```

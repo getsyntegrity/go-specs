@@ -16,6 +16,7 @@ func TestClassifyStatus(t *testing.T) {
 		{"recovered panic has output, classified as error", SpecResultEvent{Failed: true, Output: "goroutine 1 [running]:\n..."}, StatusError},
 		{"skipped", SpecResultEvent{Skipped: true}, StatusSkipped},
 		{"filtered", SpecResultEvent{Filtered: true}, StatusFiltered},
+		{"pending", SpecResultEvent{Pending: true}, StatusPending},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

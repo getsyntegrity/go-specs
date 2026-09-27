@@ -4,7 +4,6 @@
 package specs
 
 import (
-	"runtime/debug"
 	"testing"
 )
 
@@ -59,7 +58,7 @@ func NewBlockRunner(fns []func(*Context), blocks []specBlock) *BlockRunner {
 // from the pool, reused for every spec. No allocations in the loop.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure
-// (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec in the
+// (via reportRecoveredPanic, message and stack trace), and the next spec in the
 // block, and the next block, still run.
 func (r *BlockRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.blocks) == 0 {
@@ -67,9 +66,8 @@ func (r *BlockRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
-	ctx.SetPathValues(PathValues{})
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	runBlocks(ctx, r.fns, r.blocks)
 }
@@ -91,12 +89,7 @@ func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 // of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
 // recorded by the backend and must not be reported a second time.
 func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 

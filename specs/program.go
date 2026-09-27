@@ -6,7 +6,6 @@
 package specs
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -36,20 +35,28 @@ type step func(*Context)
 // (SpecStarted+SpecFinished{Skipped:true}, no body run) independently of whether this group's real
 // specs run at all.
 //
+// pendingSpecs is the same mechanism for compile-time-pending specs (PendingIt/Pending, #208):
+// buffered by finalize the same way skipped is, and reported by Runner as
+// SpecStarted+SpecFinished{Pending:true} — distinct from Skipped, since "not implemented yet" is a
+// different fact from "intentionally not executed". pendingSpecScopeNames parallels it, same as
+// skippedScopeNames parallels skipped.
+//
 // scopeNames parallels names, holding each spec's raw (unjoined) enclosing Describe names —
 // outermost first, captured by Builder at registration time (see specItem.scopeNames) — for
 // SpecStartEvent.Path (see specPath). Like names, it is left nil for a parallelStep group.
 // skippedScopeNames is the same, parallel to skipped.
 type group struct {
-	before            []step
-	specs             []step
-	names             []string
-	fullNames         []string
-	scopeNames        [][]string
-	after             []step
-	hookKey           string
-	skipped           []string
-	skippedScopeNames [][]string
+	before                []step
+	specs                 []step
+	names                 []string
+	fullNames             []string
+	scopeNames            [][]string
+	after                 []step
+	hookKey               string
+	skipped               []string
+	skippedScopeNames     [][]string
+	pendingSpecs          []string
+	pendingSpecScopeNames [][]string
 }
 
 // specPath returns g.specs[i]'s SpecStartEvent.Path: its declared enclosing scope names (outermost
@@ -85,6 +92,21 @@ func (g *group) skippedPath(i int) []string {
 	return append(path, g.skipped[i])
 }
 
+// pendingPath is specPath for g.pendingSpecs[i] (a compile-time-pending spec), same shape and same
+// freshly-allocated contract as skippedPath.
+func (g *group) pendingPath(i int) []string {
+	if i < 0 || i >= len(g.pendingSpecs) {
+		return nil
+	}
+	var scopes []string
+	if i < len(g.pendingSpecScopeNames) {
+		scopes = g.pendingSpecScopeNames[i]
+	}
+	path := make([]string, 0, len(scopes)+1)
+	path = append(path, scopes...)
+	return append(path, g.pendingSpecs[i])
+}
+
 // subtestName returns the Go subtest identity for g.specs[i]: its full Describe breadcrumb, falling
 // back to the leaf name for a group built without breadcrumbs (a hand-built group in a test, or a
 // spec declared outside any Describe, where the leaf name already is the whole breadcrumb).
@@ -115,13 +137,20 @@ func specName(names []string, i int) string {
 // subtest goroutine — but Message/Output stay empty for it: Goexit unwinds past the point where
 // this struct would otherwise be filled in; see runStepRecovered.
 //
-// Filtered is true when external test selection (e.g. `go test -run`) discarded the spec's subtest
-// before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc
+// Filtered is true when external test selection (e.g. `go test -run` pattern) discarded the spec's
+// subtest before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc
 // comments for why this can't be read from testing.T.Run's own bool return. Message/Output stay
 // empty for it, same as when nothing failed: nothing ran to produce either.
+//
+// Skipped is true when the spec's own subtest skipped at runtime (ctx.T.Skip, Skipf or SkipNow) and
+// the spec did not also fail — a failure followed by SkipNow stays Failed, matching go test itself
+// (#254). It is distinct from the suite's compile-time SkipIt/Skip marks, which never reach this
+// struct at all: they carry no before/body/after and are reported directly (specSkipped/reportMarks)
+// without ever running, so there is no specResult to build for them.
 type specResult struct {
 	Failed   bool
 	Filtered bool
+	Skipped  bool
 	Message  string
 	Output   string
 }
@@ -141,6 +170,11 @@ type specExecutionObserver interface {
 	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
 	// concept, so it never needs it.
 	specSkipped(name string, path []string)
+	// specPending reports one compile-time-pending spec (PendingIt/Pending, #208): a single
+	// SpecStarted + SpecFinished{Pending: true} pair, with no body ever run — mirroring
+	// specSkipped, but distinct from it (see runner.go's reportPending). Only Runner.Run's
+	// sequential group execution calls this, same as specSkipped.
+	specPending(name string, path []string)
 }
 
 // Program is a compiled execution program. Groups run in order; within a group, every spec runs its
@@ -166,7 +200,7 @@ func runAll(steps []step) step {
 //
 // Each goroutine runs its own *Context, pulled from contextPool and backed by a parallelBackend
 // (the same type RunParallel's worker pool uses) with abortOnFatal set, instead of sharing ctx:
-// Context.failed and the underlying *testing.T are not safe for concurrent access, and
+// Context's failure record and the underlying *testing.T are not safe for concurrent access, and
 // testing.T.FailNow (used by Fatal/Fatalf) must only be called from the goroutine running the
 // test. Once every goroutine has finished, failures are replayed on ctx from the calling
 // goroutine, so Fatalf/FailFast still happen on the right goroutine.
@@ -192,7 +226,7 @@ func runAll(steps []step) step {
 // execObserver (i.e. Runner.Run has a Reporter), each goroutine reports its own spec directly —
 // SpecStarted right before running it, SpecFinished once results[i] is known (after classifying
 // nil/parallelAbort{}/a real panic) — instead of the group being reported as a single opaque unit.
-// Failed is that spec's own result, not the group's aggregate ctx.failed. Events from different
+// Failed is that spec's own result, not the group's aggregate failure record. Events from different
 // goroutines may interleave in any order; only started-before-finished is guaranteed per spec.
 // obs is read once from ctx before any goroutine starts, then only read (never mutated) by them,
 // so no synchronization is needed for the pointer itself; obs's own methods serialize the actual
@@ -206,9 +240,8 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		if len(steps) == 0 {
 			return
 		}
-		pathValues := ctx.Path()
 		obs := ctx.execObserver
-		results := make([]parallelFailure, len(steps))
+		results := make([]failureRecord, len(steps))
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
@@ -217,8 +250,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 			go func() {
 				defer wg.Done()
 				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
-				child, release := acquireContext(backend)
-				child.SetPathValues(pathValues)
+				child := acquireContext(backend)
 				var started report.SpecStartEvent
 				if obs != nil {
 					var scopes []string
@@ -231,29 +263,20 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 					started = obs.specStarted(name, path)
 				}
 				defer func() {
-					switch r := recover(); r {
-					case nil:
-						// spec ran to completion (or a Fatal/Fatalf/FailNow already returned
-						// normally via a different path — not reachable with abortOnFatal, kept
-						// for clarity).
-					case parallelAbort{}:
-						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
-					default:
-						if results[i].Message == "" {
-							results[i] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
-						}
-					}
+					// Recording rule shared with the worker-pool engines — see panic_report.go. Only
+					// the reporting and release below are specific to this path.
+					recoverParallelSpecFailure(recover(), &results, i)
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i].Message != "", Message: results[i].Message})
+						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message})
 					}
-					release()
+					releaseContext(child)
 				}()
 				s(child)
 			}()
 		}
 		wg.Wait()
 		for _, r := range results {
-			if r.Message != "" {
+			if r.Failed {
 				ctx.recordFailure()
 				break
 			}

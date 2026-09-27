@@ -1,11 +1,11 @@
 # Payment system example
 
-A small **payment system** implemented and tested with the go-specs framework. The example shows BDD-style tests, automatic path exploration, invariant/property testing, shrinking of failing inputs, mocks and spies, and snapshot testing. The system includes an intentional bug so that exploration and shrinking can be demonstrated.
+A small **payment system** implemented and tested with the go-specs framework. The example shows BDD-style tests, invariant checks over representative inputs, mocks and spies, and snapshot testing.
 
 ## System overview
 
 - **Deposit(balance, amount)** — returns `balance + amount`.
-- **Withdraw(balance, amount)** — returns the new balance after withdrawing `amount`. Contains a **bug** when `amount > balance` (returns a negative value).
+- **Withdraw(balance, amount)** — returns the new balance after withdrawing `amount`; never negative (returns `0` when `amount > balance`).
 - **PaymentService** — holds a **Ledger** and exposes **Transfer(from, to, amount)** to move `amount` between two balances and optionally record the operation via the ledger.
 - **Ledger** — interface for recording transfers; implemented with mocks in tests.
 
@@ -14,9 +14,9 @@ A small **payment system** implemented and tested with the go-specs framework. T
 ```
 examples/payment_system/
     ledger.go           # Ledger interface
-    payment.go          # Deposit, Withdraw (with bug)
+    payment.go          # Deposit, Withdraw
     payment_service.go  # PaymentService and Transfer
-    payment_test.go     # BDD + path exploration + invariant
+    payment_test.go     # BDD + invariant check
     payment_mock_test.go# Mock/spy verification
     snapshot_test.go    # Snapshot testing
     README.md
@@ -27,19 +27,6 @@ examples/payment_system/
 ```bash
 go test ./examples/payment_system
 ```
-
-Because `Withdraw` is buggy, the invariant test fails and the framework reports a minimal failing input, for example:
-
-```
-FAIL  withdraw invariants
-
-minimal failing input:
-
-balance = 0
-amount = 1
-```
-
-(Exact numbers may vary; the shrinker finds a minimal case such as `balance=0, amount=1` or `balance=10, amount=11`.)
 
 ## BDD testing
 
@@ -55,46 +42,23 @@ specs.Describe(t, "deposit", func(s *specs.Spec) {
 
 Nested `Describe` blocks and multiple `It` specs keep the suite readable and organized.
 
-## Automatic exploration
+## Invariant checking
 
-The withdraw invariant is checked over a large input space without hand-written cases:
+The withdraw invariant — "never produces a negative balance" — is checked across a representative sample of inputs (including `amount > balance`) inside a single `It`:
 
 ```go
-s.Paths(func(p *specs.PathBuilder) {
-    p.IntRange("balance", 0, 1000)
-    p.IntRange("amount", 0, 1000)
-}).ExploreSmart(5000).It("never produces negative balance", func(ctx *specs.Context) {
-    balance := ctx.Path().Int("balance")
-    amount := ctx.Path().Int("amount")
-    newBalance := Withdraw(balance, amount)
-    ctx.Expect(newBalance >= 0).To(specs.BeTrue())
+s.It("never produces negative balance", func(ctx *specs.Context) {
+    cases := []struct{ balance, amount int }{
+        {0, 0}, {0, 1}, {100, 50}, {50, 100}, {1000, 1000},
+    }
+    for _, c := range cases {
+        newBalance := Withdraw(c.balance, c.amount)
+        ctx.Expect(newBalance >= 0).To(specs.BeTrue())
+    }
 })
 ```
 
-- **Paths** defines dimensions (`balance`, `amount`).
-- **ExploreSmart(5000)** runs up to 5000 combinations (boundary, random, coverage-guided).
-- **ctx.Path()** provides the current combination.
-
-## Bug discovery
-
-The property “withdraw never produces negative balance” is false when `amount > balance`. The framework:
-
-1. Explores many inputs.
-2. Stops at the first failing assertion.
-3. Runs the **shrinker** to reduce the failing input.
-4. Prints the **minimal failing input** in the failure message.
-
-No need to guess the failing case; exploration finds it and shrinking minimizes it.
-
-## Shrinking
-
-When a path spec fails, go-specs shrinks the failing input:
-
-- Reduces each dimension (e.g. binary search toward zero for integers).
-- Re-runs the test for each candidate; keeps a smaller input if the test still fails.
-- Stops when no smaller failing input exists.
-
-The failure output shows this minimal input for easy debugging.
+For broader input-space exploration or shrinking of failing inputs, use a dedicated property-testing tool such as `go test -fuzz`, [`rapid`](https://github.com/flyingmutant/rapid), or [`gopter`](https://github.com/leanovate/gopter) alongside go-specs — see the CHANGELOG for migration notes.
 
 ## Mock verification
 
@@ -130,17 +94,3 @@ Snapshots live in `__snapshots__/snapshot_test.snap.json`. To create or update t
 ```bash
 GO_SPECS_UPDATE_SNAPSHOTS=1 go test ./examples/payment_system -run TestTransferSnapshot
 ```
-
-## Deterministic execution
-
-Path exploration and shrinking use deterministic seeds where applicable so that repeated runs reproduce the same exploration and minimal failing input for the same code.
-
-## Fixing the bug
-
-To make all tests pass, change **Withdraw** in `payment.go` so that when `amount > balance` it does not return a negative value (e.g. return `balance` unchanged or signal an error). Then:
-
-```bash
-go test ./examples/payment_system
-```
-
-should pass.

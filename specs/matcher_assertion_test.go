@@ -1,9 +1,10 @@
 package specs
 
 import (
-	"context"
 	"fmt"
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/assert"
 )
 
 // The matcher assertion path — Expect(x).To(m), ExpectT(ctx, x).To(m), and the specs.* matcher
@@ -27,7 +28,7 @@ func TestExpectToReportsNothingWhenTheMatcherPasses(t *testing.T) {
 	if b.failed {
 		t.Fatalf("expected no failure, got %q", b.message)
 	}
-	if ctx.failed {
+	if ctx.hasFailed() {
 		t.Fatal("expected the context to stay unfailed after a passing matcher")
 	}
 }
@@ -46,41 +47,38 @@ func TestExpectToReportsTheMatcherMessageWhenItFails(t *testing.T) {
 }
 
 // A matcher failure must mark the Context, not just the backend: FailFast and the Failed flag on
-// SpecResultEvent both read ctx.failed, and a failure invisible to them reports a green spec on a
+// SpecResultEvent both read ctx.hasFailed(), and a failure invisible to them reports a green spec on a
 // red run — the same class of defect as issue #115 on the snapshot path.
 func TestExpectToMarksTheContextFailedSoFailFastAndReportersSeeIt(t *testing.T) {
 	ctx, _ := newCapturedContext()
 
 	ctx.Expect(42).To(Equal(43))
 
-	if !ctx.failed {
+	if !ctx.hasFailed() {
 		t.Fatal("expected the context to be marked failed after a matcher failure")
 	}
 }
 
-func TestExpectToRecordsACoverageEdgeWhenTheMatcherPasses(t *testing.T) {
-	ctx, _ := newCapturedContext()
-	before := &Coverage{}
-	ctx.coverage = &Coverage{}
-
-	ctx.Expect(42).To(Equal(42))
-
-	if !ctx.coverage.HasNewCoverage(before) {
-		t.Fatal("expected the passing matcher path to record a coverage edge")
-	}
-}
-
-// The guards are what keep a misuse from panicking mid-suite; each one releases the pooled
-// Expectation and returns without reporting.
-func TestExpectToIgnoresANilMatcher(t *testing.T) {
+// A nil matcher never matches (issue #236), matching assert.Evaluate and the composites: it fails
+// the assertion with the same message instead of passing silently, and it still never panics.
+func TestExpectToFailsOnANilMatcher(t *testing.T) {
 	ctx, b := newCapturedContext()
 
 	ctx.Expect(42).To(nil)
 
-	if b.failed {
-		t.Fatalf("expected a nil matcher to be ignored, got %q", b.message)
+	if !b.failed {
+		t.Fatal("expected a nil matcher to fail the assertion, not be ignored")
+	}
+	if b.message != nilMatcherMessage {
+		t.Fatalf("got %q, want %q", b.message, nilMatcherMessage)
+	}
+	if !ctx.hasFailed() {
+		t.Fatal("expected the context to be marked failed so FailFast and reporters see it")
 	}
 }
+
+// The context guards are what keep a misconfigured Expectation from panicking mid-suite; with no
+// context or backend there is nowhere to report to, so each one spends the Expectation and returns.
 
 func TestExpectToIgnoresAnExpectationWithoutAContext(t *testing.T) {
 	var e *Expectation
@@ -121,36 +119,43 @@ func TestExpectTToMarksTheContextFailedLikeTheUntypedPath(t *testing.T) {
 
 	ExpectT(ctx, true).To(BeFalse())
 
-	if !ctx.failed {
+	if !ctx.hasFailed() {
 		t.Fatal("expected the context to be marked failed after a typed matcher failure")
 	}
 }
 
-func TestExpectTToRecordsACoverageEdgeWhenTheMatcherPasses(t *testing.T) {
-	ctx, _ := newCapturedContext()
-	before := &Coverage{}
-	ctx.coverage = &Coverage{}
-
-	ExpectT(ctx, true).To(BeTrue())
-
-	if !ctx.coverage.HasNewCoverage(before) {
-		t.Fatal("expected the passing typed matcher path to record a coverage edge")
-	}
-}
-
-func TestExpectTToIgnoresANilMatcher(t *testing.T) {
+func TestExpectTToFailsOnANilMatcher(t *testing.T) {
 	ctx, b := newCapturedContext()
 
 	ExpectT(ctx, 42).To(nil)
 
-	if b.failed {
-		t.Fatalf("expected a nil matcher to be ignored, got %q", b.message)
+	if !b.failed {
+		t.Fatal("expected a nil matcher to fail the assertion, not be ignored")
+	}
+	if b.message != nilMatcherMessage {
+		t.Fatalf("got %q, want %q", b.message, nilMatcherMessage)
+	}
+	if !ctx.hasFailed() {
+		t.Fatal("expected the context to be marked failed like the untyped path")
+	}
+}
+
+// nilMatcherMessage is the text assert.Evaluate reports for a nil matcher; To must report the same.
+var nilMatcherMessage = func() string {
+	_, msg := assert.Evaluate(nil, 42)
+	return msg
+}()
+
+// A nil matcher must read identically when passed directly and when found inside a composite.
+func TestNilMatcherMessageMatchesAssertEvaluate(t *testing.T) {
+	if nilMatcherMessage != "nil matcher (never matches)" {
+		t.Fatalf("assert.Evaluate(nil) message changed to %q; update To's tests deliberately", nilMatcherMessage)
 	}
 }
 
 func TestExpectTToIgnoresAnExpectationWithoutAContext(t *testing.T) {
-	expectT[int]{e: nil}.To(Equal(1))
-	expectT[int]{e: &Expectation{actual: 42}}.To(Equal(43))
+	expectT[int]{s: nil}.To(Equal(1))
+	expectT[int]{s: &typedExpectation[int]{actual: 42}}.To(Equal(43))
 }
 
 // A Context with no backend is a real state, not a hypothetical: NewContext(nil) produces one
@@ -183,28 +188,52 @@ func TestAssertionsWithoutABackendReturnQuietlyInsteadOfPanicking(t *testing.T) 
 
 			// Nothing was reported, so nothing may be recorded either: a failure the runner can
 			// see but no backend ever heard would stop a FailFast run with no message to show.
-			if ctx.failed {
+			if ctx.hasFailed() {
 				t.Error("expected no recorded failure when the assertion had nowhere to report")
 			}
 		})
 	}
 }
 
-// The pooled Expectation must be returned even on the guarded early-return paths; otherwise every
-// assertion made against a backend-less context leaks one, and the pool stops amortising anything.
-// Acquiring after the guarded call must hand back a clean Expectation, never one still carrying the
-// previous actual value.
-func TestGuardedAssertionsStillReleaseThePooledExpectation(t *testing.T) {
+// Every assertion claims its handle before the guards run, so an assertion that early-returns for
+// want of a backend still spends its Expectation. That ordering is the contract: were the claim
+// made after the guard, a handle used against a backend-less context would stay assertable, and the
+// next assertion through it would silently pass — the exact false green issue #170 is about, just
+// reached by a different door.
+//
+// This test previously pinned the pool instead: it checked that the guarded paths returned the
+// object to expectationPool. There is no pool any more (see Context.Expect), so that contract is
+// gone and this is the one that replaced it.
+func TestGuardedAssertionsStillSpendTheExpectation(t *testing.T) {
 	noBackend := &Context{}
-	noBackend.Expect("stale").To(Equal(1))
-	noBackend.Expect("stale").ToEqual(1)
-	ExpectT(noBackend, 99).To(Equal(1))
 
+	t.Run("Expect.To", func(t *testing.T) {
+		e := noBackend.Expect("stale")
+		e.To(Equal(1))
+		assertPanicsWith(t, func() { e.To(Equal(1)) }, "go-specs", "reused")
+	})
+	t.Run("Expect.ToEqual", func(t *testing.T) {
+		e := noBackend.Expect("stale")
+		e.ToEqual(1)
+		assertPanicsWith(t, func() { e.ToEqual(1) }, "go-specs", "reused")
+	})
+	t.Run("ExpectT.To", func(t *testing.T) {
+		x := ExpectT(noBackend, 99)
+		x.To(Equal(1))
+		assertPanicsWith(t, func() { x.To(Equal(1)) }, "go-specs", "reused")
+	})
+	t.Run("ExpectT.ToEqual", func(t *testing.T) {
+		x := ExpectT(noBackend, 99)
+		x.ToEqual(1)
+		assertPanicsWith(t, func() { x.ToEqual(1) }, "go-specs", "reused")
+	})
+
+	// A guarded assertion must leave nothing behind for a well-formed one on another context.
 	ctx, b := newCapturedContext()
 	ctx.Expect(42).To(Equal(42))
 
 	if b.failed {
-		t.Fatalf("expected a clean pooled Expectation to assert normally, got %q", b.message)
+		t.Fatalf("expected a normal assertion to pass after guarded ones, got %q", b.message)
 	}
 }
 
@@ -281,32 +310,33 @@ func (p *planBackend) Name() string                         { return "planBacken
 func (p *planBackend) Cleanup(func())                       {}
 func (p *planBackend) Run(name string, fn func(testing.TB)) { fn(nil) }
 
-// runFailingTypedSpec compiles a one-spec suite whose only assertion fails through the typed matcher
-// path, runs it over the real execution plan, and returns what the reporter and the suite counter
-// saw. specCounter is the exact type CompiledSuite.run builds SuiteEndEvent.FailedSpecs from, so
-// counter.failed here is that field's value, not a proxy for it.
-func runFailingTypedSpec(t *testing.T, body func(ctx *Context)) (*recordingReporter, *specCounter) {
+// runSpecThroughPlan compiles a one-spec suite around body, runs it over the real execution plan,
+// and returns what the reporter and the suite counter saw. specCounter is the exact type
+// CompiledSuite.run builds SuiteEndEvent.FailedSpecs from, so counter.failed here is that field's
+// value, not a proxy for it. Shared with assertion_failure_contract_test.go, which drives every
+// built-in assertion entry point through it.
+func runSpecThroughPlan(t *testing.T, body func(ctx *Context)) (*recordingReporter, *specCounter) {
 	t.Helper()
 	c := newBytecodeCompiler()
 	c.PushScope("TypedMatcherSuite")
 	s := &Spec{name: "TypedMatcherSuite", compiler: c}
-	s.It("fails a typed matcher assertion", body)
+	s.It("runs one assertion", body)
 	plan := c.TakePlan()
 
 	rep := &recordingReporter{}
 	counter := &specCounter{EventReporter: rep}
-	runPlanSpecsInOrder(context.Background(), &planBackend{}, counter, plan)
+	runPlanSpecsInOrder(&planBackend{}, counter, plan, false, nil)
 	return rep, counter
 }
 
 // TestExpectTToFailureReachesTheReporterAndTheSuiteCount closes the gap the unit tests above leave.
-// They assert ctx.failed, which is the mechanism; this asserts the properties the CHANGELOG actually
+// They assert ctx.hasFailed(), which is the mechanism; this asserts the properties the CHANGELOG actually
 // promises a consumer — SpecResultEvent.Failed and SuiteEndEvent.FailedSpecs — driven by a real
 // ExpectT(ctx, x).To(matcher) failure running through the compiled plan. Without it, a refactor that
-// decouples ctx.failed from the reporter leaves ctx.failed true, the unit tests green, and the
+// decouples ctx.hasFailed() from the reporter leaves ctx.hasFailed() true, the unit tests green, and the
 // original defect back: a red run reported to every reporter-driven consumer as a passing spec.
 func TestExpectTToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
-	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+	rep, counter := runSpecThroughPlan(t, func(ctx *Context) {
 		ExpectT(ctx, true).To(BeFalse())
 	})
 
@@ -327,7 +357,7 @@ func TestExpectTToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
 // TestExpectToFailureReachesTheReporterAndTheSuiteCount is the untyped counterpart, so the two paths
 // are held to the same observable contract rather than only the typed one being pinned.
 func TestExpectToFailureReachesTheReporterAndTheSuiteCount(t *testing.T) {
-	rep, counter := runFailingTypedSpec(t, func(ctx *Context) {
+	rep, counter := runSpecThroughPlan(t, func(ctx *Context) {
 		ctx.Expect(42).To(Equal(43))
 	})
 

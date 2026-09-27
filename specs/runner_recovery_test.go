@@ -45,8 +45,8 @@ func TestRunGroupAfterAlwaysRunsDespiteSpecPanic(t *testing.T) {
 	if !afterRan {
 		t.Fatal("expected the group's after hook to run despite the spec panic")
 	}
-	if !ctx.failed {
-		t.Fatal("expected ctx.failed to be set after an unrecovered spec panic")
+	if !ctx.hasFailed() {
+		t.Fatal("expected ctx.hasFailed() to be set after an unrecovered spec panic")
 	}
 }
 
@@ -108,7 +108,7 @@ func TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooks(t *testing.T) {
 // TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooksUnderFailFast proves that FailFast does not
 // leak into after-hook execution: FailFast decides whether we run more specs/groups, not whether we
 // leave resources uncleaned. Even with FailFast on and the first-executed after hook panicking (which
-// sets ctx.failed), the remaining after hooks in this group must still run.
+// sets ctx.hasFailed()), the remaining after hooks in this group must still run.
 func TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooksUnderFailFast(t *testing.T) {
 	backend := &controlledBackend{}
 	ctx := &Context{backend: backend}
@@ -139,7 +139,7 @@ func TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooksUnderFailFast(t *test
 }
 
 // TestRunGroupFailFastStopsRemainingSpecsButAfterStillRuns proves the contract decided for #62: a
-// panic counts as ctx.failed (via ctx.recordFailure), so FailFast's existing stop-at-the-next-check
+// panic counts as ctx.hasFailed() (via ctx.recordFailure), so FailFast's existing stop-at-the-next-check
 // logic naturally stops the remaining specs in the group — but after still runs regardless, via defer.
 func TestRunGroupFailFastStopsRemainingSpecsButAfterStillRuns(t *testing.T) {
 	backend := &controlledBackend{}
@@ -275,7 +275,7 @@ func TestRunnerRunRealFatalfIsolatesJustThatSpecRealProcess(t *testing.T) {
 }
 
 // TestRunnerRunFailFastStopsAfterRealFatalfRealProcess proves isolation and FailFast compose
-// correctly: EqualTo's recordFailure() sets ctx.failed synchronously before the Fatalf call that
+// correctly: EqualTo's recordFailure() sets ctx.hasFailed() synchronously before the Fatalf call that
 // triggers Goexit (not learned via recover), and t.Run blocks until the subtest's goroutine
 // finishes — so runSpecsRecovered's failFast check, running right after runSpecRecovered returns,
 // sees the correct value and stops before spec2, exactly as it would have without isolation.

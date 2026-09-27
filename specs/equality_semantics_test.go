@@ -1,8 +1,9 @@
 package specs
 
 // equality_semantics_test.go locks in the documented equality-semantics divergence between
-// EqualTo/ExpectT.ToEqual (always ==) and Expectation.ToEqual (== fast path, reflect.DeepEqual
-// fallback for everything else). See "Equality semantics" in docs/DSL.md and issue #8. This is a
+// EqualTo/ExpectT.ToEqual (always ==) and Expectation.ToEqual (== fast path, then errors.Is for
+// error pairs and reflect.DeepEqual for everything else — see error_equality_test.go for the error
+// half). See "Equality semantics" in docs/DSL.md and issue #8. This is a
 // deliberate design tradeoff (speed vs. value-based equality for non-primitive types), not a bug —
 // these tests exist so a future change to either comparison can't silently make them agree (or
 // disagree differently) without a test failing to call it out.

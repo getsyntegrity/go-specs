@@ -57,6 +57,11 @@ const subtestSeparator = "/"
 // flat stream is what keeps the runner allocation-free without a reporter; nesting trades that away
 // to remove a collision only deliberately confusable names can reach.
 //
+// A suite that registers BeforeAll/AfterAll is the one exception (#207): each hooked group gets a
+// real subtest so its hooks can share the group's *testing.T (see group_hooks.go). Those group
+// subtests are named so that every spec's full name is still exactly the one this mapping gives
+// it, and a group whose subtest could not keep that promise runs without one.
+//
 // Escaping was rejected for a smaller reason: `go test -run 'TestX/suite/when_a/does_it'` — a
 // pattern a developer types by reading the declared names — would stop matching.
 //

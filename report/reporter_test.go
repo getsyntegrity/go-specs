@@ -18,10 +18,10 @@ func TestReporterPrintsDuration(t *testing.T) {
 	r.SuiteFinished(SuiteEndEvent{Name: "Suite", Duration: 5 * time.Millisecond})
 
 	out := buf.String()
-	if !strings.Contains(out, "SpecFinished spec [] failed=false skipped=false duration=5ms") {
+	if !strings.Contains(out, "SpecFinished spec [] failed=false skipped=false pending=false duration=5ms") {
 		t.Fatalf("expected SpecFinished line to include duration=5ms, got %q", out)
 	}
-	if !strings.Contains(out, "SuiteFinished Suite duration=5ms skipped=0") {
+	if !strings.Contains(out, "SuiteFinished Suite duration=5ms skipped=0 pending=0") {
 		t.Fatalf("expected SuiteFinished line to include duration=5ms, got %q", out)
 	}
 }
@@ -38,10 +38,30 @@ func TestReporterPrintsSkipped(t *testing.T) {
 	r.SuiteFinished(SuiteEndEvent{Name: "Suite", SkippedSpecs: 1})
 
 	out := buf.String()
-	if !strings.Contains(out, "SpecFinished spec [] failed=false skipped=true duration=0s") {
+	if !strings.Contains(out, "SpecFinished spec [] failed=false skipped=true pending=false duration=0s") {
 		t.Fatalf("expected SpecFinished line to include skipped=true, got %q", out)
 	}
-	if !strings.Contains(out, "SuiteFinished Suite duration=0s skipped=1") {
+	if !strings.Contains(out, "SuiteFinished Suite duration=0s skipped=1 pending=0") {
 		t.Fatalf("expected SuiteFinished line to include skipped=1, got %q", out)
+	}
+}
+
+// TestReporterPrintsPending proves the reference text Reporter surfaces SpecResultEvent.Pending
+// and SuiteEndEvent.PendingSpecs, distinct from Skipped/SkippedSpecs.
+func TestReporterPrintsPending(t *testing.T) {
+	var buf strings.Builder
+	r := New(&buf)
+
+	r.SuiteStarted(SuiteStartEvent{Name: "Suite"})
+	r.SpecStarted(SpecStartEvent{Name: "spec"})
+	r.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "spec"}, Pending: true})
+	r.SuiteFinished(SuiteEndEvent{Name: "Suite", PendingSpecs: 1})
+
+	out := buf.String()
+	if !strings.Contains(out, "SpecFinished spec [] failed=false skipped=false pending=true duration=0s") {
+		t.Fatalf("expected SpecFinished line to include pending=true, got %q", out)
+	}
+	if !strings.Contains(out, "SuiteFinished Suite duration=0s skipped=0 pending=1") {
+		t.Fatalf("expected SuiteFinished line to include pending=1, got %q", out)
 	}
 }

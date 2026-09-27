@@ -4,21 +4,27 @@ How go-specs compiles and runs tests: the execution pipeline, program structure,
 
 ## Execution pipeline
 
-The end-to-end flow is:
+`Describe` — the documented, default entry point — never touches `Builder`, `Program`, or
+`Runner`. It compiles straight to `ExecutionPlan` + `CompiledSuite`:
 
-**DSL → Builder → Program → Runner**
+**DSL → Compiler → ExecutionPlan → CompiledSuite**
+
+Constructing `Builder`/`BuildProgram` + `NewRunner` by hand is a second, parallel path with the
+same external shape:
 
 ```mermaid
 flowchart LR
-    DSL --> Builder
-    Builder --> Program
-    Program --> Runner
+    DSL --> Compiler["Bytecode compiler (Describe) or Builder (manual)"]
+    Compiler --> Plan["ExecutionPlan (default) or Program (manual)"]
+    Plan --> Run["CompiledSuite.Run or Runner.Run"]
 ```
 
 1. **DSL** — User defines suites with `Describe`, `BeforeEach`, `AfterEach`, `It` (and optionally the Builder API with `ItParallel`).
-2. **Builder** — Compiler (or Builder) flattens scope and hooks into a linear plan. No tree is kept at run time.
-3. **Program** — The plan is either a flat slice of instructions with per-spec bounds (ExecutionPlan) or a slice of groups, each with before/specs/after steps (Program).
-4. **Runner** — Iterates over the plan and invokes each step with a shared Context.
+2. **Compiler / Builder** — The bytecode compiler (default, driven by `Describe`) or a hand-built `Builder` flattens scope and hooks into a linear plan. No tree is kept at run time.
+3. **Program** — The plan is either a flat slice of instructions with per-spec bounds (`ExecutionPlan`, the default) or a slice of groups, each with before/specs/after steps (`Program`, the Builder/Runner path).
+4. **Runner** — `CompiledSuite.Run` or `Runner.Run` iterates over the plan and invokes each step with a shared Context.
+
+See [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md) for the full inventory of every execution engine in this repository and which one is canonical.
 
 ## Execution plan
 
@@ -46,7 +52,7 @@ For the ExecutionPlan path, the loop is over instructions within each spec’s s
 
 ## Performance properties
 
-- **Zero allocations** — Context (and expectation objects) are pooled. The runner reuses one Context per spec (or per group). On the assertion fast path, no heap allocations occur on success.
+- **Zero allocations** — the Context is pooled and the runner reuses one per spec (or per group); expectations are stack-allocated rather than pooled. On the assertion fast path, no heap allocations occur on success.
 - **Sequential memory access** — The plan is a contiguous slice (or a small number of slices). The runner walks them in order, which is cache-friendly.
 - **No reflection** — Steps are plain function pointers. Assertions use generics and direct comparison where possible; no `reflect.DeepEqual` or type switches on the hot path.
 - **Direct function calls** — Each step is invoked as `step(ctx)`. No indirection or dynamic dispatch in the inner loop.
@@ -75,7 +81,7 @@ There is no branching on step type in the hot path; the compiler has already lai
 
 **Properties:**
 
-- **Zero allocations** — The loop does not allocate; Context and expectations are pooled.
+- **Zero allocations** — The loop does not allocate; the Context is pooled and expectations are stack-allocated.
 - **Sequential memory access** — Walking a slice of function pointers is cache-friendly.
 - **No reflection** — Steps are plain function pointers; no type switches or reflection in the inner loop.
 - **Direct function dispatch** — Each step is invoked as `step(ctx)`; no indirection.
@@ -183,95 +189,50 @@ Parallel specs have no subtest identity, before this change or after it. `ItPara
 under `parallelBackend` on the scheduler's own goroutines and never reach `t.Run` at all; they are
 addressable through reporter events, not through a `-run` pattern.
 
-### Hooks: the two models disagree, with or without `-run`
+The reverse direction is closed off: a sequential spec body may not call `ctx.T.Parallel()`. Parking
+a subtest makes `t.Run` return before the body finished, which breaks the single assumption the
+shared per-run `*Context` depends on — the runner would swap the next spec over a Context still
+bound to a spec that has not executed, nesting subtests and silently blanking the parked body's
+assertions. The runner detects the parked subtest and fails the run with a diagnostic instead. See
+`docs/DSL.md` for the user-facing contract and `specs/spec_body_parallel.go` for the mechanism.
 
-The two sequential models do not run hooks the same way, and the difference is in the hooks, not the
-names. `-run` makes it visible; it does not create it.
+### Hooks: the two models converged (#109, closed)
+
+The two sequential models used to run hooks at different frequencies. That divergence, tracked as
+#109, is closed: both models now run `BeforeEach`/`AfterEach` once per spec, and both run them
+*inside* that spec's own subtest.
 
 The plainest form needs no pattern at all. For one scope declaring a `BeforeEach` and three specs:
 
 | Model | `BeforeEach` runs |
 |---|---|
 | `Describe` / `Spec` | 3 times — once per spec |
-| `Builder` / `Runner` | 1 time — once per group |
-
-So `BeforeEach` does not carry per-spec semantics in the `Builder`/`Runner` model. Setup that a spec
-mutates is not restored for the next spec in the same group. That is the substance of the
-divergence, tracked in #109; everything below is the same placement seen through a filter.
+| `Builder` / `Runner` | 3 times — once per spec |
 
 The `Describe`/`Spec` model compiles each scope's `BeforeEach`/`AfterEach` into the selected spec's
 own instruction range, and that range runs *inside* the subtest. Discarding the subtest discards the
 hooks with it.
 
-The `Builder`/`Runner` model runs a group's `before` hooks and defers its `after` hooks around the
-loop that calls `t.Run` — so they sit *outside* the subtest. `testing` can only discard what is
-inside a subtest, which means a narrow `-run` pattern narrows which spec bodies execute but not
-which group hooks do: the hooks of a scope whose specs were all filtered out still run.
+The `Builder`/`Runner` model now does the same thing for the same reason: `runSpecWithHooks`
+(`specs/runner.go`) runs a spec's before hooks, body, and after hooks as one unit, and
+`runSpecIsolated` runs that whole unit inside the spec's own `t.Run` closure. Coalescing specs that
+share the same hooks into one `group` (see `specs/program.go`) is purely a compile-time memory/
+locality optimization; it has no effect on how often hooks run, or where they run relative to the
+subtest — each spec still runs its own group's before/after for itself. So a narrow `-run` pattern
+now discards a filtered-out spec's hooks in both models, the same way.
 
-Neither model changed here; the divergence predates breadcrumbs and is tracked separately. It
-matters more now only because `-run` has become a documented way to select a single behaviour.
+### Reporting of filtered specs (#111, closed)
 
-### Reporting of filtered specs
-
-In either model, a spec whose subtest a `-run` pattern discarded is still reported to an attached
-reporter as started and finished without failing — it appears as passed although its body never ran.
-`t.Run`'s boolean return, which is `false` exactly when the filter discarded the subtest, is not
-inspected. This predates breadcrumbs too, and is tracked separately.
-
-### Adaptive strategies: a `-run`-narrowed re-run can silently generate a different candidate
-
-`ExploreCoverage` and `ExploreSmart` drive a candidate through a Propose → Accept → Execute →
-AdmitFeedback loop (`proposalController.Run`) that is independent of `testing`: Propose asks the
-strategy for the next `PathValues`, Execute runs that candidate in its own generated subtest and
-collects its real per-candidate `Coverage`, and AdmitFeedback hands that `Coverage` to the strategy's
-`Feedback` method, which grows its corpus only when the candidate actually found unseen coverage
-(`Coverage.HasNewCoverage`). `-run` only ever reaches the Execute step, because that is the only step
-wrapped in a `t.Run` call — Propose and AdmitFeedback are plain Go calls the loop makes on every
-iteration, matched pattern or not.
-
-The failure mode this creates is not a fabricated pass polluting the corpus — a candidate `-run`
-discards before `t.Run` invokes it never populates its `Coverage` (see "Reporting of filtered specs"
-above), so `Feedback` sees an all-zero `Coverage`, `HasNewCoverage` reports nothing new, and no growth
-happens. The corpus simply fails to grow the way it did in the original run. That is still a problem:
-narrowing `-run` to the one generated subtest that failed — the natural way to isolate and re-run
-it — silently drops every real coverage contribution the *other* candidates made on the original run,
-before reaching the one you narrowed to. `CoverageExplorer`/`SmartExplorer.NextInput` draws from that
-corpus (mutate a random entry, or fall back to random when it is empty), so by the time Propose is
-asked for the target candidate, it can be working from a smaller or different corpus than the run
-that produced the failure — and can propose a **different** `PathValues` for that same attempt index,
-even with the same seed. The `-run` pattern that looks like it isolates one candidate's execution does
-not isolate it from the strategy's state.
-
-What that divergence actually does to the re-run depends on how narrow the `-run` pattern is, because
-`generatedCaseName` puts the attempt/seed ordinal *before* the rendered values and content hash
-(`case-<ordinal>[-seed<N>]<k=v,...>~<hash>`), and `-run` matches each path segment as an unanchored
-regexp — a substring hit anywhere in the name is enough:
-
-- **Ordinal/prefix pattern** (e.g. `-run '.../case-7-seed123'`, matching only the ordinal/seed
-  prefix): the regenerated candidate's name still contains that prefix even though its trailing
-  values and hash differ, so the pattern still matches — and the **different** `PathValues` this
-  candidate now gets executes in place of the one that failed.
-- **Exact copied name** (the full subtest name from the original failure, values and hash included):
-  the regenerated candidate's values and hash no longer appear in that string, so the pattern no
-  longer matches it — and **no candidate executes** for that attempt at all. Like any other
-  `-run`-discarded subtest, it is still reported as passed (see "Reporting of filtered specs" above).
-
-Either way, the candidate that actually runs under a narrowed `-run` is not reliably the one that
-failed.
-
-`Cartesian` and `Sample` have no feedback-dependent state, so they are not exposed. Plain `Explore`
-grows its corpus from `captureSignature()`, a call-site signature captured from the fixed call chain
-inside `admitFeedback` itself rather than from anything the candidate's body did — it evaluates the
-same way whether or not `-run` let that candidate's body run, so its corpus content does not diverge
-under a narrowed `-run`. Only `ExploreCoverage` and `ExploreSmart` key growth on the candidate's real,
-per-execution `Coverage`, which is exactly what `-run` prevents from being collected.
-
-There is no fix here — reproducing one candidate under a narrowed `-run` without perturbing
-`ExploreCoverage`/`ExploreSmart`'s corpus state would need the strategy to either replay the discarded
-candidates' real feedback or know it is running under a filter, and `-run` communicates neither past
-the subtest boundary. Tracked in
-[#124](https://github.com/getsyntegrity/go-specs/issues/124); a design decision on whether an
-isolated-re-run mode for adaptive strategies is worth adding is still open.
+In both models, a spec whose subtest a `-run` pattern discarded is reported as `Filtered`, not as a
+bare pass. `t.Run`'s own boolean return can't be used for this — it is `true` for a subtest the
+filter discarded, indistinguishable from a genuine pass — so `runSpecIsolated`/
+`runSpecProgramIsolated` instead set a local `ran` flag from inside the closure passed to `t.Run`,
+which only runs when the filter accepts the subtest. That flag threads back through
+`specResult.Filtered`, and the reporter emits `SpecResultEvent{Filtered: true}`: `Failed` stays
+`false` and `Duration` stays `0`, same as a compile-time skipped spec, but `Skipped` itself stays
+`false` — the cause is external selection, not a declared skip. See
+`TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess` and
+`TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess` (`specs/subtest_identity_test.go`).
 
 ---
 
@@ -312,98 +273,43 @@ The builder groups parallel specs into one step; the runner executes that step (
 
 **Known limitation:** this can produce uneven shard runtimes when hook groups are large or unevenly sized, since balancing happens at the group level rather than the individual-spec level. Balancing by spec count is tracked separately and deferred post-v1.0.0.
 
----
+This describes the package-level `RunShard` over a `*Program`. `CompiledSuite.RunShard(tb, shardIndex, shardCount)` shards a `Describe`-built suite with a finer assignment unit — a whole top-level `BeforeAll`/`AfterAll` group, a whole `ItParallel` batch, or a single spec otherwise — see `docs/SUITE_HOOKS_CONTRACT.md`'s sharding rule.
 
-## Generated candidate identity
+### Configuration is fail-closed
 
-A `Paths()` spec does not run once: it runs once per generated candidate. Each executed candidate
-is a real Go subtest, and its name identifies which candidate it was.
+Sharding has three states, not two, and keeping the middle one distinct is what makes a sharded CI run trustworthy:
 
-### Name shape
+| State | How it is reported | What runs |
+|-------|--------------------|-----------|
+| Not configured | `ErrShardNotConfigured` from the parsers | The whole suite. This is legitimate. |
+| Configured and valid | `nil` error | This shard's partition. |
+| Configured but unusable | `*ShardConfigError`; a panic from `ShardSpecs`/`ShardBCProgram`, `tb.Fatalf` from `RunShard` | Nothing — the run fails. |
 
-```
-<spec breadcrumb>/case-<n>[-seed<s>][-<k=v,k=v...>]
-```
+Invalid configuration never widens to "run everything". Before this was enforced, `SHARD_TOTAL=0` made every worker run 100% of the suite and still report green: the build looked sharded and proved nothing about the partition (issue #174).
 
-| Part | Meaning |
-|------|---------|
-| `<spec breadcrumb>` | The owning spec's slash-joined `Describe`/`When`/`It` path. |
-| `case-<n>` | The 1-based ordinal of this candidate among the spec's *executed* candidates. |
-| `-seed<s>` | The exploration seed. Present only for `Sample`, `Explore`, `ExploreCoverage` and `ExploreSmart` — a Cartesian stream is fully determined by the declared variables, so it carries no seed. |
-| `-<k=v,...>` | The candidate's path values, in variable declaration order. Omitted when the candidate has no values. |
+Precedence is strict and fail-closed:
 
-Examples:
+1. The `-shard` flag, once present, is authoritative. A malformed value is an error and does **not** fall back to the environment — running a different partition than CI asked for is the same class of silent degradation as running all of them. `-shard 2/10`, `-shard=2/10` and the `--shard` spellings are all accepted.
+2. Otherwise `SHARD=2/10`, on the same terms.
+3. Otherwise `SHARD_INDEX` + `SHARD_TOTAL`. Setting exactly one of the two is a configuration error, not "not configured": a half-configured pair is a typo, not a request to run everything.
 
-```
-TestCheckout/Checkout/pricing/applies the tier/case-2-tier=pro
-TestCheckout/Checkout/pricing/samples the space/case-4-seed7-vip=true,price=8123
-TestCheckout/Checkout/pricing/explores the space/case-11-seed42-price=907
-```
-
-`go test` output shows these after `testing`'s own rewrite of the spec breadcrumb (spaces become
-`_`): `TestCheckout/Checkout/pricing/applies_the_tier/case-2-tier=pro`.
-
-The ordinal alone is unique within a spec, so two candidates that carry byte-identical values still
-get distinct names. That is also why bounding the values (below) can never make a name ambiguous.
-
-### Sanitization and bounding
-
-`go test -run` compiles each `/`-separated element of its pattern as a regular expression, so a name
-is only useful if it can be pasted back in as a pattern. The candidate part of the name therefore
-contains only ASCII letters, digits and `_ - . = , ~`. Every other rune — spaces, `/`, `[`, `]`,
-`(`, `)`, `*`, `+`, `?`, `^`, `$`, `\`, `{`, `}`, `|`, control characters and all non-ASCII — is
-replaced by `_`, and a run of them collapses into a single `_`.
-
-`.` is the one allowed rune that is also a regexp metacharacter, kept because version- and
-float-like values (`v1.2`, `3.5`) stay far more readable with it. As a pattern it still matches
-itself, so it can only ever over-match, never fail to match the candidate it came from.
-
-Names are bounded, not a blind serialization of whatever the values happen to be: each value
-contributes at most 16 runes and the whole values block at most 64. When anything is cut, the name
-ends with `~` plus 8 hex digits of a hash over the full untruncated values, so two long candidates
-with a common prefix stay visibly distinct in `-v` output.
-
-Only the candidate part is sanitized. The spec breadcrumb is the framework's own declared name and
-is passed through untouched, exactly as for a sequential spec.
-
-### Reproducing one candidate with `-run`
-
-| Strategy | `-run` selection of a single candidate |
-|----------|----------------------------------------|
-| Cartesian (`Paths(...).It`) | Supported |
-| `Sample(n)` | Supported |
-| `Explore(n)` / `ExploreCoverage(n)` / `ExploreSmart(n)` | **Not supported** |
-
-For the adaptive strategies, `testing` skips the bodies of the subtests that do not match the
-pattern, while the explorer derives each later candidate from the feedback of the earlier ones it
-then never receives — so the stream diverges from the one that produced the name.
-
-The protection is that the values are part of the name. A candidate that diverges under the
-filtered run simply does not match the pattern and does not run. A `-run` pattern can therefore
-under-select, but it can never silently execute a semantically different candidate under the name
-you asked for. To reproduce an adaptive failure, re-run the whole spec with the same seed.
-
-### Sensitive values
-
-Path values appear verbatim in test names, and test names travel: CI logs, `test2json`, IDE panes.
-A value type controls its own rendering by implementing `fmt.Stringer`, and that is the supported
-redaction hook:
+`total` must be >= 1 and `index` must satisfy `0 <= index < total`. A shard that draws no specs or groups under a *valid* configuration — more shards than work — is an empty partition, not an error, and runs nothing without failing.
 
 ```go
-type apiKey struct{ raw string }
-
-func (apiKey) String() string { return "REDACTED" }
+shard, total, err := specs.ShardFromArgsOrEnv()
+switch {
+case errors.Is(err, specs.ErrShardNotConfigured):
+    specs.NewRunner(prog).Run(t) // no sharding requested
+case err != nil:
+    t.Fatal(err) // configured but unusable
+default:
+    specs.RunShard(prog, t, shard, total)
+}
 ```
 
-Values whose `%v` would embed a pointer address — pointers, funcs, channels, `uintptr`,
-`unsafe.Pointer`, and values containing them — render as a fixed kind word (`ptr`, `func`, `chan`,
-`uintptr`, `unsafeptr`) instead, because a name that changed between runs would make `-run` patterns
-rot. Maps and slices of ordinary values render normally: `fmt` prints map keys in sorted order, so
-their rendering is stable.
+## Property-based exploration removed
 
-### Reporter events
-
-Reported identity is not the subtest name. A reporter sees the framework's own formatting —
-`includes tier [tier=pro] #2` — carrying the same ordinal, so a report line and a `go test -v`
-subtest can be matched up, while reported names never inherit `testing`'s space rewriting or its
-`#01` duplicate suffixes.
+Property-based/combinatorial exploration (`Paths`, `PathBuilder`, `Explore*`, generated-candidate
+subtests) is removed as a breaking change targeted for v0.2.0 — see [CHANGELOG.md](../CHANGELOG.md)
+for the migration note, which recommends `rapid` or `gopter` as replacements and explains why the
+built-in `go test -fuzz` does not compose the same way.

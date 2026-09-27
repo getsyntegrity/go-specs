@@ -51,10 +51,6 @@ Public import paths are unchanged for compatibility:
 - `github.com/getsyntegrity/go-specs/gen/generators`
 - `github.com/getsyntegrity/go-specs/snapshots`
 
-Internal code lives under the specs package and uses:
-
-- `github.com/getsyntegrity/go-specs/specs/internal/registry`
-
 ---
 
 ## Build and Test

@@ -7,8 +7,9 @@
 // output embeds that file:line inside the failure message of Test<Key>. Moving a line around is
 // therefore safe; the expectation follows it.
 //
-// Each fixture below is a single-spec ItParallel group so its failure is always spec[0] — see
-// reportFailures in scheduler.go, which reports the first failing spec in index order.
+// Each fixture below is a single-spec ItParallel group so its failure is always spec[0]. That keeps
+// one location per failing test for the parent to match; reportFailures (scheduler.go) reports every
+// failing spec in index order, which testdata/parallel_multifailure covers instead.
 package parallel_attribution_test
 
 import (

@@ -127,7 +127,7 @@ func TestMinimalRunnerRunParallelAlreadyRecoversPanic(t *testing.T) {
 		})
 	}
 	var reported string
-	reporter := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	reporter := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallel(reporter, 4)
 
 	if len(ran) != n-1 {
@@ -158,7 +158,7 @@ func TestMinimalRunnerRunParallelBatchedAlreadyRecoversPanic(t *testing.T) {
 		})
 	}
 	var reported string
-	reporter := &fakeReporter{fatalf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
+	reporter := &fakeReporter{errorf: func(format string, args ...any) { reported = fmt.Sprintf(format, args...) }}
 	r.RunParallelBatched(reporter, 4, 4)
 
 	if len(ran) != n-1 {

@@ -1,5 +1,13 @@
 # Legacy architecture parity evidence
 
+> **Historical record.** This document captures a point-in-time comparison against
+> `main` as it stood for issue #127. It predates the removal of the path-generation/
+> property-exploration subsystem in [#204](https://github.com/getsyntegrity/go-specs/issues/204)
+> (`Paths`, `PathBuilder`, `PathGenerator`, `PathVar`, `PathBuilder.IntRange`, and related
+> exploration machinery), which the table below still lists as present — that
+> capability is no longer part of go-specs. See [CHANGELOG.md](../CHANGELOG.md) for
+> the current migration note. Nothing else here is affected.
+
 Recorded as part of [#127](https://github.com/getsyntegrity/go-specs/issues/127) (PR-B):
 evidence that `develop`'s flat `specs` package fully replaces the public surface
 `main`'s old `specs/{compiler,dsl,runner,property}` split exposed via its
@@ -40,7 +48,7 @@ tightening (per `CONTRIBUTING.md`'s "prefer simple APIs"), not a loss:
 | `RunBeforeHooks`, `RunAfterHooks` | internal hook-running in `specs/context.go` / `specs/block_runner.go`, no longer a standalone public entry point |
 | `NewPathGenerator` (`vars []PathVar, filters []PathFilter, samples int, seed int64, hasSeed bool, exploreIterations, exploreCoverageIterations, exploreSmartIterations int`) | `newPathGenerator` — identical signature, `specs/path_generator.go` |
 | `IntRangeVar` | folded into `PathBuilder.IntRange` (`specs/path_builder.go`) — same capability via the builder API users actually call |
-| `SetCaptureCallerLocation` | not found under any name — see below |
+| `SetCaptureCallerLocation` | `SetCaptureCallerLocation` — restored, see below |
 
 ### Superseded by the incremental-execution rewrite (5)
 
@@ -53,11 +61,14 @@ execute directly instead of building an intermediate `Program`/`Runner` pair. Th
 is no equivalent to restore; the execution model itself changed, and every runner/
 Paths fix #104 wants to release depends on the new model.
 
-`SetCaptureCallerLocation` genuinely has no equivalent on `develop` — it was a
-debug toggle for arena caller-location capture, not part of the executed change of
-architecture. Flagged here rather than silently dropped; it's a config knob, not a
-DSL capability, so it does not block this issue, but a caller relying on it should
-know it's gone.
+`SetCaptureCallerLocation` had no equivalent on `develop` when this document was
+first written: the toggle for arena caller-location capture survived only as the
+plain exported variable `CaptureCallerLocation`, not under its legacy name. That
+variable was replaced in [#153](https://github.com/getsyntegrity/go-specs/issues/153)
+by `SetCaptureCallerLocation(enabled bool)` and `CaptureCallerLocationEnabled() bool`
+over an `atomic.Bool`, because an exported variable cannot be written safely while
+another goroutine declares specs. The setter therefore carries the legacy name again,
+and this row is no longer a gap.
 
 ## Open risk (not resolvable from inside this repo)
 

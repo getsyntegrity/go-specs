@@ -10,8 +10,6 @@
 package specs
 
 import (
-	"fmt"
-	"runtime/debug"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +20,7 @@ import (
 // Runner runs a compiled Program against a test backend. One context from the pool, reused for every step.
 type Runner struct {
 	program  *Program
-	FailFast bool // if true, stop after the first step that sets ctx.failed (e.g. assertion failure)
+	FailFast bool // if true, stop after the first step that records a failure (e.g. assertion failure)
 
 	// Name and Reporter are optional: when Reporter is nil, Run behaves exactly as it did before
 	// either field existed — no events, no extra work. When set, Run emits SuiteStarted before the
@@ -49,9 +47,9 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // mutex: a parallel group's goroutines call specStarted/specFinished concurrently, and not every
 // EventReporter implementation can be assumed to be concurrency-safe on its own — the framework
 // serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed/
-// skipped/filtered tally every reported spec (sequential and parallel alike, since both paths share
-// one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
-// passed+failed+skipped+filtered.
+// skipped/filtered/pending tally every reported spec (sequential and parallel alike, since both paths
+// share one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
+// passed+failed+skipped+filtered+pending.
 type reporterObserver struct {
 	mu       sync.Mutex
 	rep      report.EventReporter
@@ -59,6 +57,7 @@ type reporterObserver struct {
 	failed   int
 	skipped  int
 	filtered int
+	pending  int
 }
 
 func (o *reporterObserver) specStarted(name string, path []string) report.SpecStartEvent {
@@ -76,6 +75,9 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 	if result.Failed {
 		o.failed++
 	}
+	if result.Skipped {
+		o.skipped++
+	}
 	duration := time.Since(start.Time)
 	if result.Filtered {
 		o.filtered++
@@ -85,6 +87,7 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 		SpecStartEvent: start,
 		Failed:         result.Failed,
 		Filtered:       result.Filtered,
+		Skipped:        result.Skipped,
 		Duration:       duration,
 		Message:        result.Message,
 		Output:         result.Output,
@@ -105,6 +108,20 @@ func (o *reporterObserver) specSkipped(name string, path []string) {
 	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Skipped: true})
 }
 
+// specPending reports a compile-time-pending spec: SpecStarted immediately followed by
+// SpecFinished{Pending: true}, mirroring specSkipped exactly — Duration stays at its zero value
+// (no body ever ran) and Failed/Skipped/Filtered all stay false, since a spec is at most one of
+// Skipped/Filtered/Pending.
+func (o *reporterObserver) specPending(name string, path []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	o.total++
+	o.pending++
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Pending: true})
+}
+
 var _ specExecutionObserver = (*reporterObserver)(nil)
 
 // Run executes all groups in order. Within each group, every spec runs its own before hooks, body,
@@ -120,9 +137,8 @@ func (r *Runner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
-	ctx.SetPathValues(PathValues{})
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 	if r.FailFast {
 		ctx.SetFailFast(true)
 	}
@@ -149,6 +165,7 @@ func (r *Runner) Run(tb testing.TB) {
 		FailedSpecs:   obs.failed,
 		SkippedSpecs:  obs.skipped,
 		FilteredSpecs: obs.filtered,
+		PendingSpecs:  obs.pending,
 	})
 }
 
@@ -159,26 +176,27 @@ func (r *Runner) Run(tb testing.TB) {
 func runGroups(ctx *Context, groups []group) {
 	n := len(groups)
 	for gi := 0; gi < n; gi++ {
-		if ctx.failFast && ctx.failed {
+		if ctx.failFast && ctx.hasFailed() {
 			break
 		}
 		runGroup(ctx, &groups[gi])
-		if ctx.failFast && ctx.failed {
+		if ctx.failFast && ctx.hasFailed() {
 			break
 		}
 	}
 }
 
-// runGroup reports g's skipped specs, then runs its real specs. g.before/g.after are shared across
-// every spec in the group (see program.go's group doc comment) purely so they don't need to be
-// recompiled per spec — see runSpecWithHooks for the per-spec execution contract itself.
+// runGroup reports g's skipped and pending specs, then runs its real specs. g.before/g.after are
+// shared across every spec in the group (see program.go's group doc comment) purely so they don't
+// need to be recompiled per spec — see runSpecWithHooks for the per-spec execution contract itself.
 //
-// g.skipped is reported first, before any real spec runs: those names carry no before/after of their
-// own (see builder.go's finalize), so their identity as skipped must not depend on whether this
-// group's unrelated before hook — which they were only attached to for compilation reasons —
-// succeeds, fails, or FailFast ends up skipping the rest of this group.
+// g.skipped and g.pendingSpecs are reported first, before any real spec runs: those names carry no
+// before/after of their own (see builder.go's finalize), so their identity must not depend on
+// whether this group's unrelated before hook — which they were only attached to for compilation
+// reasons — succeeds, fails, or FailFast ends up skipping the rest of this group.
 func runGroup(ctx *Context, g *group) {
 	reportSkipped(ctx, g)
+	reportPending(ctx, g)
 	runSpecsRecovered(ctx, g)
 }
 
@@ -196,11 +214,25 @@ func reportSkipped(ctx *Context, g *group) {
 	}
 }
 
+// reportPending reports each of g.pendingSpecs as its own SpecStarted/SpecFinished{Pending: true}
+// pair, mirroring reportSkipped exactly — a pending spec was never compiled into a step either (see
+// builder.go's finalize), so there is nothing to run for it here, only its identity to report. A
+// nil execObserver means nothing happens at all, same as reportSkipped.
+func reportPending(ctx *Context, g *group) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for i, name := range g.pendingSpecs {
+		obs.specPending(name, g.pendingPath(i))
+	}
+}
+
 // runSpecsRecovered runs a group's specs in order, recovering each one individually.
 //
-// ctx.failed is reset before every spec unconditionally — not gated on whether ctx.execObserver is
+// The failure record is reset before every spec unconditionally — not gated on whether ctx.execObserver is
 // set — because gating it would make attaching a reporter change execution semantics; reporting must
-// stay purely observational. This also fixes a latent bug: without the reset, ctx.failed stuck true
+// stay purely observational. This also fixes a latent bug: without the reset, the record stuck failed
 // after the first failing spec in a group and stayed true for the rest of this loop (harmless today,
 // since nothing outside the immediate failFast-gated checks ever read it, but a real correctness
 // issue for any future consumer, and now for reporting).
@@ -212,22 +244,21 @@ func reportSkipped(ctx *Context, g *group) {
 //
 // Each spec runs its own before hooks, body, and after hooks as one unit via runSpecRecovered,
 // isolated in its own subtest when possible — see its doc comment (#74, #109). failFast still works
-// correctly across that isolation: t.Run blocks until the subtest's goroutine finishes, so ctx.failed
+// correctly across that isolation: t.Run blocks until the subtest's goroutine finishes, so the record
 // (set synchronously by recordFailure before any Fatalf, not by recover) is visible here exactly like
 // before isolation existed.
 func runSpecsRecovered(ctx *Context, g *group) {
 	obs := ctx.execObserver
 	for i, s := range g.specs {
-		ctx.failed = false
+		ctx.resetFailure()
 		named := obs != nil && i < len(g.names)
 		var started report.SpecStartEvent
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
-		message, output, ran := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
-		failed := ctx.failed
+		message, output, ran, failed, skipped := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
 		if named {
-			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran})
+			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 		}
 		if ctx.failFast && failed {
 			return
@@ -256,16 +287,25 @@ func runSpecsRecovered(ctx *Context, g *group) {
 // (a subtest that never ran vacuously "succeeded"), so runSpecIsolated instead sets ran from inside
 // the closure itself — which only runs at all when the filter accepted the subtest. The two fast
 // paths above never go through t.Run at all, so they always ran.
-func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran bool) {
+//
+// failed is the spec's outcome: the Context's own failure record, plus, on the isolation path, the
+// subtest's own Failed() — a body that fails only through ctx.T (Error, Fatal, Fail, FailNow) marks
+// the subtest failed without touching the Context (#253). The same mirror as runSpecProgram.
+//
+// skipped is always false on the two fast paths, for the same reason runSpecProgram's are: neither a
+// fake backend nor a *testing.B gives the body a real subtest for ctx.T.Skip to act on. On the
+// isolation path it is runSpecIsolated's own fold of the subtest's Skipped() against this function's
+// final failed (#254).
+func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtestName string) (message, output string, ran, failed, skipped bool) {
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true
+		return message, output, true, ctx.hasFailed(), false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true
+		return message, output, true, ctx.hasFailed(), false
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -281,37 +321,55 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 // ran is set from inside the closure itself, not from t.Run's own bool return (see runSpecRecovered's
 // doc comment on why t.Run's return can't be trusted for this) — which only runs at all when the
 // filter accepted the subtest.
-func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran bool) {
-	t.Run(subtestName, func(subT *testing.T) {
-		ran = true
+//
+// ctx is rebound to the parent's backend/T/tb, and the subtest's backend handed back to its pool,
+// only after t.Run has returned, never in a defer inside the closure. testing runs the subtest's
+// Cleanup functions after the closure has returned, so an idiomatic
+// ctx.T.Cleanup(func() { ctx.T.Error("...") }) needs ctx.T to still be this spec's subtest by then;
+// restoring earlier sent that failure to the parent instead, and the spec was reported passed
+// (#253). prevBackend/prevT/prevTB are plain locals the closure never captures, so this adds no
+// allocation.
+func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []step, s step, after []step) (message, output string, ran, failed, skipped bool) {
+	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
+	var parked bool
+	ran, failed, skipped, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
 		message, output = runSpecBody(ctx, subT, before, s, after)
 	})
+	if parked {
+		// The body called the unsupported ctx.T.Parallel(): ctx cannot be rebound to the parent here,
+		// because the parked body still needs ctx pointing at its own subtest. Stop the run instead of
+		// letting the next spec swap over it (#172).
+		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
+	}
+	failed = failed || ctx.hasFailed()
+	// skipped is folded against this final failed, not the raw subtest failed above, so it always
+	// agrees with the Failed value this function reports: a body that fails and then calls SkipNow
+	// must be reported failed, not skipped (#254) — see spec_body_parallel.go's doc comment.
+	skipped = skipped && !failed
+	if ran {
+		putTestBackend(ctx.backend)
+		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
+	}
 	return
 }
 
-// runSpecBody runs before/s/after against ctx with ctx.backend/ctx.T/ctx.tb temporarily swapped to
-// tb's own backend (tb is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so
-// every assertion helper — all of which read c.backend/e.ctx.backend at call time, never cache it —
-// fails tb, not the parent. That is what makes the Goexit land in this subtest's goroutine instead of
-// the parent's. Restored before returning so the next spec in this group (back in the parent's
-// goroutine) sees the parent's backend/T/tb again, exactly as Context.Reset already does for the
-// analogous runIsolatedCase case.
+// runSpecBody runs before/s/after against ctx with ctx.backend/ctx.T/ctx.tb swapped to tb's own
+// backend (tb is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so every
+// assertion helper — all of which read c.backend/e.ctx.backend at call time, never cache it — fails
+// tb, not the parent. That is what makes the Goexit land in this subtest's goroutine instead of the
+// parent's. It deliberately leaves ctx bound to tb on return: the subtest's cleanups run after this
+// returns and still need it. runSpecIsolated rebinds ctx to the parent, and hands the backend back
+// to its pool, once t.Run has returned.
 //
 // ctx.tb must be swapped alongside ctx.backend: it is the only field assertion failure paths use to
 // mark themselves as test helpers, so leaving it pointing at the parent (or at nil) sends the
 // failure location back to a go-specs frame instead of the user's assertion line.
 func runSpecBody(ctx *Context, tb testing.TB, before []step, s step, after []step) (message, output string) {
-	subBackend := asTestBackend(tb)
-	defer putTestBackend(subBackend)
-	prevBackend, prevT, prevTB := ctx.backend, ctx.T, ctx.tb
-	ctx.backend = subBackend
+	ctx.backend = asTestBackend(tb)
 	ctx.tb = tb
 	if t, ok := tb.(*testing.T); ok {
 		ctx.T = t
 	}
-	defer func() {
-		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
-	}()
 	return runSpecWithHooks(ctx, before, s, after)
 }
 
@@ -320,55 +378,109 @@ func runSpecBody(ctx *Context, tb testing.TB, before []step, s step, after []ste
 // run exactly once per spec, not once for a whole group of coalesced specs — see runProgram in
 // execution_plan.go, which this mirrors.
 //
-// after runs via a defer registered before before/body ever run, not as a plain statement following
-// them: a real *testing.T.Fatal/Fatalf/FailNow inside before or the body calls runtime.Goexit, which
-// unwinds this goroutine without ever reaching a following statement — only deferred calls still run.
-// A plain "run before/body, then run after" sequence would silently skip after entirely in that case,
-// resurrecting the pre-#109 gap where a fatal teardown-relevant failure left resources uncleaned, and
-// diverging from execution_plan.go's runProgram, which guarantees after via the same defer technique.
-// recover() cannot observe Goexit (see runStepRecovered), so message/output stay "" for a Goexit-based
-// failure here exactly as they already do for a body panic — this only fixes after not running, not
-// that pre-existing, documented reporting gap.
+// #235: this spec runs under exactly one defer/recover, not one per phase. afterIdx tracks where
+// execution was when that defer fires: -1 while before/body are still running (or have not been
+// reached), the index of the after hook in progress once the after loop starts. completed is set only
+// once, as this function's very last statement, right before its normal return — it is what lets the
+// defer tell "finished normally" apart from "recover()==nil because a real
+// testing.T.Fatal/Fatalf/FailNow (runtime.Goexit) interrupted this call", since Goexit and a plain
+// return are otherwise indistinguishable from recover()'s point of view.
 //
-// before and the body are recovered together, as one step passed to runStepRecovered: a panic
-// anywhere in before stops the remaining before hooks and the body (later before hooks, and the body
-// itself, may depend on setup that never completed), and is recorded with the same "panic: value"
-// message a body-only panic gets — this spec's own before is no different, semantically, from more of
-// its own body. A panic in one spec's before never touches its siblings: the next spec in g.specs
-// gets its own fresh call to the same before hooks. FailFast is checked after every before hook, same
-// as between specs, so a non-panic failure with FailFast set also skips the body — but this spec's
-// after hooks still run regardless (via the deferred runAfterRecovered below), matching runGroup's
-// original "FailFast decides whether we run more, not whether we leave resources uncleaned" contract.
+// The defer always runs — on a normal return, a panic, or a Goexit — which is what guarantees after
+// hooks run even when before/body never reaches the after loop at all: a real Fatal inside before or
+// the body unwinds this goroutine without ever reaching a following statement, and only deferred calls
+// still run. A plain "run before/body, then run after" sequence would silently skip after entirely in
+// that case, resurrecting the pre-#109 gap where a fatal teardown-relevant failure left resources
+// uncleaned, and diverging from execution_plan.go's runProgram, which guarantees after via the same
+// defer technique. recover() cannot observe Goexit, so message/output stay "" for a Goexit-based
+// failure exactly as they already did for a body panic before this optimization.
 //
-// after hooks always run, each recovered individually by runAfterRecovered, so one panicking after
-// hook doesn't stop its siblings. message/output follow runProgram's first-write-wins contract: a
-// before/body panic's message wins over a later after-hook panic's, since it happened first.
+// A panic anywhere in before stops the remaining before hooks and the body (later before hooks, and
+// the body itself, may depend on setup that never completed), and is recorded with the same
+// "panic: value" message a body-only panic gets — this spec's own before is no different, semantically,
+// from more of its own body. A panic in one spec's before never touches its siblings: the next spec in
+// g.specs gets its own fresh call to the same before hooks. FailFast is checked after every before
+// hook, same as between specs, so a non-panic failure with FailFast set also skips the body (skipBody)
+// — but this spec's after hooks still run regardless, matching runGroup's original "FailFast decides
+// whether we run more, not whether we leave resources uncleaned" contract.
+//
+// Every after hook always runs to completion (afterIdx<0 in the defer): none has started yet, so they
+// all run fresh via runAfterRecovered, each individually recovered exactly as before this
+// optimization. A panic partway through the after loop itself (afterIdx>=0, recover() non-nil) is
+// where the fallback kicks in: this spec already spent its one shared recover, so the remaining after
+// hooks fall back to runAfterRecoveredFrom's per-hook recovery, same cost as before this optimization
+// but paid only for the tail of the list that follows an actual panic, not for every spec. A real
+// Fatal (Goexit) partway through the after loop (afterIdx>=0, recover()==nil) is different again: same
+// as before this optimization, Goexit does not return control to the loop, so the remaining
+// (lower-index) after hooks do not run — see
+// TestRunnerRunGoexitInAfterHookStopsRemainingAfterHooksRealProcess.
+//
+// message/output follow runProgram's first-write-wins contract: a before/body panic's message wins
+// over a later after-hook panic's, since it happened first.
 func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (message, output string) {
+	afterIdx := -1
+	completed := false
 	defer func() {
-		afterMessage, afterOutput := runAfterRecovered(ctx, after)
+		recovered := recover()
+		if completed {
+			return
+		}
+		if afterIdx < 0 {
+			message, output = recoverSpecFailure(ctx, recovered, "panic")
+			afterMessage, afterOutput := runAfterRecovered(ctx, after)
+			if message == "" {
+				message, output = afterMessage, afterOutput
+			}
+			return
+		}
+		if recovered == nil {
+			// A real Fatal/FailNow/Skip inside after[afterIdx] called runtime.Goexit: it never returns
+			// control to the loop below, so the remaining after hooks do not run, same as before #235.
+			return
+		}
+		message, output = recoverSpecFailure(ctx, recovered, "panic in after hook")
+		remMessage, remOutput := runAfterRecoveredFrom(ctx, after, afterIdx-1)
 		if message == "" {
-			message, output = afterMessage, afterOutput
+			message, output = remMessage, remOutput
 		}
 	}()
-	message, output = runStepRecovered(ctx, func(ctx *Context) {
-		for _, b := range before {
-			b(ctx)
-			if ctx.failFast && ctx.failed {
-				return
-			}
+
+	skipBody := false
+	for _, b := range before {
+		b(ctx)
+		if ctx.failFast && ctx.hasFailed() {
+			skipBody = true
+			break
 		}
+	}
+	if !skipBody {
 		s(ctx)
-	}, "panic")
+	}
+	for i := len(after) - 1; i >= 0; i-- {
+		afterIdx = i
+		after[i](ctx)
+	}
+	completed = true
 	return
 }
 
-// runAfterRecovered runs a spec's after hooks in reverse order, recovering each individually.
-// Unlike before/specs, this does not check FailFast between hooks: FailFast decides whether we run
-// more specs/groups, not whether we leave resources uncleaned. Every after hook always runs. Returns
-// the first after-hook panic's message/output (first-write-wins, matching runSpecWithHooks' priority
-// of a before/body failure over a later after-hook one) — "" if none panicked.
+// runAfterRecovered runs every one of a spec's after hooks in reverse order, recovering each
+// individually — the full-list case of runAfterRecoveredFrom, used when before/body never reached the
+// after loop at all (see runSpecWithHooks), so none of them has run yet.
 func runAfterRecovered(ctx *Context, after []step) (message, output string) {
-	for i := len(after) - 1; i >= 0; i-- {
+	return runAfterRecoveredFrom(ctx, after, len(after)-1)
+}
+
+// runAfterRecoveredFrom runs after[start], after[start-1], ..., after[0] — the tail of the reverse-
+// order after-hook loop starting at start — recovering each individually. Unlike before/specs, this
+// does not check FailFast between hooks: FailFast decides whether we run more specs/groups, not
+// whether we leave resources uncleaned. Returns the first after-hook panic's message/output
+// (first-write-wins, matching runSpecWithHooks' priority of a before/body failure over a later
+// after-hook one) — "" if none panicked. runSpecWithHooks calls this with start == afterIdx-1 to
+// resume the fallback per-hook recovery for the hooks that had not run yet when after[afterIdx]
+// panicked; runAfterRecovered calls it with start == len(after)-1 for the whole list.
+func runAfterRecoveredFrom(ctx *Context, after []step, start int) (message, output string) {
+	for i := start; i >= 0; i-- {
 		m, o := runStepRecovered(ctx, after[i], "panic in after hook")
 		if message == "" {
 			message, output = m, o
@@ -378,24 +490,17 @@ func runAfterRecovered(ctx *Context, after []step) (message, output string) {
 }
 
 // runStepRecovered runs a single step, recovering a panic so it fails just this step (recorded via
-// ctx.recordFailure + ctx.backend.Errorf with message and stack trace) instead of crashing the
+// reportRecoveredPanic with message and stack trace) instead of crashing the
 // process. label distinguishes a before/spec panic from an after-hook panic in the reported message.
 //
 // On a recovered panic, message and output are built exactly once here — message is the short
-// "label: value" summary, output is the raw stack trace — and reused both for ctx.backend.Errorf
+// "label: value" summary, output is the raw stack trace — and reused both for reportRecoveredPanic
 // (unchanged wire format: "message\noutput") and as the return value runSpecsRecovered feeds into
 // specFinished's specResult. They are never reconstructed anywhere else. Both are zero-value ("")
 // when s(ctx) returns normally, including via runtime.Goexit (a real testing.T.Fatalf/FailNow) —
 // recover() cannot observe that case, so it is indistinguishable here from a spec that never failed.
 func runStepRecovered(ctx *Context, s step, label string) (message, output string) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			ctx.recordFailure()
-			message = fmt.Sprintf("%s: %v", label, recovered)
-			output = string(debug.Stack())
-			ctx.backend.Errorf("%s\n%s", message, output)
-		}
-	}()
+	defer func() { message, output = recoverSpecFailure(ctx, recover(), label) }()
 	s(ctx)
 	return
 }

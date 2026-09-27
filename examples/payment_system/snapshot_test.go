@@ -23,9 +23,9 @@ func TestTransferSnapshot(t *testing.T) {
 			result := map[string]any{
 				"fromBalance": 100,
 				"toBalance":   50,
-				"amount":     10,
-				"newFrom":    newFrom,
-				"newTo":      newTo,
+				"amount":      10,
+				"newFrom":     newFrom,
+				"newTo":       newTo,
 			}
 			ctx.Snapshot("transfer_result", result)
 		})

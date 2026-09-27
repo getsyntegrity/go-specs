@@ -6,9 +6,7 @@
 package specs
 
 import (
-	"fmt"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +25,7 @@ func NewBytecodeRunner(p BCProgram) *BytecodeRunner {
 // Run executes all specs in order. One context from the pool, reused for every spec.
 //
 // A panic anywhere in one spec's instruction range is recovered instead of crashing the process:
-// it's recorded as a failure (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace),
+// it's recorded as a failure (via reportRecoveredPanic, message and stack trace),
 // and the next spec still runs. Recovery is per spec, not per instruction, matching RunParallel's
 // granularity.
 func (r *BytecodeRunner) Run(tb testing.TB) {
@@ -36,9 +34,8 @@ func (r *BytecodeRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
-	ctx.SetPathValues(PathValues{})
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	runBytecodeSequential(ctx, r.program.Code, r.program.SpecStarts)
 }
@@ -56,12 +53,7 @@ func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
 // this spec instead of crashing the process. isExpectedAbort sentinels (a controlled backend's
 // FailNow) are already recorded by the backend and must not be reported a second time.
 func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
@@ -70,8 +62,10 @@ func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) 
 }
 
 // RunParallel runs each spec (instruction range) on a worker pool. Workers pull spec indexes via
-// atomic counter; each worker reuses one Context. Failures are recorded by spec index and reported
-// in order (deterministic). No allocations in the worker loop.
+// atomic counter; each worker reuses one Context. Failures are recorded by spec index and every
+// failing spec is reported in order (deterministic), through Errorf rather than Fatalf so a failing
+// run does not end the calling test function — see reportFailures and #173. No allocations in the
+// worker loop.
 func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 	if r == nil || tb == nil || r.program.BCLen() == 0 {
 		return
@@ -92,7 +86,7 @@ func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 		workers = 1
 	}
 
-	results := make([]parallelFailure, nSpecs)
+	results := make([]failureRecord, nSpecs)
 	backends := make([]parallelBackend, workers)
 	for i := range backends {
 		backends[i].results = &results
@@ -115,9 +109,9 @@ func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 
 // runBytecodeWorker runs spec ranges whose spec index it acquires via next. One context per worker.
 // No allocations in the loop: context from pool, backend preallocated, code/starts read-only.
-func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *parallelBackend, next *uint32, results *[]parallelFailure) {
-	ctx, release := acquireContext(backend)
-	defer release()
+func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *parallelBackend, next *uint32, results *[]failureRecord) {
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	for {
 		s := atomic.AddUint32(next, 1) - 1
@@ -129,27 +123,16 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 		end := starts[si+1]
 		backend.specIndex = si
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
 		runBytecodeWorkerSpec(code, start, end, ctx, results, si)
 		ctx.Reset(nil)
 	}
 }
 
-// runBytecodeWorkerSpec runs one spec's instruction range, recovering the parallelAbort{} sentinel a
-// fatal assertion panics with when backend.abortOnFatal is set — an expected stop, already recorded
-// in results[idx], not a failure to report. Any other panic is recorded as an ordinary spec failure
-// instead of crashing the worker goroutine — which, since this runs inside a spawned goroutine, would
-// otherwise crash the entire process. Mirrors scheduler.go's runWorkerSpec.
-func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]parallelFailure, idx int) {
-	defer func() {
-		switch r := recover(); r {
-		case nil, parallelAbort{}:
-		default:
-			if (*results)[idx].Message == "" {
-				(*results)[idx] = parallelFailure{Message: fmt.Sprintf("panic: %v", r)}
-			}
-		}
-	}()
+// runBytecodeWorkerSpec runs one spec's instruction range on a worker goroutine, recording a
+// recovered panic into results[idx] via recoverParallelSpecFailure — the same rule scheduler.go's
+// runWorkerSpec applies, now shared rather than mirrored (see panic_report.go).
+func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]failureRecord, idx int) {
+	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)

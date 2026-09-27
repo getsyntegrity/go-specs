@@ -3,9 +3,14 @@ package report
 import "time"
 
 // SchemaVersion is the current version of NormalizedReport's JSON shape (render_json.go).
-// A consumer must ignore unknown fields and may key behavior off this value; it changes only
-// when a field's meaning changes incompatibly, never for an additive field.
-const SchemaVersion = "1"
+// A consumer must ignore unknown fields and may key behavior off this value; it changes when a
+// field's meaning changes incompatibly — which includes a new value in a closed vocabulary such
+// as Status, since a consumer switching exhaustively over it would misread the document — but
+// never for a new field.
+//
+// History: "1" — initial shape. "2" — adds StatusPending ("pending") to the status vocabulary and
+// the pending totals field (issue #208).
+const SchemaVersion = "2"
 
 // Status is a case's normalized outcome. It is derived from SpecResultEvent (see
 // classifyStatus in collector.go) and is the single vocabulary every renderer maps from —
@@ -13,11 +18,17 @@ const SchemaVersion = "1"
 type Status string
 
 const (
-	StatusPassed   Status = "passed"
-	StatusFailed   Status = "failed"  // assertion or hook failure
-	StatusError    Status = "error"   // recovered panic or other infrastructure failure
-	StatusSkipped  Status = "skipped" // compile-time XIt/Skip; body never ran
+	StatusPassed Status = "passed"
+	StatusFailed Status = "failed" // assertion or hook failure
+	StatusError  Status = "error"  // recovered panic or other infrastructure failure
+	// StatusSkipped is a compile-time XIt/Skip spec (body never ran) or a spec whose own subtest
+	// skipped at runtime via ctx.T.Skip/Skipf/SkipNow (issue #254), where the body did start running.
+	StatusSkipped  Status = "skipped"
 	StatusFiltered Status = "filtered"
+	// StatusPending is a compile-time PendingIt/Pending spec: the specification exists but its
+	// implementation does not, distinct from Skipped (intentionally not executed). Body never ran,
+	// exactly like Skipped and Filtered; see events.go's SpecResultEvent.Pending.
+	StatusPending Status = "pending"
 )
 
 // Case is one normalized spec result: an executed It, or a generated candidate.
@@ -36,9 +47,22 @@ type Case struct {
 	Duration time.Duration
 	Message  string // failure/error summary; empty unless Status is Failed or Error
 	Output   string // full output/stack trace, when the source event carried one
+	// Hook is SpecResultEvent.Hook.String() (see report/events.go's HookKind): "BeforeAll"/"AfterAll"
+	// for a synthetic group hook case, empty for a real spec. Collector converts the compact
+	// HookKind enum to this plain string once per case, so every renderer and the JSON/XML output
+	// keep working with a string exactly as before HookKind existed. This is additive, not a
+	// schema-version change — see SchemaVersion's doc comment: a new field never bumps it, only a
+	// new value in a closed vocabulary such as Status would. A report with no group hooks never sets
+	// it, and every renderer keeps its existing byte-for-byte output for that case (issue #207 H10).
+	//
+	// Tagged omitempty because Case itself gets serialized directly (not through a renderer's own
+	// DTO) by report/coordination/writer.go's shard envelope: without the tag, every ordinary case
+	// in every shard would carry a spurious `"Hook": ""`, which is exactly the per-suite cost H10
+	// forbids for a suite that never registers a group hook.
+	Hook string `json:"Hook,omitempty"`
 }
 
-// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered.
+// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
 type Totals struct {
 	Total    int
 	Passed   int
@@ -46,6 +70,7 @@ type Totals struct {
 	Error    int
 	Skipped  int
 	Filtered int
+	Pending  int
 }
 
 func (t *Totals) add(s Status) {
@@ -61,6 +86,8 @@ func (t *Totals) add(s Status) {
 		t.Skipped++
 	case StatusFiltered:
 		t.Filtered++
+	case StatusPending:
+		t.Pending++
 	}
 }
 

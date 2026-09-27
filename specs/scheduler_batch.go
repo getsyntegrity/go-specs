@@ -19,9 +19,9 @@ const DefaultChunkSize = 16
 // (not per spec), reducing backend setup overhead. A fatal assertion aborts only the spec that
 // raised it (see runWorkerSpec) — the chunk loop continues to the next spec. No allocations in
 // the loop.
-func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure, chunkSize uint32) {
-	ctx, release := acquireContext(backend)
-	defer release()
+func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]failureRecord, chunkSize uint32) {
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	n := uint32(len(specs))
 	if chunkSize == 0 {
@@ -38,7 +38,6 @@ func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, r
 		}
 		// One Reset per chunk; reuse context for all specs in the chunk.
 		ctx.Reset(backend)
-		ctx.SetPathValues(PathValues{})
 		for i := start; i < end; i++ {
 			idx := int(i)
 			backend.specIndex = idx

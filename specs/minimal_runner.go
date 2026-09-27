@@ -9,7 +9,6 @@ package specs
 
 import (
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"testing"
 )
@@ -38,7 +37,9 @@ func NewMinimalRunner(capacity int) *MinimalRunner {
 
 // NewMinimalRunnerFromSpecs creates a runner that runs the given specs. The slice is copied so the
 // runner owns it and execution is safe. Use with ShardSpecs to run a shard: ShardSpecs(specs, shard, total)
-// then NewMinimalRunnerFromSpecs(sharded). Run and RunParallel are unchanged; no allocations in their loop.
+// then NewMinimalRunnerFromSpecs(sharded) — resolve shard and total through ShardFromArgsOrEnv first,
+// which distinguishes "no sharding requested" from a configuration that cannot be used.
+// Run and RunParallel are unchanged; no allocations in their loop.
 func NewMinimalRunnerFromSpecs(specs []RunSpec) *MinimalRunner {
 	if len(specs) == 0 {
 		return &MinimalRunner{specs: nil}
@@ -65,7 +66,7 @@ const RunBatchSize = 8
 // Specs are run in batches of RunBatchSize to improve cache behavior and reduce loop overhead.
 //
 // A panic in a spec is recovered instead of crashing the process: it's recorded as a failure (via
-// ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec still runs —
+// reportRecoveredPanic, message and stack trace), and the next spec still runs —
 // same contract as BlockRunner.Run and the default execution path.
 func (r *MinimalRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
@@ -73,9 +74,8 @@ func (r *MinimalRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx, release := acquireContext(backend)
-	defer release()
-	ctx.SetPathValues(PathValues{})
+	ctx := acquireContext(backend)
+	defer releaseContext(ctx)
 
 	runMinimalSpecs(ctx, r.specs)
 }
@@ -96,19 +96,16 @@ func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 // of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
 // recorded by the backend and must not be reported a second time.
 func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() {
-		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
-			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
 	fn(ctx)
 }
 
 // RunParallel runs specs across workers goroutines. Each worker reuses one Context from contextPool.
-// Failures are recorded by spec index; after all workers finish, the first failure is reported in
+// Failures are recorded by spec index; after all workers finish, every failing spec is reported in
 // spec order (deterministic). workers <= 0 uses GOMAXPROCS. No allocations in the worker loop.
-// tb is used only for reporting (Helper, Fatalf) after workers finish; pass testing.T or a type implementing failureReporter.
+// tb is used only for reporting (Helper, Errorf) after workers finish; pass testing.T or a type
+// implementing failureReporter. Reporting uses Errorf, so a failing run does not end the calling
+// test function — see reportFailures and #173.
 func (r *MinimalRunner) RunParallel(tb failureReporter, workers int) {
 	r.runParallelWith(tb, workers, runWorker)
 }
@@ -122,7 +119,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 	if cs < 1 {
 		cs = 1
 	}
-	r.runParallelWith(tb, workers, func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure) {
+	r.runParallelWith(tb, workers, func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]failureRecord) {
 		runWorkerBatched(specs, backend, next, results, cs)
 	})
 }
@@ -130,7 +127,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 // runParallelWith holds the setup shared by RunParallel and RunParallelBatched: worker-count
 // clamping, per-worker backend/result state, goroutine dispatch, and deterministic failure
 // reporting. Only the per-spec claiming strategy (work) differs between the two callers.
-func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]parallelFailure)) {
+func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]failureRecord)) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
 		return
 	}
@@ -146,7 +143,7 @@ func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work fu
 		workers = 1
 	}
 
-	results := make([]parallelFailure, n)
+	results := make([]failureRecord, n)
 	backends := make([]parallelBackend, workers)
 	for i := range backends {
 		backends[i].results = &results
