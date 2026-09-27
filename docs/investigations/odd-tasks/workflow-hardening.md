@@ -62,7 +62,7 @@ branch names go through `env:`.
 - [x] T1 — Baseline hardening (timeouts, persist-credentials, permissions, concurrency). Check:
   actionlint, YAML parse.
 - [x] T2 — CodeQL language matrix `[go, actions]`. Check: actionlint; both legs green on the PR.
-- [ ] T3 — Split `release.yml` and `benchmark-charts.yml`. Check: actionlint; job outputs and
+- [x] T3 — Split `release.yml` and `benchmark-charts.yml`. Check: actionlint; job outputs and
   artifacts wired; `if:` conditions preserved.
 - [ ] T4 — Pin every `uses:` by SHA with a version comment. Check: every SHA resolves to the tag it
   claims (`git ls-remote`); actionlint.
@@ -97,3 +97,31 @@ branch names go through `env:`.
   Check: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/codeql.yml'))"` — OK.
   `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings.
   Commit: `ci: analyze workflows with CodeQL alongside Go`.
+- T3 done.
+  - `release.yml`: `release` (Determine release kind -> Checkout merge commit -> Check Go version
+    pin -> Set up Go -> Determine the version to release -> Skip if already tagged -> Create and
+    push tag -> Extract release notes -> Run GoReleaser -> Verify external installability) now
+    exposes outputs `version`, `is_hotfix`, `already_tagged`. New job `hotfix-sync` (`needs:
+    release`, `if: needs.release.outputs.is_hotfix == 'true' && needs.release.outputs.already_tagged != 'true'`)
+    verifies the App secrets, mints the App token, checks out the just-pushed tag
+    (`ref: ${{ needs.release.outputs.version }}`, `fetch-depth: 0`), pushes `sync/hotfix-<version>`
+    and opens/reuses the develop PR -- unchanged behavior, moved wholesale out of `release`. The
+    App token is no longer minted in `release` at all. `hotfix-sync`'s checkout sets
+    `persist-credentials: false` (it has no tag push to protect, unlike `release`'s own checkout),
+    which let the `-c http.https://github.com/.extraheader=` workaround be removed from the
+    sync-branch push -- its comment now explains why it is no longer needed there. `release` keeps
+    `contents: write`; `hotfix-sync` gets `contents: read` (its writes go through the App token).
+  - `benchmark-charts.yml`: `bench` (checkout, Go, run the suite, upload `current.txt`) -> `chart`
+    (`needs: bench`; download `current.txt`, Python + matplotlib, generate the PNGs, upload them)
+    -> `publish` (`needs: chart`; verify App secrets, mint the App token, checkout, download the
+    PNGs into `benchmarks/results/`, `peter-evans/create-pull-request`). The App token now exists
+    only in `publish`; `bench` and `chart` touch no secret. All three use
+    `actions/upload-artifact@v4`/`actions/download-artifact@v4` with `retention-days: 1`. The
+    `paths-ignore` loop guard and the workflow-level `concurrency` block are unchanged, both still
+    apply to the whole workflow (all three jobs).
+  - No `requirements.txt` exists for `pip install matplotlib` (checked with `fd -HI 'requirements*.txt'`),
+    so `chart`'s `actions/setup-python` step has no dependency file to key a pip cache on --
+    skipped rather than added without one, per T3's "if simple" qualifier.
+  Check: `python3 -c "import yaml; yaml.safe_load(open(f))"` on both files -- OK.
+  `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
+  Commit: `ci: split release and benchmark chart workflows into single-purpose jobs`.
