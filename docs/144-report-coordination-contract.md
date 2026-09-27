@@ -1110,8 +1110,8 @@ tests were all filtered away by `-run`/`-skip`/`-short` are **in** and must stil
 reporting zero executed tests. #146 must not re-derive or reinterpret that set; the definition
 exists precisely so the rule is not invented in code.
 
-A thin `cmd/go-specs-report` CLI is a reasonable deliverable given #141 names GitHub
-Actions/Shipwright/generic-CI as consumers, but the library entry point is the actual contract;
+A thin `cmd/go-specs-report` CLI is a reasonable deliverable given #141 names GitHub Actions and
+generic CI as consumers, but the library entry point is the actual contract;
 the CLI is optional sugar. Its verb set is `init`, `finalize` and `gc`, not just the last two:
 §3 step 2 puts marker creation *before* `go test`, and §5 spells the recovery path
 `go-specs-report init --force`. `finalize` and `gc` wrap `Finalize` and are #146 deliverables;
@@ -1498,7 +1498,7 @@ line should be restated as:
   (`init`, `finalize`, `gc`) only parses input and prints results over the library. Original note:
   recommend shipping both (a small `cmd/go-specs-report`
   wrapping `InitializeRun` and `Finalize` — see §7 for the `init`/`finalize`/`gc` verb set), since
-  #141 names GitHub Actions/Shipwright/generic CI as consumers and a CLI is the lowest-friction
+  #141 names GitHub Actions and generic CI as consumers and a CLI is the lowest-friction
   integration point — but this is an implementation-time call.
 - **Strict vs. lenient missing-shard default** — *resolved in v1.2.9*: strict, with **no**
   permissive option. A local run that wants a partial report passes a shorter producer list, which

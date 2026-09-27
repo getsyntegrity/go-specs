@@ -1,0 +1,70 @@
+# CodeQL: static analysis for security and quality problems.
+#
+# Runs on every pull request and push to develop/main so a vulnerable or low-quality pattern is
+# caught before it lands, plus a weekly scheduled scan so a newly published CodeQL query (a query
+# pack update, not a code change here) still gets applied to code that hasn't changed recently --
+# without the weekly run, a query added after the last push to a stable file would never fire on
+# it. workflow_dispatch is for a manual re-run, e.g. right after bumping the query pack.
+#
+# The build is manual (`go build ./...`) rather than CodeQL's `autobuild` action: go-specs pins
+# its toolchain in .go-version and GOTOOLCHAIN=local like every other workflow in this repo, and
+# autobuild's own Go heuristics install whatever toolchain they find best rather than honouring
+# that pin -- the same reason ci.yml and release.yml both set up Go explicitly instead of trusting
+# a generic default.
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  schedule:
+    # Mondays at 03:17 UTC -- an off-the-hour time deliberately, so this doesn't compete with
+    # every other repository's queued "top of the hour" scheduled workflow for runner capacity.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+# security-events: write is what lets this job upload its SARIF results to the repository's code
+# scanning alerts; actions: read is required by github/codeql-action to read the workflow run
+# that produced the analysis. Neither is available by default under the contents: read floor the
+# rest of this repo's workflows use, so this workflow declares its own permissions block instead
+# of relying on an org/repo default.
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          # security-and-quality is a superset of the security-extended query pack: it adds
+          # maintainability/reliability queries on top of the vulnerability-focused default
+          # suite, matching this repo's stated goal of correctness and determinism, not just
+          # absence of known CVE patterns.
+          queries: security-and-quality
+
+      # Explicit build instead of autobuild, per the file header: this is what actually compiles
+      # under the pinned toolchain and GOTOOLCHAIN=local CodeQL then traces and analyzes.
+      - name: Build
+        run: go build ./...
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"

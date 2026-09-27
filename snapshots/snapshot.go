@@ -102,7 +102,9 @@ func Evaluate(helper HelperBackend, callerFile string, name string, value any) R
 	case update && errors.As(err, &parseErr):
 		// Regenerating is the documented way out of a bad merge, so an unparseable file must not
 		// block it (issue #242). Every other key in the file is lost, so say which file was reset.
-		fmt.Fprintf(warnOutput, "snapshot: %s is not valid JSON (%v); %s=1 is rewriting it and discarding its other snapshots\n",
+		// warnOutput is diagnostic-only (stderr by default); a write failure there must not
+		// block the recovery path this branch exists for, so the error is deliberately discarded.
+		_, _ = fmt.Fprintf(warnOutput, "snapshot: %s is not valid JSON (%v); %s=1 is rewriting it and discarding its other snapshots\n",
 			snapshotPath, parseErr.err, UpdateSnapshotsEnv)
 		data = nil
 	default:

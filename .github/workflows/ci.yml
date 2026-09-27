@@ -1,38 +1,25 @@
-# CI: gofmt, build, vet, and test (including -race) on every PR and push to develop/main.
+# CI: one job per concern instead of one monolithic job, all started in
+# parallel: `verify` (Go version pin, module path check, gofmt, `go vet`,
+# `go build`), `unit` (`go test ./...`), `race` (`go test -race ./...`),
+# `bench-smoke` (execute + race-check benchmark code paths), `report-cli`
+# (the documented go-specs-report CI flow, run for real), `lint`,
+# `govulncheck`, and `goreleaser` (check + dry-run release). Each concern is its
+# own check in the PR's status list instead of one line item that could fail
+# for any of eight different reasons. The test jobs used to wait for `verify`
+# (`needs:`); that put ~30s on every run's critical path for no correctness
+# gain, since `verify` fails the run on its own either way. Every Go job
+# restores its own flavour of the Go build cache (see
+# .github/actions/setup-go/action.yml).
+#
 # Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
 # (an OS-specific bug class, a toolchain deprecation window); this repo never
 # had one, so it was pure CI runtime with no coverage payoff. If a real reason
 # shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
-# The `shipwright` job runs unit tests, lint, and govulncheck as one
-# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
-# executing in parallel instead of sequentially. .shipwright/workflow.yaml is
-# the canonical definition of what "go-specs passes CI" means; this file only
-# adds what Shipwright cannot express today. It complements rather than
-# replaces the `test` job below: Dagger only runs Linux containers and pins
-# its own Go toolchain (not the one pinned in .go-version), so it can't stand
-# in for the native build/vet/test step that actually builds and tests on the
-# exact patch pinned for the floor's minor. Both run in parallel, so the small overlap on `test` costs nothing.
-#
-# Build and vet stay native because Shipwright has no provider for either
-# on a library module: its only `build` provider compiles a single `main`
-# binary from `.` (go-specs has none), and no `go-vet` provider is
-# registered anywhere in Shipwright -- golangci-lint's default linter set
-# already runs vet-equivalent checks, but that's implicit coverage, not a
-# vet gate a manifest can request directly (pablogore/shipwright#273,
-# pablogore/shipwright#274).
-#
-# The job downloads+verifies the pinned shipwright binary itself instead of
-# using pablogore/shipwright's own composite action: that action's v0.12.0
-# action.yml has an unrelated bug (a literal `${{ secrets.DAGGER_CLOUD_TOKEN
-# }}` inside an input's `description:` string, which GitHub's own template
-# validator rejects with "Unrecognized named-value: 'secrets'" while just
-# parsing the manifest -- confirmed on this repo's own PR checks, and
-# re-confirmed against the v0.12.0 tag and main tip on 2026-09-10,
-# pablogore/shipwright#275). The steps below replicate exactly what that
-# action does (download -> verify checksums.txt -> run), minus the broken
-# manifest.
+# `lint` (golangci-lint) and `govulncheck` run as native jobs below, in
+# parallel with the rest, so neither depends on any external CI runner or
+# container-based workflow tool being available.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
 # every push/PR to develop/main, the same branches release.yml tags and
@@ -51,8 +38,29 @@ on:
   pull_request:
     branches: [develop, main]
 
+# Least-privilege default: every job below only reads the checked-out repository. `lint`,
+# `govulncheck`, `verify`, `unit`, `race`, `bench-smoke`, and `goreleaser` never write to the
+# repo, open a PR, or use a secret, so `contents: read` covers all of them and none needs a
+# job-level override here.
+permissions:
+  contents: read
+
+# Cancel a PR's superseded runs (a new push on the same PR obsoletes the one in flight),
+# but never cancel a push run on develop/main: those are the record of what actually ran
+# against that commit, and GitHub Actions can't tell "superseded" from "a second commit
+# landed a second later" on a push trigger the way it can for a PR's head ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  # All jobs start in parallel. `verify` is the fast static gate (version pin,
+  # module path, formatting, vet, build); it no longer holds back `unit`,
+  # `race` and `bench-smoke` with `needs:`, because waiting for it put ~30s on
+  # the critical path of every run. A formatting-only failure now costs some
+  # extra runner minutes (free on a public repository) instead of wall time;
+  # `verify` still fails the run on its own.
+  verify:
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -60,22 +68,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Catches go.mod's `go` directive drifting from the MAJOR.MINOR.0 floor
-      # derived from .go-version. A patch-only bump to .go-version (the
-      # pinned toolchain) needs no go.mod change; minor-level drift between
-      # the two fails.
-      - name: Check Go version pin
-        run: ./.github/scripts/check-go-version.sh
-
+      # Local composite actions resolve from the already-checked-out working
+      # tree, so Checkout above must run first -- see
+      # .github/actions/setup-go/action.yml's header for why. This step
+      # installs the pinned toolchain and runs check-go-version.sh.
       - name: Set up Go
-        # The toolchain CI installs is pinned in .go-version, never inline
-        # here: go.mod declares the *minimum* the code needs (the floor every
-        # consumer inherits), .go-version the *exact* patched toolchain we
-        # build and test with. One file per role, one place to bump each.
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go
         with:
-          go-version-file: .go-version
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+          cache-key: vet
 
       - name: Verify module path matches repository
         # go.mod's declared module path is what every external `go get` request
@@ -93,22 +93,66 @@ jobs:
 
       # Formatting is a gate, not a suggestion: gofmt output is canonical, so
       # drift is always a mechanical fix (`make fmt`) and never a judgement
-      # call. Running it before build/vet/test means a formatting-only PR fails
-      # in seconds instead of after the full race-detector run.
+      # call. Running it before vet/build means `verify` reports a
+      # formatting-only failure in seconds, while the test jobs run alongside.
       - name: Check formatting
         run: make fmt-check
-
-      - name: Build
-        run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
+      - name: Build
+        run: go build ./...
+
+  # `go test ./...` only -- see `race` and `bench-smoke` below for the race
+  # detector and benchmark-path coverage split out of the old monolithic
+  # `test` job.
+  unit:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # See verify's Set up Go step: Checkout must run first for a local
+      # composite action to resolve.
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+        with:
+          cache-key: test
+
       - name: Test
         run: go test ./...
 
+  race:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+        with:
+          cache-key: race
+
       - name: Test with race detector
         run: go test -race ./...
+
+  bench-smoke:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+        with:
+          cache-key: bench
 
       # Benchmark bodies are code, and until this step they were the only code
       # in the module that CI compiled but never ran: `go test ./...` skips
@@ -126,18 +170,18 @@ jobs:
       #
       # Performance guarantees are gated separately, by the allocation contract
       # tests in specs/allocation_contract_test.go, which run under `go test
-      # ./...` above. Allocation counts are a property of the generated code
-      # rather than of the machine, so they are safe to fail a PR on; ns/op is
-      # not. See BENCHMARKS.md for which claims are contractual.
+      # ./...` in the `unit` job above. Allocation counts are a property of the
+      # generated code rather than of the machine, so they are safe to fail a
+      # PR on; ns/op is not. See BENCHMARKS.md for which claims are contractual.
       #
       # Cost: about 3 seconds on top of an already-built test binary set, the
       # whole module included.
       - name: Execute benchmark code paths
         run: make bench-smoke
 
-      # `go test -race ./...` above never invokes Benchmark* functions (no
-      # -bench flag, and go test's default -run skips them), and `make
-      # bench-smoke` above has no -race flag -- so neither required check
+      # `go test -race ./...` (the `race` job above) never invokes Benchmark*
+      # functions (no -bench flag, and go test's default -run skips them), and
+      # `make bench-smoke` above has no -race flag -- so neither required check
       # ever puts a goroutine-spawning benchmark through the race detector
       # (getsyntegrity/go-specs#218).
       #
@@ -175,6 +219,10 @@ jobs:
       - name: Race-check goroutine-spawning benchmarks
         run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
 
+  # lint (golangci-lint via its own provider, see the file header) runs as a
+  # native job below. No .golangci.yml exists in this repo, so it runs with
+  # golangci-lint's own defaults -- the same defaults `make lint` falls into
+  # locally when golangci-lint is installed.
   report-cli:
     # AC-23 of #146: docs/REPORTING.md's "Running it in CI with go-specs-report" section is not
     # just prose -- this job runs the documented GitHub Actions example for real, against the
@@ -190,9 +238,10 @@ jobs:
     # result -- `go test` failing must never make `finalize` fail, and `finalize` succeeding must
     # never hide that `go test` failed.
     #
-    # The final assertion step below is this job's equivalent of the doc's own "fail the job if go
-    # test failed" consumer step: it re-fails the job once both outcomes have been checked, instead
-    # of leaving it green. A green job here would mean the red-test path was never exercised.
+    # The final assertion step below replaces the doc's own "fail the job if go test failed"
+    # consumer step: this job is green only when `go test` was red AND `finalize` succeeded with
+    # the expected totals. Any other combination fails it, including a green `go test`, which would
+    # mean the red-test path was never exercised.
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -200,11 +249,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # See verify's Set up Go step: Checkout must run first for a local
+      # composite action to resolve.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go
         with:
-          go-version-file: .go-version
-          cache: false
+          cache-key: report
 
       - name: Build go-specs-report
         run: go build -o "$RUNNER_TEMP/go-specs-report" ./cmd/go-specs-report
@@ -310,40 +360,49 @@ jobs:
 
           exit "$status"
 
-  shipwright:
-    # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
-    # single workflow step with "failed to acquire Dagger client: daemon connected but not
-    # ready ... context deadline exceeded after 1 attempts", despite reporting
-    # max_retries=11 — the configured retry is not honoured. Observed twice on unrelated
-    # PRs, each cleared by a plain re-run, so it gates merges on luck rather than on the
-    # code. `test` and `goreleaser` are independent jobs and keep running.
-    # To re-enable: delete this `if` line. Nothing else was changed.
-    if: false
+  lint:
     runs-on: ubuntu-latest
     env:
-      SHIPWRIGHT_VERSION: v0.12.0
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
-      - name: Download Shipwright
-        run: |
-          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/shipwright-linux-amd64" -o shipwright
-          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/checksums.txt" -o checksums.txt
-          chmod +x shipwright
+      # Pinned to the exact golangci-lint release this repo lints with locally
+      # (`golangci-lint --version` on a contributor machine), so a lint pass here
+      # means the same pass would happen at a contributor's desk, and a version-only
+      # false positive/negative can't appear silently on an unpinned "latest".
+      # Bump deliberately, alongside re-running `make lint` locally to catch any new
+      # findings the newer linter version surfaces.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.1
 
-      - name: Verify checksum
-        run: |
-          EXPECTED="$(grep -E '[[:space:]]\*?shipwright-linux-amd64$' checksums.txt | awk '{print $1}')"
-          [ -n "$EXPECTED" ]
-          ACTUAL="$(sha256sum shipwright | awk '{print $1}')"
-          [ "$EXPECTED" = "$ACTUAL" ]
+  # Scans the whole module, matching `govulncheck ./...` -- the action's default target.
+  govulncheck:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
 
-      - name: Run unit/lint/vuln workflow
-        run: ./shipwright --workflow .shipwright/workflow.yaml --branch "${{ github.ref_name }}"
+      # repo-checkout is disabled because the step above already checked the repository
+      # out the same way every other job in this file does; go-version-file still tells
+      # the action which Go toolchain to install to build and run govulncheck itself,
+      # respecting the GOTOOLCHAIN=local pin like every other job.
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: .go-version
+          repo-checkout: false
 
   goreleaser:
     runs-on: ubuntu-latest

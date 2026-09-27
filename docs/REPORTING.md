@@ -590,13 +590,12 @@ jobs:
 ```
 
 **Other CI runners:** the two examples above cover a generic POSIX shell script and GitHub
-Actions. `pablogore/shipwright` (this repository's own `.shipwright/workflow.yaml` tool — not
-shipwright.io's Kubernetes `Build`/`ClusterBuildStrategy` CRDs) is not covered here: as of v0.12.0
-it has no arbitrary shell-command step and no always-run step, so `finalize` cannot be guaranteed
-to run after a failing `go test`, and its `go-test` provider hardcodes `go test`'s flags without
-`-count=1` (mandatory above), which silently reintroduces the cached-package failure mode. Any
-runner that can execute a shell script — generic CI, a self-hosted agent, or a future
-`pablogore/shipwright` release that grows one — can use the generic script above unchanged.
+Actions. Any other runner that can execute an arbitrary shell command, and that offers a step
+that always runs (so `finalize` is guaranteed to run even after a failing `go test`), can use the
+generic script above unchanged. A runner without both of those — no arbitrary shell-command step,
+no always-run step — cannot be relied on to run `finalize` after a failing `go test`, and if its
+built-in test provider hardcodes `go test`'s flags without `-count=1` (mandatory above), it
+silently reintroduces the cached-package failure mode.
 
 #### `gc`: cleaning up abandoned runs
 

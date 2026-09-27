@@ -18,8 +18,8 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
 - A library `GC` primitive in `report/coordination`. It removes run directories whose `run.json`
   marker is older than a retention window (contract §5, "Abandoned markers"). It never runs
   automatically.
-- A contract amendment (§8 and §13), plus CI documentation: generic CI, GitHub Actions and
-  Shipwright, three `RunID` recipes and a producer-manifest recipe.
+- A contract amendment (§8 and §13), plus CI documentation: generic CI, GitHub Actions, and a
+  third CI-runner example, three `RunID` recipes and a producer-manifest recipe.
 
 ## Decisions (recorded before implementation)
 
@@ -56,16 +56,17 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
    process, so it cannot collide with `go test`'s own status.
 9. **Feature document location.** This file lives in `docs/investigations/odd-tasks/`, following
    the repo relocation in #268, instead of `odd/tasks/`.
-10. **Shipwright dropped by maintainer decision (2026-09-27).** "Shipwright" in T4's scope meant
-    this repository's own `pablogore/shipwright` tool (`.shipwright/workflow.yaml`), not
-    shipwright.io's Kubernetes `Build`/`ClusterBuildStrategy` CRDs — the original doc example used
-    the wrong tool's API shape entirely. The maintainer decided to drop the Shipwright example
-    because v0.12.0 cannot express this flow: no arbitrary shell-command step, no always-run step
-    (both required to guarantee `finalize` still runs after a failing `go test`), and its
-    `go-test` provider hardcodes `go test`'s flags without `-count=1` (mandatory per "`-count=1`
-    is mandatory" above). `docs/REPORTING.md` now states these reasons briefly instead of carrying
-    a non-working example; `.shipwright/` and the disabled `shipwright` job in `ci.yml` are left
-    untouched, per the maintainer's instruction that a separate CI PR owns those.
+10. **Third CI-runner example dropped by maintainer decision (2026-09-27).** T4's third worked
+    example targeted this repository's own previously-disabled, container-based CI runner tool
+    (invoked from its own workflow file) — the original doc example had used the wrong tool's API
+    shape entirely, written against a similarly-named but unrelated Kubernetes build-strategy API.
+    The maintainer decided to drop that example because the target runner could not express this
+    flow: no arbitrary shell-command step, no always-run step (both required to guarantee
+    `finalize` still runs after a failing `go test`), and its `go-test` provider hardcoded `go
+    test`'s flags without `-count=1` (mandatory per "`-count=1` is mandatory" above).
+    `docs/REPORTING.md` now states these reasons briefly instead of carrying a non-working
+    example; the runner's own config directory and its disabled CI job are left untouched, per the
+    maintainer's instruction that a separate CI PR owns those.
 
 ## Tasks
 
@@ -77,8 +78,8 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
   1; strict missing producers; ownership; gc; the finalization barrier. Route: delegated writer
   (2+ non-trivial files). Check: `go test ./cmd/...`.
 - [x] T4 — Docs: CLI reference, three `RunID` recipes, the manifest recipe, and generic CI, GitHub
-  Actions and Shipwright examples. Route: delegated writer. Check: readback, and the example
-  commands run against the fixture.
+  Actions, and a third CI-runner example. Route: delegated writer. Check: readback, and the
+  example commands run against the fixture.
 - [x] T5 — PR against `develop` referencing #146, with CI results. Route: inline. Check: CI green.
   Do not merge.
 
@@ -123,7 +124,7 @@ state is observed, then GREEN.
 - T4: `docs/REPORTING.md`'s stub replaced with "Running it in CI with `go-specs-report`"
   (install, the three verbs' flags/env fallbacks, exit codes 0/78/1/2, strict-missing-producers
   rationale, three `RunID` recipes, the producer-manifest `go list` pipeline with a CI drift
-  check, worked generic/GitHub Actions/Shipwright examples, and `gc` usage). The existing
+  check, worked generic/GitHub Actions/third-CI-runner examples, and `gc` usage). The existing
   library "Wiring a run" section is kept and now points at the CLI section as the
   lower-friction option. Commit `9a1e08d`
   (`docs(report): document go-specs-report CLI, RunID and manifest recipes, and CI examples (#146)`).
@@ -144,7 +145,7 @@ state is observed, then GREEN.
   - `gc -retention=1ns -dry-run` then `gc -retention=1ns` against a freshly-`init`'d run:
     printed `would remove <id>` then `removed <id>`; `gc -retention=0s` correctly refused with
     exit `78` (retention must be positive).
-  - YAML validation: the GitHub Actions and Shipwright examples were each extracted to a temp
+  - YAML validation: the GitHub Actions and third-CI-runner examples were each extracted to a temp
     file and parsed with `python3 -c "import yaml; yaml.safe_load(open(...))"` — both parsed
     without error.
 
@@ -152,18 +153,20 @@ state is observed, then GREEN.
   clean. `go test ./...`: all packages `ok` (no `-race`, per standing test-execution rules).
 - T4 review fixes: the GitHub Actions mask step read the token through a `${{ env.* }}`
   expression, which Actions prints expanded before the mask applies, so it now uses the shell
-  variable. The Shipwright script used bash-only `<(...)` under `/bin/sh`, plus an in-repo
-  `go run ./cmd/...`. The producer-manifest filter matched any package whose tests *link*
+  variable. The third-CI-runner example's script used bash-only `<(...)` under `/bin/sh`, plus an
+  in-repo `go run ./cmd/...`. The producer-manifest filter matched any package whose tests *link*
   `report/coordination`, including `cmd/go-specs-report`, which is not a producer; it now matches
   test files that call `ShardWriterFromEnv`. The drift check is now executable. Re-verified with
   `dash`: the generator lists 5 packages (only `report/coordination` needs removing by hand, as
   documented); drift check exits 0 when clean and 1 when stale; the generic script exits
-  test=1/finalize=0/script=1 and test=0/finalize=1/script=1; the Shipwright script exits 1 with
-  hook failure on and 0 with it off, and writes `report.json` both times; both YAML blocks parse.
-- Shipwright drop and `report-cli` CI job (2026-09-27): removed the Shipwright worked example from
-  `docs/REPORTING.md` per decision #10 above, replacing it with a short "Other CI runners"
-  paragraph; fixed the remaining "generic shell script, GitHub Actions, and Shipwright" mention to
-  name only the two examples that remain. Added a new `report-cli` job to `.github/workflows/ci.yml`
+  test=1/finalize=0/script=1 and test=0/finalize=1/script=1; the third-CI-runner example's script
+  exits 1 with hook failure on and 0 with it off, and writes `report.json` both times; both YAML
+  blocks parse.
+- Third-CI-runner example drop and `report-cli` CI job (2026-09-27): removed the third worked
+  example from `docs/REPORTING.md` per decision #10 above, replacing it with a short "Other CI
+  runners" paragraph; fixed the remaining "generic shell script, GitHub Actions, and [runner]"
+  mention to name only the two examples that remain. Added a new `report-cli` job to
+  `.github/workflows/ci.yml`
   that dogfoods the documented GitHub Actions example for real: builds `cmd/go-specs-report`, runs
   it against `report/coordination/internal/e2efixture/{producera,producerb}` with
   `GO_SPECS_FIXTURE_HOOK_FAIL=1` (deliberately red `go test`), runs `finalize`, uploads the report
@@ -183,4 +186,5 @@ state is observed, then GREEN.
   `report/coordination/finalize_e2e_test.go`). Combined script exit: `0` — the assertion confirmed
   both outcomes matched what the job expects.
 - T5: PR #279 opened; CI green on `2b5ca60` (run 36325013626): `test` incl. `-race`, `report-cli`,
-  `goreleaser` pass; `shipwright` skipped (disabled on `develop`). Left for review, not merged.
+  `goreleaser` pass; the disabled container-based CI job skipped (disabled on `develop`). Left for
+  review, not merged.
