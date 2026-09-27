@@ -6,10 +6,15 @@
 //   - `feat` bumps patch while major is 0, and minor from 1.0.0 on;
 //   - any other valid Conventional Commit type (build, chore, ci, docs, fix, perf, refactor,
 //     revert, style, test) bumps patch;
-//   - a merge commit, a non-Conventional-Commit subject, and the bot's own
-//     `chore: update benchmark charts [skip ci]` commit are all ignored -- the first two because
-//     they never match the Conventional Commit grammar below, the third by an explicit exact-text
-//     exception, so the chart bot never triggers a release on its own.
+//   - a merge commit, a non-Conventional-Commit subject, and the benchmark chart bot's own commit
+//     are all ignored -- the first two because they never match the Conventional Commit grammar
+//     below, the third by an explicit exact-text exception (both its historical subject,
+//     `chore: update benchmark charts [skip ci]`, from when benchmarks.yml's `bench` job pushed
+//     straight to main, and its current one, `chore: update benchmark charts` -- see ignoredExact
+//     -- since benchmark-charts.yml now lands that same commit through a real pull request into
+//     develop, T3 of docs/investigations/odd-tasks/hotfix-release-and-charts.md, without
+//     "[skip ci]" so CI runs on the PR), so the chart bot never triggers a release on its own
+//     either way.
 //
 // -commits input format: one record per commit, each the commit's full message (`git log`'s `%B`
 // -- subject, blank line, body, footers) terminated by a NUL byte (`git log --format='%B%x00'
@@ -85,10 +90,19 @@ var conventionalTypes = map[string]bool{
 
 // ignoredExact holds full subject lines that are otherwise valid Conventional Commits but are
 // deliberately excluded from triggering a release on their own -- currently only the benchmark
-// chart bot's commit (benchmarks.yml's `bench` job), a routine, unreviewed, machine-authored
-// commit that should never itself justify a new tag.
+// chart bot's commit, a routine, unreviewed, machine-authored commit that should never itself
+// justify a new tag. Both subjects the bot has ever used are listed: the historical one, from
+// when benchmarks.yml's `bench` job pushed the chart update straight to main with "[skip ci]",
+// and the current one, without that suffix, from benchmark-charts.yml's rolling pull request into
+// develop (T3 of docs/investigations/odd-tasks/hotfix-release-and-charts.md) -- CI must run on
+// that PR, so it cannot carry "[skip ci]" anymore, but the commit it produces still must not look
+// releasable once merged into develop. The historical subject stays listed because it can still
+// appear in a commit range this tool reads: it already exists in this repository's real git
+// history on `main` (see native-ci-pipeline.md's T3/T4 dry-run notes), so a hotfix branched from
+// `main`, or a future range that happens to include it, must keep ignoring it too.
 var ignoredExact = map[string]bool{
 	"chore: update benchmark charts [skip ci]": true,
+	"chore: update benchmark charts":           true,
 }
 
 // classifyCommit reports how a single commit message (as produced by the -commits format

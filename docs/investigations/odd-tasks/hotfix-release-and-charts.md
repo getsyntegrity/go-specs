@@ -75,7 +75,7 @@ that `main` and `develop` only change through pull requests.
   hotfix branch; publish on merge, then open the `sync/hotfix-vX.Y.Z` → `develop` sync PR as the
   last step of the hotfix path, mentioning the possible CHANGELOG conflict); `hotfix-sync.yml`
   removed (Decision 6). Check: actionlint, YAML parse, dry run of the tool.
-- [ ] T3 — `benchmarks.yml`: charts through a rolling PR into `develop`, with no direct push and
+- [x] T3 — `benchmarks.yml`: charts through a rolling PR into `develop`, with no direct push and
   loop-safe path filtering. CONTRIBUTING.md release and hotfix section updated, including the
   `delete_branch_on_merge` hazard and why sync uses a temporary branch. Check: actionlint.
 - [ ] T4 — `.github/workflows/dependency-review.yml` (Decision 7); `.github/settings.yml` comment
@@ -175,3 +175,45 @@ real hotfix PR is opened. The logic is proven with unit tests and a dry run.
   started at column 0, which is *below* the enclosing `run: |` block scalar's indentation, so YAML
   read it as ending the block scalar early (`could not find expected ':'`) -- fixed by indenting
   those lines to the block's own indentation.
+- T3 done. Added `.github/workflows/benchmark-charts.yml`: triggers on push to `develop` (never
+  `main`) with `paths-ignore: ["benchmarks/results/*.png"]`, plus `workflow_dispatch`; job
+  permissions `contents: read` only (the write goes through `peter-evans/create-pull-request@v8`'s
+  `token: RELEASE_TOKEN` input, confirmed current major via web search -- v8, released after the
+  v7 this repo's other actions happen to be pinned to); a `Verify RELEASE_TOKEN is configured`
+  step fails fast, matching release-prep.yml's pattern; steps through chart generation are the old
+  `bench` job's, unchanged; the final step opens/updates one PR from the fixed branch
+  `chore/benchmark-charts` into `develop`, `delete-branch: true`, commit message
+  `chore: update benchmark charts` with no `[skip ci]` (CI must run on the PR now that it's a real
+  PR, not a direct push). Moved `bench` entirely out of `.github/workflows/benchmarks.yml`, which
+  now holds only `ratio-guard`, unchanged except its own comment's dangling reference to "`bench`
+  above" (no longer true -- `bench` lives in the new file) corrected to point there instead; its
+  top-of-file permissions/concurrency comments trimmed since they no longer need to explain a
+  `contents: write` job override that doesn't exist in this file anymore.
+
+  Caught while writing this: removing `[skip ci]` from the commit message breaks
+  `tools/release`'s `ignoredExact` exact-match rule (`version.go`), which existed specifically so
+  this bot's own commit never counts as releasable -- it matched only the literal old subject.
+  Fixed with strict TDD: added a sibling test case next to every existing
+  `"chore: update benchmark charts [skip ci]"` fixture across `version_test.go`
+  (`TestNextVersion_BumpRules`, `TestNextVersion_NothingReleasable`,
+  `TestNextVersionPatchOnly_NothingReleasableExitsAsToday`, `TestClassifyCommit`) using the new
+  subject without the suffix; `go test ./tools/release/...` failed (RED) on exactly those 4 new
+  subtests (`FAIL: TestClassifyCommit/bot_chart_commit_(no_skip-ci_suffix,_current_form)` and 3
+  more), confirming the new subject was *not* yet ignored. Fixed by adding a second entry to
+  `ignoredExact` for the new subject, keeping the old `[skip ci]` one too (it still exists for real
+  in this repository's git history on `main`, per native-ci-pipeline.md's own T3/T4 dry-run notes,
+  so a hotfix branched from `main` could still see it in its commit range). All GREEN:
+  `go test ./tools/release/...` passes in full.
+
+  Rewrote CONTRIBUTING.md's `Hotfixes` subsection end to end (it now goes through `Release
+  prep`/`Release` like an ordinary release, forced to a patch bump; the required `[Unreleased]`
+  changelog entry; the `sync/hotfix-vX.Y.Z` branch and why it's not `main` --
+  `delete_branch_on_merge: true` plus `main` being unprotected and non-default means GitHub would
+  delete `main` on merge otherwise; the likely `CHANGELOG.md` conflict and its resolution), added
+  a new `Benchmark charts` subsection describing the rolling PR and its loop-safety rule, and
+  reworded the Version rules paragraph's chart-bot mention to cover both subjects.
+
+  Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` over the whole repo -- 0
+  findings. `python3 -c 'import yaml; yaml.safe_load(open(f))'` on all 4 changed/added workflow
+  files -- parses clean. `make fmt-check`, `go vet ./...`, `go build ./...`, `go test ./...` (whole
+  repo), `make lint` -- all clean.

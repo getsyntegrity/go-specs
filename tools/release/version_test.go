@@ -165,6 +165,16 @@ func TestNextVersion_BumpRules(t *testing.T) {
 			commits: commits("chore: update benchmark charts [skip ci]", "feat: add widget"),
 			want:    "v0.1.1",
 		},
+		{
+			// benchmark-charts.yml (T3 of docs/investigations/odd-tasks/hotfix-release-and-charts.md)
+			// commits without "[skip ci]" now, since its chart update lands through a real
+			// pull request into develop and CI must run on that PR -- but the resulting
+			// commit still must not itself look releasable once it reaches develop.
+			name:    "bot chart commit ignored (current form, no skip-ci suffix), real feat still counted",
+			lastTag: "v0.1.0",
+			commits: commits("chore: update benchmark charts", "feat: add widget"),
+			want:    "v0.1.1",
+		},
 		// --- highest bump wins across multiple commits ---
 		{
 			name:    "breaking outranks feat and fix in the same range",
@@ -202,6 +212,7 @@ func TestNextVersion_NothingReleasable(t *testing.T) {
 		{"only merge commits", commits("Merge pull request #1 from x/y", "Merge branch 'develop' into main")},
 		{"only non-conventional subjects", commits("wip", "oops", "quick fix")},
 		{"only the bot chart commit", commits("chore: update benchmark charts [skip ci]")},
+		{"only the bot chart commit (no skip-ci suffix, current form)", commits("chore: update benchmark charts")},
 	}
 
 	for _, tt := range tests {
@@ -350,6 +361,7 @@ func TestNextVersionPatchOnly_NothingReleasableExitsAsToday(t *testing.T) {
 		{"only merge commits", commits("Merge pull request #1 from x/y", "Merge branch 'develop' into main")},
 		{"only non-conventional subjects", commits("wip", "oops", "quick fix")},
 		{"only the bot chart commit", commits("chore: update benchmark charts [skip ci]")},
+		{"only the bot chart commit (no skip-ci suffix, current form)", commits("chore: update benchmark charts")},
 	}
 
 	for _, tt := range tests {
@@ -405,6 +417,7 @@ func TestClassifyCommit(t *testing.T) {
 		{"free text", "wip", kindOther, false},
 		{"unknown type", "oops: not a real type", kindOther, false},
 		{"bot chart commit", "chore: update benchmark charts [skip ci]", kindOther, false},
+		{"bot chart commit (no skip-ci suffix, current form)", "chore: update benchmark charts", kindOther, false},
 		{"chore is other", "chore: tidy go.mod", kindOther, true},
 	}
 
