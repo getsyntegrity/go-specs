@@ -283,12 +283,10 @@ type groupRun struct {
 	parallelNames map[int]string
 	// real is true when backend wraps a real *testing.T, i.e. when groups get subtests.
 	real bool
-	// sel restricts this run to one shard's units, at the outermost scope only (RunShard, issue
-	// #251): nil for Run's own case ("every unit"). Consulted only by runTopRange — every other
-	// method in this file (runRange, runGroup, runParallelGroup, ...) is unaware of it, because a
-	// selected top-level group or ItParallel batch always runs whole, so filtering deeper than the
-	// top level would never exclude anything a correct sel could not already exclude at the top
-	// (see buildShardSelection).
+	// sel restricts this run to one shard's units (RunShard, issue #251): nil for Run's own case
+	// ("every unit"). Consulted only by runRange. buildShardSelection marks every index of a
+	// selected unit, so a selected top-level group or ItParallel batch always runs whole, and an
+	// excluded one is never entered: no hook runs, no subtest opens, no reporter event fires.
 	sel *shardSelection
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
 	// ctx.T.Parallel(); every enclosing group subtest then unwinds too (see stopIfStopped), running
@@ -320,7 +318,7 @@ func (r *groupRun) markFailFast() {
 
 // runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook. sel
 // restricts the run to one shard's units (RunShard, issue #251); nil means every unit (Run's own
-// case). See runTopRange for where sel is applied.
+// case). See runRange for where sel is applied.
 func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, pg *planGroups, sel *shardSelection) {
 	r := &groupRun{backend: backend, rep: rep, plan: plan, pg: pg, sel: sel}
 	r.buildTree()
@@ -328,7 +326,7 @@ func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *Exec
 	if rb, ok := backend.(*runnableBackend); ok {
 		topT, r.real = rb.tb.(*testing.T)
 	}
-	r.runTopRange(topT, "", 0, len(plan.ProgramStart)-1, r.top)
+	r.runRange(topT, "", 0, len(plan.ProgramStart)-1, r.top)
 }
 
 // buildTree derives each group's directly nested groups from the spec ranges. Sorting by Start,
@@ -537,53 +535,11 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 		if k < len(children) && r.pg.groups[children[k]].Start == i {
 			g := children[k]
 			k++
-			r.runGroup(t, prefix, g)
-			r.stopIfStopped(t)
-			i = r.pg.groups[g].End + 1
-			continue
-		}
-		if pi, ok := r.parallelByStart[i]; ok {
-			end := r.pg.parallel[pi].End
-			r.runParallelGroup(t, prefix, pi)
-			r.stopIfStopped(t)
-			i = end + 1
-			continue
-		}
-		r.runSpec(t, prefix, i)
-		r.stopIfStopped(t)
-		i++
-	}
-}
-
-// runTopRange is runRange for the outermost scope only (RunShard, issue #251): when r.sel is nil
-// (Run's own case) it is exactly runRange, unchanged. When r.sel is non-nil it additionally skips a
-// whole top-level unit — the group, ItParallel batch, or single spec r.sel did not assign to this
-// shard — without starting it at all: no hook runs, no subtest opens, no reporter event fires (H4's
-// existing "a group with zero runnable specs is never entered" extended to "a group this shard never
-// drew is never entered either"). Only the outermost call ever needs this: filtering happens once, at
-// unit granularity, at the top level only. A selected top-level group still runs every group nested
-// inside it and every spec inside those, and a selected ItParallel batch still runs every one of its
-// siblings — that is exactly why each is one indivisible unit (see buildShardSelection) rather than
-// something runTopRange could partially skip.
-func (r *groupRun) runTopRange(t *testing.T, prefix string, lo, hi int, children []int) {
-	if r.sel == nil {
-		r.runRange(t, prefix, lo, hi, children)
-		return
-	}
-	k := 0
-	for i := lo; i <= hi; {
-		if r.failFastStopped {
-			return
-		}
-		if k < len(children) && r.pg.groups[children[k]].Start == i {
-			g := children[k]
-			k++
-			end := r.pg.groups[g].End
 			if r.sel.included(i) {
 				r.runGroup(t, prefix, g)
 				r.stopIfStopped(t)
 			}
-			i = end + 1
+			i = r.pg.groups[g].End + 1
 			continue
 		}
 		if pi, ok := r.parallelByStart[i]; ok {

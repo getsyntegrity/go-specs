@@ -78,7 +78,7 @@ API stay exactly as they are.
 - [x] T2 Group path: hook-group integrity (a `BeforeAll`/`AfterAll` group, including nested ones,
       lands whole on one shard with its hooks run once), `ItParallel` batch integrity, reporter and
       `FailFast` on this path. RED then GREEN. Route: same writer.
-      Evidence: the group-path implementation (`runTopRange`, `buildShardSelection`'s group branch)
+      Evidence: the group-path implementation (`runRange`, `buildShardSelection`'s group branch)
       landed together with T1, so this task is tests-only. `specs/group_hooks_shard_test.go`'s tests
       were run against the same RED stub as T1 before it was replaced — hook groups split across
       shards, `BeforeAll`/`AfterAll` running once per shard instead of once total, `ItParallel`

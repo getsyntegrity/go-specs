@@ -1,6 +1,6 @@
 // group_hooks_shard_test.go proves CompiledSuite.RunShard (issue #251) on the group path — a suite
 // that registers at least one BeforeAll/AfterAll group or ItParallel batch, which runs through
-// runPlanWithGroups/runTopRange instead of the flat path. See compiled_suite_shard_test.go for the
+// runPlanWithGroups/runRange instead of the flat path. See compiled_suite_shard_test.go for the
 // flat-path equivalent (T1).
 package specs
 

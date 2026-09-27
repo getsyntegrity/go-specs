@@ -449,7 +449,7 @@ func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 // to an excluded unit stays false (the zero value). Built once, fresh, inside RunShard by
 // buildShardSelection, and always discarded when RunShard returns: nothing here is ever stored on
 // CompiledSuite, ExecutionPlan or planGroups, so Run's own path (sel == nil throughout run/runSpecs/
-// runPlanSpecsInOrder/runTopRange) never allocates one and never pays for sharding it never asked
+// runPlanSpecsInOrder/runRange) never allocates one and never pays for sharding it never asked
 // for.
 type shardSelection struct {
 	specs      []bool
@@ -498,7 +498,7 @@ func (sel *shardSelection) anySelected() bool {
 // On the flat path — no BeforeAll/AfterAll and no ItParallel, CompiledSuite.runSpecs' own condition
 // for it — every unit is a single spec at its own plan index, so the unit number and the plan index
 // are the same number and no tree walk is needed. Otherwise a throwaway groupRun.buildTree() gives
-// the exact top-level walk runTopRange itself later uses (r.top, r.parallelByStart), so the two can
+// the exact top-level walk runRange itself later does (r.top, r.parallelByStart), so the two can
 // never disagree about where one unit ends and the next begins: a top-level group's unit spans
 // group.Start..group.End (every nested group falls inside that range by construction — see
 // buildTree's doc comment), a top-level ItParallel batch spans its own Start..End, and every other
