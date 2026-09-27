@@ -325,7 +325,7 @@ func runSpecThroughPlan(t *testing.T, body func(ctx *Context)) (*recordingReport
 
 	rep := &recordingReporter{}
 	counter := &specCounter{EventReporter: rep}
-	runPlanSpecsInOrder(&planBackend{}, counter, plan)
+	runPlanSpecsInOrder(&planBackend{}, counter, plan, false)
 	return rep, counter
 }
 

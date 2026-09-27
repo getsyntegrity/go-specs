@@ -297,6 +297,37 @@ type CompiledSuite struct {
 	groups *planGroups
 }
 
+// SetFailFast sets whether Run stops after the first spec, BeforeAll, or AfterAll that fails,
+// mirroring Runner.FailFast (runner.go) for this engine (issue #251,
+// docs/SUITE_HOOKS_CONTRACT.md H9). A sequential spec that fails still runs its own AfterEach;
+// after it, no further spec or group starts, and a spec that never starts is not reported at all —
+// the same contract Runner.FailFast already gives the Builder/Program engine. An already-launched
+// ItParallel batch runs every one of its siblings to completion; the stop applies only once the
+// whole batch has finished. A BeforeAll or AfterAll failure counts as a failure too, but the
+// AfterAll of every group already entered still runs. A filtered (-run) or compile-time-skipped
+// spec is not a failure and never triggers the stop.
+//
+// The flag lives behind the same lazily allocated groups pointer CompiledSuite already carries for
+// its other optional bookkeeping (skipped/pending marks, hooked groups, ItParallel ranges), rather
+// than as its own field: an exported bool the shape Runner.FailFast uses would push every
+// CompiledSuite from 64 to 80 bytes and into the next allocation size class — a cost every suite
+// would pay whether or not it uses fail-fast (H10, pinned by
+// TestGroupHookStorageAddsNoBytesToAlwaysAllocatedStructs). Calling SetFailFast(false) on a suite
+// that has never registered a BeforeAll/AfterAll/SkipIt/PendingIt/ItParallel, and has never called
+// SetFailFast(true) either, leaves groups nil: it is never allocated just to remember "false".
+func (s *CompiledSuite) SetFailFast(v bool) {
+	if s == nil {
+		return
+	}
+	if s.groups == nil {
+		if !v {
+			return
+		}
+		s.groups = &planGroups{}
+	}
+	s.groups.failFast = v
+}
+
 // Run executes all specs in the plan. Uses one context from the pool per spec.
 func (s *CompiledSuite) Run(tb testing.TB) {
 	if s == nil || s.Plan == nil || tb == nil {
@@ -396,7 +427,12 @@ func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) 
 		reportMarks(rep, s.groups.pending, true)
 	}
 	if s.groups == nil || (len(s.groups.groups) == 0 && len(s.groups.parallel) == 0) {
-		runPlanSpecsInOrder(backend, rep, s.Plan)
+		// failFast is read directly off s.groups rather than through a helper: s.groups may be
+		// non-nil here purely because it carries skipped/pending marks or because SetFailFast(true)
+		// was called with no group/parallel ever registered (issue #251) — either way this is still
+		// the flat path, and s.groups.failFast is false unless SetFailFast(true) was actually called.
+		failFast := s.groups != nil && s.groups.failFast
+		runPlanSpecsInOrder(backend, rep, s.Plan, failFast)
 		return
 	}
 	runPlanWithGroups(backend, rep, s.Plan, s.groups)
@@ -406,17 +442,30 @@ func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) 
 // before/body/after hooks are already flat — compiled into its own instruction range — so there is
 // no group nesting to walk. A suite with BeforeAll/AfterAll never reaches here; see
 // runPlanWithGroups.
-func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan) {
+//
+// failFast implements CompiledSuite.SetFailFast (issue #251) for this path: once a spec fails, the
+// loop returns before starting the next one, so the specs after it never run and are never
+// reported at all — mirroring Runner.FailFast's stop-at-the-next-check contract (runner.go). A
+// spec's own AfterEach still runs regardless, since it is part of that spec's own instruction
+// range (runProgram's deferred loop), not a separate step this loop could skip.
+func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, failFast bool) {
 	for i := 0; i < len(plan.ProgramStart); i++ {
-		runExecution(backend, rep, plan, i)
+		failed := runExecution(backend, rep, plan, i)
+		if failFast && failed {
+			return
+		}
 	}
 }
 
-func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) {
+// runExecution runs plan spec i and reports it, returning whether it failed — false for a spec
+// that a -run filter discarded (Filtered) or a compile-time/runtime skip suppressed, exactly like
+// report.SpecResultEvent.Failed itself (see runSpecProgram) — so runPlanSpecsInOrder's FailFast
+// check above never mistakes either for a failure.
+func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) bool {
 	start := plan.ProgramStart[i]
 	length := plan.ProgramLen[i]
 	if start+length > len(plan.Instructions) {
-		return
+		return false
 	}
 	program := plan.Instructions[start : start+length]
 	name := specEventName(plan, i)
@@ -432,6 +481,7 @@ func runExecution(backend testBackend, rep report.EventReporter, plan *Execution
 	started := reportSpecStarted(rep, name, path)
 	message, output, ran, failed, skipped := runSpecProgram(backend, ctx, program, specSubtestName(plan, i))
 	reportSpecFinished(rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
+	return failed
 }
 
 // runSpecProgram runs program for one ExecutionPlan spec against ctx, isolated in its own subtest
