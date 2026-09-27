@@ -55,6 +55,33 @@ release to happen automatically when `develop` is merged into `main`.
    protected and the only ruleset is disabled. The maintainer's rule (PR required, 0 approvals) needs
    a ruleset, created with explicit authorization in T5, with `RELEASE_TOKEN`'s actor allowed to
    push the changelog commit.
+7. **CI split into staged jobs (maintainer request 2026-09-27).** `ci.yml`'s `test` job had grown
+   into a monolith: version pin, module path, gofmt, build, vet, `go test`, `go test -race`,
+   benchmark-path execution, and benchmark-path racing, all as one job that reports one PR status
+   line. A failure anywhere inside it only says "test failed" -- finding out *which* of the eight
+   checks broke means opening the log. It also serialized everything: `go test -race` never started
+   until gofmt, build, and vet had each already finished, even though nothing about `-race` depends
+   on them running first in the same job.
+
+   The fix models `ci.yml`'s jobs on a CircleCI-style `requires` pipeline: a job graph with real
+   `needs` edges instead of one job with many steps. Stage 1 runs in parallel with no dependencies --
+   `verify` (Go version pin via the new `.github/actions/setup-go` composite action, module path
+   check, gofmt, `go vet ./...`, `go build ./...`), plus the existing `lint`, `govulncheck`, and
+   `goreleaser` jobs. Stage 2 -- `unit` (`go test ./...`), `race` (`go test -race ./...`), and
+   `bench-smoke` (the benchmark-execution and benchmark-race steps, unchanged) -- each declare
+   `needs: verify`, so none of them spends a runner until the fast, deterministic checks are green.
+   Each stage now has its own PR status line, and `lint`/`govulncheck`/`goreleaser` already ran in
+   parallel with `test` before this change, so splitting `test` only adds parallelism inside what
+   used to be serial.
+
+   Rejected: keeping one job with many steps. It was the status quo, and it fails on exactly the two
+   things this change fixes -- a failure is only as visible as "open the log and scroll", and nothing
+   inside that one job can run concurrently with anything else inside it, so a fast, unrelated
+   failure (gofmt) still waits behind nothing, but a would-be-parallel check (`-race` vs. the
+   benchmark steps) pays full serial cost for no correctness reason. Also considered: moving the
+   Set-up-Go step's options inline into every job instead of a composite action -- rejected because
+   `verify`, `unit`, `race`, and `bench-smoke` all need the exact same toolchain pin and drift check,
+   and four copies of the same options is the same duplication problem the split is trying to remove.
 
 ## Tasks
 
@@ -210,3 +237,22 @@ Strict TDD is on (user global config), with runner `go test`.
   real (very large) Unreleased section this repository currently carries, starting `### Removed`
   and ending with the `v0.1.0 is broken` notice right before `## [0.1.0]` — correct given the
   actual file content, and confirms `ReleaseNotes` stops exactly at the next `## ` heading.
+- CI split into staged jobs, per Decision 7 (maintainer request 2026-09-27). `ci.yml`'s `test`
+  monolith is now `verify` (Go version pin, module path, gofmt, `go vet ./...`, `go build ./...`)
+  plus `lint`/`govulncheck`/`goreleaser`, all Stage 1 with no `needs`; and `unit` (`go test ./...`),
+  `race` (`go test -race ./...`), `bench-smoke` (unchanged benchmark-execution and
+  benchmark-race steps), each `needs: verify`, as Stage 2. Added `.github/actions/setup-go`, a
+  local composite action (`actions/setup-go@v7` with the same `go-version-file: .go-version` +
+  `cache: false` options the old `test` job used, then `check-go-version.sh`), used by `verify`,
+  `unit`, `race`, and `bench-smoke`; `lint` and `goreleaser` keep their own inline `actions/setup-go`
+  step unchanged, since the task scoped them as existing/unchanged. Every job keeps
+  `env: GOTOOLCHAIN: local`, and Checkout still runs before the composite action in every job that
+  uses it (documented in the action's own header — a local action resolves from the checked-out
+  tree). Top-level `permissions: contents: read` and the existing `concurrency` block are
+  unchanged. Checked for anything else referencing the old `test` job name: no `workflow_run`
+  trigger in any other workflow names it, and `.github/settings.yml` deliberately declares no
+  branch protection (`develop` has none today, and the one ruleset is disabled) — so nothing
+  needed updating there; not touched.
+  Verified: `python3 -c 'import yaml; yaml.safe_load(open(f))'` on both new/changed files parses
+  clean; `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings; `make fmt-check`,
+  `go vet ./...`, `go build ./...`, `go test ./...` all pass unchanged (no Go source touched).

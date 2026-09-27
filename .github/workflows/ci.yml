@@ -1,22 +1,35 @@
-# CI: gofmt, build, vet, and test (including -race) on every PR and push to develop/main.
+# CI: a staged job graph instead of one monolithic job.
+#
+# Stage 1 (no `needs`, all run in parallel): `verify` (Go version pin, module
+# path check, gofmt, `go vet`, `go build`), `lint`, `govulncheck`, and
+# `goreleaser` (check + dry-run release).
+#
+# Stage 2 (`needs: verify`): `unit` (`go test ./...`), `race` (`go test
+# -race ./...`), and `bench-smoke` (execute + race-check benchmark code
+# paths). Each only starts once `verify` is green, so a formatting or vet
+# failure surfaces in seconds without spending a runner on the test suite,
+# and each concern is its own check in the PR's status list instead of one
+# line item that could fail for any of eight different reasons.
+#
 # Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
 # (an OS-specific bug class, a toolchain deprecation window); this repo never
 # had one, so it was pure CI runtime with no coverage payoff. If a real reason
 # shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
-# `lint` (golangci-lint) and `govulncheck` are native jobs below, running in parallel
-# with `test` and `goreleaser`. They used to run only inside Shipwright
-# (.shipwright/workflow.yaml, a Dagger-backed workflow that ran unit tests, lint, and
-# govulncheck concurrently), whose `shipwright` job here had been permanently disabled
-# (`if: false`) because the pinned runner (pablogore/shipwright v0.12.0) intermittently
-# failed before running a single workflow step ("failed to acquire Dagger client: daemon
-# connected but not ready ... context deadline exceeded after 1 attempts", despite
-# reporting max_retries=11 -- the configured retry was not honoured). In practice that
-# meant lint and govulncheck ran nowhere. Shipwright (.shipwright/ and the disabled job)
-# is dropped entirely rather than re-enabled: the underlying runner defect
-# (pablogore/shipwright#275) was never fixed, and native jobs don't depend on it or on
-# Dagger being available at all.
+# `lint` (golangci-lint) and `govulncheck` are native jobs below, running in
+# Stage 1 alongside `verify` and `goreleaser`. They used to run only inside
+# Shipwright (.shipwright/workflow.yaml, a Dagger-backed workflow that ran unit
+# tests, lint, and govulncheck concurrently), whose `shipwright` job here had
+# been permanently disabled (`if: false`) because the pinned runner
+# (pablogore/shipwright v0.12.0) intermittently failed before running a single
+# workflow step ("failed to acquire Dagger client: daemon connected but not
+# ready ... context deadline exceeded after 1 attempts", despite reporting
+# max_retries=11 -- the configured retry was not honoured). In practice that
+# meant lint and govulncheck ran nowhere. Shipwright (.shipwright/ and the
+# disabled job) is dropped entirely rather than re-enabled: the underlying
+# runner defect (pablogore/shipwright#275) was never fixed, and native jobs
+# don't depend on it or on Dagger being available at all.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
 # every push/PR to develop/main, the same branches release.yml tags and
@@ -36,8 +49,9 @@ on:
     branches: [develop, main]
 
 # Least-privilege default: every job below only reads the checked-out repository. `lint`,
-# `govulncheck`, `test`, and `goreleaser` never write to the repo, open a PR, or use a
-# secret, so `contents: read` covers all of them and none needs a job-level override here.
+# `govulncheck`, `verify`, `unit`, `race`, `bench-smoke`, and `goreleaser` never write to the
+# repo, open a PR, or use a secret, so `contents: read` covers all of them and none needs a
+# job-level override here.
 permissions:
   contents: read
 
@@ -50,7 +64,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  # Stage 1: everything that doesn't need a built/tested binary. Version pin,
+  # module path, formatting, vet, and build -- fast, deterministic checks that
+  # gate Stage 2 below.
+  verify:
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -58,22 +75,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Catches go.mod's `go` directive drifting from the MAJOR.MINOR.0 floor
-      # derived from .go-version. A patch-only bump to .go-version (the
-      # pinned toolchain) needs no go.mod change; minor-level drift between
-      # the two fails.
-      - name: Check Go version pin
-        run: ./.github/scripts/check-go-version.sh
-
+      # Local composite actions resolve from the already-checked-out working
+      # tree, so Checkout above must run first -- see
+      # .github/actions/setup-go/action.yml's header for why. This step
+      # installs the pinned toolchain and runs check-go-version.sh.
       - name: Set up Go
-        # The toolchain CI installs is pinned in .go-version, never inline
-        # here: go.mod declares the *minimum* the code needs (the floor every
-        # consumer inherits), .go-version the *exact* patched toolchain we
-        # build and test with. One file per role, one place to bump each.
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: .go-version
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+        uses: ./.github/actions/setup-go
 
       - name: Verify module path matches repository
         # go.mod's declared module path is what every external `go get` request
@@ -91,22 +98,64 @@ jobs:
 
       # Formatting is a gate, not a suggestion: gofmt output is canonical, so
       # drift is always a mechanical fix (`make fmt`) and never a judgement
-      # call. Running it before build/vet/test means a formatting-only PR fails
-      # in seconds instead of after the full race-detector run.
+      # call. Running it before vet/build here, and before unit/race/bench-smoke
+      # even start (they declare `needs: verify`), means a formatting-only PR
+      # fails in seconds instead of after the full test suite.
       - name: Check formatting
         run: make fmt-check
-
-      - name: Build
-        run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
+      - name: Build
+        run: go build ./...
+
+  # Stage 2: needs `verify` green before spending a runner on it. `go test
+  # ./...` only -- see `race` and `bench-smoke` below for the race detector
+  # and benchmark-path coverage split out of the old monolithic `test` job.
+  unit:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # See verify's Set up Go step: Checkout must run first for a local
+      # composite action to resolve.
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
       - name: Test
         run: go test ./...
 
+  race:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
       - name: Test with race detector
         run: go test -race ./...
+
+  bench-smoke:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
 
       # Benchmark bodies are code, and until this step they were the only code
       # in the module that CI compiled but never ran: `go test ./...` skips
@@ -124,18 +173,18 @@ jobs:
       #
       # Performance guarantees are gated separately, by the allocation contract
       # tests in specs/allocation_contract_test.go, which run under `go test
-      # ./...` above. Allocation counts are a property of the generated code
-      # rather than of the machine, so they are safe to fail a PR on; ns/op is
-      # not. See BENCHMARKS.md for which claims are contractual.
+      # ./...` in the `unit` job above. Allocation counts are a property of the
+      # generated code rather than of the machine, so they are safe to fail a
+      # PR on; ns/op is not. See BENCHMARKS.md for which claims are contractual.
       #
       # Cost: about 3 seconds on top of an already-built test binary set, the
       # whole module included.
       - name: Execute benchmark code paths
         run: make bench-smoke
 
-      # `go test -race ./...` above never invokes Benchmark* functions (no
-      # -bench flag, and go test's default -run skips them), and `make
-      # bench-smoke` above has no -race flag -- so neither required check
+      # `go test -race ./...` (the `race` job above) never invokes Benchmark*
+      # functions (no -bench flag, and go test's default -run skips them), and
+      # `make bench-smoke` above has no -race flag -- so neither required check
       # ever puts a goroutine-spawning benchmark through the race detector
       # (getsyntegrity/go-specs#218).
       #

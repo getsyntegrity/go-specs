@@ -1,0 +1,41 @@
+# Composite action: install the pinned Go toolchain and enforce that every
+# go.mod's floor still matches it.
+#
+# ci.yml's `verify`, `unit`, `race`, and `bench-smoke` jobs each run on their
+# own fresh runner (that is the point of splitting them: each is its own
+# visible check, and the independent ones run in parallel), so each needs
+# this same setup step. Collecting it here means the toolchain pin
+# (.go-version, the setup-go options) and the drift check
+# (check-go-version.sh) are defined once instead of duplicated four times.
+#
+# IMPORTANT: a local composite action is resolved from the already-checked-out
+# working tree, not fetched from GitHub, so every job that does
+# `uses: ./.github/actions/setup-go` MUST run `actions/checkout@v7` first --
+# otherwise this action's own files, .go-version, go.mod, and
+# check-go-version.sh do not exist on the runner yet and the job fails before
+# reaching this step.
+name: Set up Go
+description: >-
+  Install the toolchain pinned in .go-version and fail fast if any go.mod's
+  `go` directive has drifted from that pin.
+
+runs:
+  using: composite
+  steps:
+    # The toolchain CI installs is pinned in .go-version, never inline here:
+    # go.mod declares the *minimum* the code needs (the floor every consumer
+    # inherits), .go-version the *exact* patched toolchain we build and test
+    # with. One file per role, one place to bump each.
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: .go-version
+        cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+    # Catches go.mod's `go` directive drifting from the MAJOR.MINOR.0 floor
+    # derived from .go-version. A patch-only bump to .go-version (the
+    # pinned toolchain) needs no go.mod change; minor-level drift between
+    # the two fails.
+    - name: Check Go version pin
+      shell: bash
+      run: ./.github/scripts/check-go-version.sh
