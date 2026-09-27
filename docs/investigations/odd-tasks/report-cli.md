@@ -61,9 +61,9 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
 
 - [x] T1 — Contract §8/§13 amendment and acceptance-criteria matrix posted on #146. Route: inline
   (1 doc file). Check: structural readback, `make fmt-check`.
-- [ ] T2 — `coordination.GC` retention primitive with behaviour tests (strict TDD). Route:
+- [x] T2 — `coordination.GC` retention primitive with behaviour tests (strict TDD). Route:
   delegated writer. Check: `go test ./report/coordination/`.
-- [ ] T3 — `cmd/go-specs-report` (`init`, `finalize`, `gc`) with behaviour tests: exits 0, 78 and
+- [x] T3 — `cmd/go-specs-report` (`init`, `finalize`, `gc`) with behaviour tests: exits 0, 78 and
   1; strict missing producers; ownership; gc; the finalization barrier. Route: delegated writer
   (2+ non-trivial files). Check: `go test ./cmd/...`.
 - [ ] T4 — Docs: CLI reference, three `RunID` recipes, the manifest recipe, and generic CI, GitHub
@@ -91,3 +91,22 @@ state is observed, then GREEN.
 - T1: contract bumped to v1.2.9 (§8 finalize-side ownership row, reporting-failure code `1`, §13
   items resolved). Matrix and decisions posted:
   https://github.com/getsyntegrity/go-specs/issues/146#issuecomment-5854139409
+- T2: `coordination.GC` (`report/coordination/gc.go`, `gc_test.go`), plus a new
+  `ReasonInvalidRetention` in `errors.go`. TDD: RED observed as
+  `report/coordination/gc_test.go:40:14: undefined: GC` (build failure, `go test ./report/coordination/... -run TestGC`)
+  before `gc.go` existed. GREEN: `go test ./report/coordination/... -run TestGC -v` — all 7 cases
+  pass. Commit `b19c669` (`feat(coordination): add GC for abandoned run directories (#146)`).
+  Verification: `go vet ./report/...` clean; `gofmt -l` clean; `go test ./report/...` all pass;
+  `go test -race ./report/coordination/...` pass.
+- T3: `cmd/go-specs-report` (`main.go`, `run.go`, `cmd_init.go`, `cmd_finalize.go`, `cmd_gc.go`,
+  plus behaviour tests). TDD: RED observed as
+  `cmd/go-specs-report/helpers_test.go:42:9: undefined: run` (build failure, `go test ./cmd/...`)
+  before any CLI source file existed. GREEN: `go test ./cmd/... -v` — all 24 cases (including the
+  6-case ownership/configuration table and the 2-case reporting-failure table) pass on first
+  implementation. Commit `016ebc4`
+  (`feat(cmd): add go-specs-report CLI with init, finalize and gc (#146)`).
+  Verification: `make fmt-check` clean; `go vet ./...` clean; `go build ./...` clean;
+  `go test ./...` all pass; `go test -race ./report/coordination/... ./cmd/...` pass.
+  No deviation from the spec's flag/verb/exit-code design. Open question: `docs/REPORTING.md`
+  (T4) has not been written yet, so `init`/`finalize`/`gc`'s exact flags are documented only in
+  their own `-h` output and this file — T4 owns publishing the CI recipes.
