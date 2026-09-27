@@ -208,7 +208,7 @@ func TestSpecResultEventFailedComesFromTheSameRecordAsTheSuiteCount(t *testing.T
 
 	rep := &recordingReporter{}
 	counter := &specCounter{EventReporter: rep}
-	runPlanSpecsInOrder(&planBackend{}, counter, plan, false)
+	runPlanSpecsInOrder(&planBackend{}, counter, plan, false, nil)
 
 	var failedEvents []report.SpecResultEvent
 	for _, e := range rep.specFinished {

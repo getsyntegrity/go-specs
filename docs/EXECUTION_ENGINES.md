@@ -61,11 +61,12 @@ as part of this work — a reader currently learns the wrong engine.
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
 | Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
-| **Unique capabilities** | **`RunShard` exists here and nowhere else.** `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. `ItParallel` is likewise Builder-only as a `SpecFn`-free direct method, but `Spec.ItParallel` has the same capability with a stronger guarantee — a real per-spec `*testing.T` and `-run` addressing — since #245's second spec; see Stage 4 item 2 below. `FailFast` was Builder-only too, but `CompiledSuite.SetFailFast` gives the canonical engine the same contract since [#251](https://github.com/getsyntegrity/go-specs/issues/251); see Stage 4 item 3 below. |
+| **Unique capabilities** | **None left.** `RunShard` was the last one: it existed only here until [#251](https://github.com/getsyntegrity/go-specs/issues/251) spec 2 added `CompiledSuite.RunShard`, the canonical engine's own package-level `RunShard`'s equivalent — see Stage 4 item 4 below. `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. `ItParallel` is likewise Builder-only as a `SpecFn`-free direct method, but `Spec.ItParallel` has the same capability with a stronger guarantee — a real per-spec `*testing.T` and `-run` addressing — since #245's second spec; see Stage 4 item 2 below. `FailFast` was Builder-only too, but `CompiledSuite.SetFailFast` gives the canonical engine the same contract since #251 spec 1; see Stage 4 item 3 below. |
 
-This is the load-bearing fact for v1: removing this engine removes
-`RunShard` from the library. Focus/skip/pending, `ItParallel` and `FailFast` no longer depend on it
-(#245, #251).
+This engine is no longer load-bearing the way it was: removing it no longer removes any capability
+from the library. `RunShard`, focus/skip/pending, `ItParallel` and `FailFast` all have equivalents on
+the canonical engine now (#245, #251) — see Stage 4's closing note for what that changes for the
+removal question itself.
 
 ### 1.3 `MinimalRunner`
 
@@ -155,7 +156,7 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 | Engine | Class | Rationale |
 |---|---|---|
 | `ExecutionPlan` + `CompiledSuite` | **Canonical** | The `Describe` path. Every invariant lands here first. |
-| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented, exercised by `examples/parallel`, and the sole home of `RunShard`. Focus/skip/pending, `ItParallel` and `FailFast` have equivalents on the canonical engine since #245/#251; cannot be removed until `RunShard` does too. |
+| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/parallel`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
 | `MinimalRunner` | **Compatibility surface (narrow)** | Named in README, benchmarked, and the documented partner of `ShardSpecs`. Keep `Run`/`RunParallel`/`RunParallelBatched`; do not grow it. |
 | Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG.md:184`. Keep unexported. |
 | `BytecodeRunner` / `BCProgram` / `BCBuilder` | **Experimental → deprecate** | Zero documentation, zero benchmarks, zero consumers beyond `ShardBCProgram`. A strictly weaker duplicate of the canonical model with no measured justification. |
@@ -260,12 +261,22 @@ Builder/Runner stays until the canonical engine grows what only it has:
    failure too (H9), and the `AfterAll` of every group already entered still runs. See
    `docs/SUITE_HOOKS_CONTRACT.md`'s H9 and `specs/compiled_suite_failfast_test.go` /
    `specs/group_hooks_failfast_test.go`.
-4. `RunShard` re-expressed over `ExecutionPlan` (spec 2 of this issue, tracked as its own follow-up
-   change: `describe-shard`).
+4. ~~`RunShard` re-expressed over `ExecutionPlan`.~~ **Done ([#251](https://github.com/getsyntegrity/go-specs/issues/251) spec 2, `describe-shard`).**
+   `CompiledSuite.RunShard(tb, shardIndex, shardCount)` splits a suite built through
+   `specs.Describe`/`BuildSuite` across CI jobs the same way the package-level `RunShard`
+   (`specs/scheduler.go`) already splits a `*Program`. Its assignment unit is finer-grained than
+   `Builder`'s — a whole top-level `BeforeAll`/`AfterAll` group (with every group nested inside it),
+   a whole `ItParallel` batch, or a single spec otherwise, each its own round-robin unit — rather than
+   only whole coalesced hook groups, so it balances shards better on a suite with few large groups.
+   See `docs/SUITE_HOOKS_CONTRACT.md`'s sharding rule and `specs/compiled_suite_shard_test.go` /
+   `specs/group_hooks_shard_test.go`. One thing this item does not touch: `report/coordination`'s
+   "shard" is a `go test` package process's own result file, a different meaning from the spec
+   partition above; merging several `RunShard` jobs' per-job results into one is not handled by
+   `report/coordination` today (docs/SUITE_HOOKS_CONTRACT.md's sharding rule states this limit too).
 
-Only once item 4 also lands — with a contract-table row — does removing Builder/Runner become
-a migration question rather than a feature regression. **That decision is explicitly out of scope
-for #176.**
+Item 4 has now landed, closing Stage 4's capability gap: removing Builder/Runner is a migration
+question rather than a feature regression. **That decision remains explicitly out of scope for
+#176.**
 
 ---
 

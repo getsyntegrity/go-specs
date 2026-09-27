@@ -283,6 +283,11 @@ type groupRun struct {
 	parallelNames map[int]string
 	// real is true when backend wraps a real *testing.T, i.e. when groups get subtests.
 	real bool
+	// sel restricts this run to one shard's units (RunShard, issue #251): nil for Run's own case
+	// ("every unit"). Consulted only by runRange. buildShardSelection marks every index of a
+	// selected unit, so a selected top-level group or ItParallel batch always runs whole, and an
+	// excluded one is never entered: no hook runs, no subtest opens, no reporter event fires.
+	sel *shardSelection
 	// stopped is set when the run must stop because a spec body or a hook called the unsupported
 	// ctx.T.Parallel(); every enclosing group subtest then unwinds too (see stopIfStopped), running
 	// its AfterAlls on the way out, and no further spec runs. It is atomic because a parked subtest
@@ -311,9 +316,11 @@ func (r *groupRun) markFailFast() {
 	}
 }
 
-// runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook.
-func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, pg *planGroups) {
-	r := &groupRun{backend: backend, rep: rep, plan: plan, pg: pg}
+// runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook. sel
+// restricts the run to one shard's units (RunShard, issue #251); nil means every unit (Run's own
+// case). See runRange for where sel is applied.
+func runPlanWithGroups(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, pg *planGroups, sel *shardSelection) {
+	r := &groupRun{backend: backend, rep: rep, plan: plan, pg: pg, sel: sel}
 	r.buildTree()
 	var topT *testing.T
 	if rb, ok := backend.(*runnableBackend); ok {
@@ -528,20 +535,26 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 		if k < len(children) && r.pg.groups[children[k]].Start == i {
 			g := children[k]
 			k++
-			r.runGroup(t, prefix, g)
-			r.stopIfStopped(t)
+			if r.sel.included(i) {
+				r.runGroup(t, prefix, g)
+				r.stopIfStopped(t)
+			}
 			i = r.pg.groups[g].End + 1
 			continue
 		}
 		if pi, ok := r.parallelByStart[i]; ok {
 			end := r.pg.parallel[pi].End
-			r.runParallelGroup(t, prefix, pi)
-			r.stopIfStopped(t)
+			if r.sel.included(i) {
+				r.runParallelGroup(t, prefix, pi)
+				r.stopIfStopped(t)
+			}
 			i = end + 1
 			continue
 		}
-		r.runSpec(t, prefix, i)
-		r.stopIfStopped(t)
+		if r.sel.included(i) {
+			r.runSpec(t, prefix, i)
+			r.stopIfStopped(t)
+		}
 		i++
 	}
 }

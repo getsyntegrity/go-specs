@@ -19,7 +19,7 @@ func TestExecutionPlanRecoversPanicAndContinues(t *testing.T) {
 		ProgramLen:   []int{1, 1},
 	}
 	backend := &controlledBackend{}
-	runPlanSpecsInOrder(backend, nil, plan, false)
+	runPlanSpecsInOrder(backend, nil, plan, false, nil)
 
 	if !ranSpec2 {
 		t.Fatal("expected spec2 to run after spec1 panicked, but it didn't — the panic aborted the whole plan")

@@ -366,6 +366,25 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   3 of [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md)'s Stage 4; `RunShard` re-expressed
   over `ExecutionPlan` (item 4) is a separate follow-up change.
   ([#251](https://github.com/getsyntegrity/go-specs/issues/251))
+- `CompiledSuite.RunShard(tb, shardIndex, shardCount)` on the canonical `Describe`/`Spec` engine: a
+  suite built through `specs.Describe`/`BuildSuite` can now be split across CI jobs the same way the
+  package-level `RunShard` (`specs/scheduler.go`) already splits a `Builder`-built `*Program`. The
+  assignment unit is a whole top-level `BeforeAll`/`AfterAll` group (with every group nested inside
+  it), a whole `ItParallel` batch, or a single spec otherwise — numbered in declaration order and
+  assigned to shard `u % shardCount`, the same round-robin rule `ShardSpecs`/`ShardBCProgram`/the
+  package-level `RunShard` already use, so the same declared tree always yields the same assignment
+  on both compile paths. It reports through the suite's own `Reporter` exactly as `Run` does:
+  `SuiteEndEvent.TotalSpecs`/`FailedSpecs` count only this shard's specs, another shard's specs emit
+  no event at all, and compile-time `SkipIt`/`PendingIt` marks are reported by shard 0 only, so the
+  union across every shard reports each mark exactly once. `SetFailFast` applies within the running
+  shard only. An invalid `shardIndex`/`shardCount` fails the test through `tb.Fatalf` with the shared
+  `validateShardPartition` diagnostic (#174); a valid shard that draws nothing runs nothing and emits
+  no suite events, which is not a failure. This closes item 4 of
+  [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md)'s Stage 4 — see `docs/SUITE_HOOKS_CONTRACT.md`'s
+  new "Sharding" section for the full contract, including the known limit that
+  `report/coordination`'s own "shard" (a `go test` package process's result file) is unrelated to this
+  spec partition, and merging several `RunShard` jobs' per-job results is not handled there today.
+  ([#251](https://github.com/getsyntegrity/go-specs/issues/251))
 
 ### Changed
 
