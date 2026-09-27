@@ -351,6 +351,21 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   purpose it is retained for: together they are the supported surface for building into the registry
   that `Analyze` or `Describe` pushed, without access to the unexported registry type.
   ([#156](https://github.com/getsyntegrity/go-specs/issues/156))
+- `CompiledSuite.SetFailFast(bool)` on the canonical `Describe`/`Spec` engine: `BuildSuite(...)`,
+  `suite.SetFailFast(true)`, `suite.Run(t)` stops the run after the first spec, `BeforeAll`, or
+  `AfterAll` that fails, mirroring `Runner.FailFast`'s existing semantics
+  (`docs/SUITE_HOOKS_CONTRACT.md` H9). A sequential spec that fails still runs its own `AfterEach`;
+  the specs after it never start and are never reported at all. An already-launched `ItParallel`
+  batch runs every sibling to completion first, and the stop applies only once the whole batch has
+  finished. The `AfterAll` of every `BeforeAll`/`AfterAll` group already entered still runs, even
+  though no later group starts. A spec `-run` filtered out or compile-time `SkipIt`/`PendingIt`
+  marked is not a failure and never triggers the stop. The flag lives behind the same lazily
+  allocated `groups` pointer `CompiledSuite` already carries for its other optional bookkeeping,
+  not a new field, so `CompiledSuite`/`ExecutionPlan` keep their pinned allocation sizes and a
+  suite that never calls `SetFailFast(true)` allocates nothing extra for it (H10). This closes item
+  3 of [docs/EXECUTION_ENGINES.md](docs/EXECUTION_ENGINES.md)'s Stage 4; `RunShard` re-expressed
+  over `ExecutionPlan` (item 4) is a separate follow-up change.
+  ([#251](https://github.com/getsyntegrity/go-specs/issues/251))
 
 ### Changed
 

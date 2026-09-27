@@ -81,6 +81,14 @@ type planGroups struct {
 	// BeforeAll/AfterAll group boundary") but never merges two runs the documented rule would have
 	// kept apart either — see the compiler/arena doc comments for why the stronger rule is safe.
 	parallel []parallelRange
+	// failFast is set by CompiledSuite.SetFailFast(true) (issue #251): when true, the run stops
+	// after the first spec, BeforeAll, or AfterAll that fails, at the next spec/group boundary,
+	// mirroring Runner.FailFast (runner.go) for this engine — see CompiledSuite.SetFailFast for the
+	// full contract and groupRun.failFastStopped for how the group path applies it. It lives here,
+	// behind the same lazily allocated pointer as this suite's other optional bookkeeping, rather
+	// than as a new CompiledSuite/ExecutionPlan field, for the same H10 reason as every other field
+	// of this struct.
+	failFast bool
 }
 
 // parallelRange is one ItParallel group (issue #245): a maximal run of consecutive ItParallel specs,
@@ -280,6 +288,27 @@ type groupRun struct {
 	// its AfterAlls on the way out, and no further spec runs. It is atomic because a parked subtest
 	// resumes on its own goroutine after the stop was set.
 	stopped atomic.Bool
+	// failFastStopped is set once a spec, BeforeAll, or AfterAll fails while r.pg.failFast is true
+	// (issue #251, docs/SUITE_HOOKS_CONTRACT.md H9): checked at the top of every runRange loop
+	// iteration, so no further spec or group anywhere in the suite starts, while every group already
+	// entered still runs its own AfterAll (runGroupBody's defers run regardless of this flag).
+	//
+	// Unlike stopped, this is a plain bool, never written from an ItParallel sibling's own
+	// goroutine: runParallelGroup only ever sets it (via markFailFast) on the calling goroutine,
+	// after wg.Wait has joined every sibling of the batch, so every write and read of it happens on
+	// the single goroutine that walks the plan — the same one stopIfStopped's t.FailNow unwinds
+	// through group subtests already relies on for r.stopped's own updates in the sequential case.
+	failFastStopped bool
+}
+
+// markFailFast records, when r.pg.failFast is set (CompiledSuite.SetFailFast(true), issue #251),
+// that this suite's run must stop: a sequential spec, a BeforeAll, or an AfterAll just failed. A
+// no-op when the suite never called SetFailFast(true), so every other engine behavior is
+// unchanged.
+func (r *groupRun) markFailFast() {
+	if r.pg.failFast {
+		r.failFastStopped = true
+	}
 }
 
 // runPlanWithGroups is runPlanSpecsInOrder for a suite that registered at least one group hook.
@@ -483,9 +512,19 @@ func parseTrailingSubtestNumber(s string) (prefix string, nn int32) {
 // or a sibling of one — exactly the same relationship an individual spec index already has to
 // children — and the same three-way walk (child group, then parallel run, then single spec) covers
 // it without needing to sort the two kinds together.
+//
+// The r.failFastStopped check at the top of the loop (issue #251) is what makes a stop set anywhere
+// in the tree cut every later sibling at every level: once it is set, this call returns before
+// starting its own next child, which unwinds back into the caller's own runRange (or runGroupBody),
+// whose very next loop iteration sees the same flag and returns too — all the way up, without a
+// Goexit/FailNow unwind, so a group already entered still finishes its AfterAll on the way out
+// (runGroupBody's defers) and every group that was never entered stays never entered.
 func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []int) {
 	k := 0
 	for i := lo; i <= hi; {
+		if r.failFastStopped {
+			return
+		}
 		if k < len(children) && r.pg.groups[children[k]].Start == i {
 			g := children[k]
 			k++
@@ -553,6 +592,9 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 		// registered it, so it is reported as the group's teardown, its [AfterAll] case (H6).
 		reportHookCase(r.rep, group.Path, hookKindAfterAll,
 			fmt.Sprintf("go-specs: a Cleanup registered by a BeforeAll or AfterAll failed for group %q", groupDisplayName(r.pg, g)), "")
+		// Same H9 rule as an ordinary AfterAll failure (issue #251): a hook-registered cleanup
+		// failing is still reported as this group's [AfterAll] case, so it counts as one too.
+		r.markFailFast()
 	}
 	if !ran {
 		// testing filtered the group subtest out: none of its hooks ran (H3), and its specs are
@@ -609,6 +651,10 @@ func (r *groupRun) runBeforeAlls(gt *testing.T, hc *groupHookContext, g int) (ok
 				gt.Errorf("go-specs: BeforeAll failed for group %q; its specs are reported skipped", groupDisplayName(r.pg, g))
 			}
 			r.reportGroupSkipped(g, fmt.Sprintf("skipped: BeforeAll failed for group %q", groupDisplayName(r.pg, g)))
+			// A failed BeforeAll counts as a failure for FailFast (issue #251, H9), on top of H4's
+			// pre-existing "this group's own specs are skipped" above: no later sibling group
+			// anywhere in the suite starts either.
+			r.markFailFast()
 		case !returned:
 			ok = false
 			r.reportGroupSkipped(g, fmt.Sprintf("skipped: BeforeAll skipped group %q", groupDisplayName(r.pg, g)))
@@ -669,6 +715,9 @@ func (r *groupRun) reportAfterAll(gt *testing.T, g int, acc *afterAllResult) {
 	if gt != nil {
 		gt.Errorf("go-specs: AfterAll failed for group %q", groupDisplayName(r.pg, g))
 	}
+	// A failed AfterAll counts as a failure for FailFast too (issue #251, H9): no later sibling
+	// group anywhere in the suite starts.
+	r.markFailFast()
 }
 
 // runHook runs one group hook on the calling goroutine against the group's hook Context, bound to
@@ -733,10 +782,14 @@ func (r *groupRun) reportGroupSkipped(g int, message string) {
 	}
 }
 
-// runSpec runs spec i, which sits directly in the scope t.
+// runSpec runs spec i, which sits directly in the scope t. When r.pg.failFast is set (issue #251),
+// a failing spec marks the run to stop (r.markFailFast) — the sequential half of H9; a filtered or
+// skipped spec never does, since runExecution/runSpecProgramIsolated report failed=false for both.
 func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 	if !r.real {
-		runExecution(r.backend, r.rep, r.plan, i)
+		if runExecution(r.backend, r.rep, r.plan, i) {
+			r.markFailFast()
+		}
 		return
 	}
 	start, length := r.plan.ProgramStart[i], r.plan.ProgramLen[i]
@@ -757,6 +810,9 @@ func (r *groupRun) runSpec(t *testing.T, prefix string, i int) {
 	started := reportSpecStarted(r.rep, specEventName(r.plan, i), r.reportPath(i))
 	message, output, ran, failed, skipped := runSpecProgramIsolated(t, ctx, program, specSubtestName(r.plan, i)[len(prefix):])
 	reportSpecFinished(r.rep, started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
+	if failed {
+		r.markFailFast()
+	}
 }
 
 // reportPath is specEventPath(plan, i) when there is a reporter, and nil otherwise, so the
@@ -798,9 +854,13 @@ type parallelSpecOutcome struct {
 func (r *groupRun) runParallelGroup(t *testing.T, prefix string, pi int) {
 	rng := r.pg.parallel[pi]
 	if !r.real {
+		// Without a real *testing.T there is no concurrency to wait out — this loop already runs
+		// the range sequentially, "exactly like an ordinary sequential spec in that mode" (see this
+		// method's own doc comment) — so FailFast (issue #251) stops it early, the same as
+		// runRange's plain-spec case, rather than running the rest of the range regardless.
 		for i := rng.Start; i <= rng.End; i++ {
 			r.runSpec(t, prefix, i)
-			if r.stopped.Load() {
+			if r.stopped.Load() || r.failFastStopped {
 				return
 			}
 		}
@@ -820,12 +880,23 @@ func (r *groupRun) runParallelGroup(t *testing.T, prefix string, pi int) {
 	wg.Wait()
 
 	parkedName := ""
+	anyFailed := false
 	for k := 0; k < n; k++ {
 		i := rng.Start + k
 		r.emitParallelOutcome(i, outcomes[k])
+		if outcomes[k].result.Failed {
+			anyFailed = true
+		}
 		if outcomes[k].parked && parkedName == "" {
 			parkedName = outcomes[k].specName
 		}
+	}
+	if anyFailed {
+		// Every launched sibling has already finished (wg.Wait above), so this batch is complete —
+		// deciding the FailFast stop here, on the calling goroutine, rather than from inside a
+		// sibling's own goroutine, is what gives H9's "the batch runs to completion first" its
+		// guarantee without needing r.failFastStopped itself to be atomic (see its own doc comment).
+		r.markFailFast()
 	}
 	if parkedName != "" {
 		// Every launched spec has finished (or leaked its poisoned Context, in the parked one's
