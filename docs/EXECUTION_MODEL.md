@@ -4,21 +4,27 @@ How go-specs compiles and runs tests: the execution pipeline, program structure,
 
 ## Execution pipeline
 
-The end-to-end flow is:
+`Describe` — the documented, default entry point — never touches `Builder`, `Program`, or
+`Runner`. It compiles straight to `ExecutionPlan` + `CompiledSuite`:
 
-**DSL → Builder → Program → Runner**
+**DSL → Compiler → ExecutionPlan → CompiledSuite**
+
+Constructing `Builder`/`BuildProgram` + `NewRunner` by hand is a second, parallel path with the
+same external shape:
 
 ```mermaid
 flowchart LR
-    DSL --> Builder
-    Builder --> Program
-    Program --> Runner
+    DSL --> Compiler["Bytecode compiler (Describe) or Builder (manual)"]
+    Compiler --> Plan["ExecutionPlan (default) or Program (manual)"]
+    Plan --> Run["CompiledSuite.Run or Runner.Run"]
 ```
 
 1. **DSL** — User defines suites with `Describe`, `BeforeEach`, `AfterEach`, `It` (and optionally the Builder API with `ItParallel`).
-2. **Builder** — Compiler (or Builder) flattens scope and hooks into a linear plan. No tree is kept at run time.
-3. **Program** — The plan is either a flat slice of instructions with per-spec bounds (ExecutionPlan) or a slice of groups, each with before/specs/after steps (Program).
-4. **Runner** — Iterates over the plan and invokes each step with a shared Context.
+2. **Compiler / Builder** — The bytecode compiler (default, driven by `Describe`) or a hand-built `Builder` flattens scope and hooks into a linear plan. No tree is kept at run time.
+3. **Program** — The plan is either a flat slice of instructions with per-spec bounds (`ExecutionPlan`, the default) or a slice of groups, each with before/specs/after steps (`Program`, the Builder/Runner path).
+4. **Runner** — `CompiledSuite.Run` or `Runner.Run` iterates over the plan and invokes each step with a shared Context.
+
+See [EXECUTION_ENGINES.md](EXECUTION_ENGINES.md) for the full inventory of every execution engine in this repository and which one is canonical.
 
 ## Execution plan
 
@@ -190,40 +196,43 @@ bound to a spec that has not executed, nesting subtests and silently blanking th
 assertions. The runner detects the parked subtest and fails the run with a diagnostic instead. See
 `docs/DSL.md` for the user-facing contract and `specs/spec_body_parallel.go` for the mechanism.
 
-### Hooks: the two models disagree, with or without `-run`
+### Hooks: the two models converged (#109, closed)
 
-The two sequential models do not run hooks the same way, and the difference is in the hooks, not the
-names. `-run` makes it visible; it does not create it.
+The two sequential models used to run hooks at different frequencies. That divergence, tracked as
+#109, is closed: both models now run `BeforeEach`/`AfterEach` once per spec, and both run them
+*inside* that spec's own subtest.
 
 The plainest form needs no pattern at all. For one scope declaring a `BeforeEach` and three specs:
 
 | Model | `BeforeEach` runs |
 |---|---|
 | `Describe` / `Spec` | 3 times — once per spec |
-| `Builder` / `Runner` | 1 time — once per group |
-
-So `BeforeEach` does not carry per-spec semantics in the `Builder`/`Runner` model. Setup that a spec
-mutates is not restored for the next spec in the same group. That is the substance of the
-divergence, tracked in #109; everything below is the same placement seen through a filter.
+| `Builder` / `Runner` | 3 times — once per spec |
 
 The `Describe`/`Spec` model compiles each scope's `BeforeEach`/`AfterEach` into the selected spec's
 own instruction range, and that range runs *inside* the subtest. Discarding the subtest discards the
 hooks with it.
 
-The `Builder`/`Runner` model runs a group's `before` hooks and defers its `after` hooks around the
-loop that calls `t.Run` — so they sit *outside* the subtest. `testing` can only discard what is
-inside a subtest, which means a narrow `-run` pattern narrows which spec bodies execute but not
-which group hooks do: the hooks of a scope whose specs were all filtered out still run.
+The `Builder`/`Runner` model now does the same thing for the same reason: `runSpecWithHooks`
+(`specs/runner.go`) runs a spec's before hooks, body, and after hooks as one unit, and
+`runSpecIsolated` runs that whole unit inside the spec's own `t.Run` closure. Coalescing specs that
+share the same hooks into one `group` (see `specs/program.go`) is purely a compile-time memory/
+locality optimization; it has no effect on how often hooks run, or where they run relative to the
+subtest — each spec still runs its own group's before/after for itself. So a narrow `-run` pattern
+now discards a filtered-out spec's hooks in both models, the same way.
 
-Neither model changed here; the divergence predates breadcrumbs and is tracked separately. It
-matters more now only because `-run` has become a documented way to select a single behaviour.
+### Reporting of filtered specs (#111, closed)
 
-### Reporting of filtered specs
-
-In either model, a spec whose subtest a `-run` pattern discarded is still reported to an attached
-reporter as started and finished without failing — it appears as passed although its body never ran.
-`t.Run`'s boolean return, which is `false` exactly when the filter discarded the subtest, is not
-inspected. This predates breadcrumbs too, and is tracked separately.
+In both models, a spec whose subtest a `-run` pattern discarded is reported as `Filtered`, not as a
+bare pass. `t.Run`'s own boolean return can't be used for this — it is `true` for a subtest the
+filter discarded, indistinguishable from a genuine pass — so `runSpecIsolated`/
+`runSpecProgramIsolated` instead set a local `ran` flag from inside the closure passed to `t.Run`,
+which only runs when the filter accepts the subtest. That flag threads back through
+`specResult.Filtered`, and the reporter emits `SpecResultEvent{Filtered: true}`: `Failed` stays
+`false` and `Duration` stays `0`, same as a compile-time skipped spec, but `Skipped` itself stays
+`false` — the cause is external selection, not a declared skip. See
+`TestSpecRunFilteredSpecsAreReportedAsFilteredRealProcess` and
+`TestRunnerRunFilteredSpecsAreReportedAsFilteredRealProcess` (`specs/subtest_identity_test.go`).
 
 ---
 

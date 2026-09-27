@@ -38,7 +38,7 @@ effect (see "Discarded runs").
 
 ```sh
 go test ./specs/ -run TestParallelBackendSize -v        # struct sizes
-go test ./specs/ -run '^$' -bench 'FalseSharing' -c -o bench-157/specs.test
+go test ./specs/ -run '^$' -bench 'FalseSharing' -c -o docs/investigations/bench-157/specs.test
 
 # run 3 — full sweep, 20 interleaved rounds
 for round in $(seq 1 20); do
