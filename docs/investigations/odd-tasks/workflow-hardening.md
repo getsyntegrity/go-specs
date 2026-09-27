@@ -155,3 +155,13 @@ branch names go through `env:`.
   Check: `rg -n "uses: [^.].*@v[0-9]" .github` -- empty. `python3 -c "import yaml; yaml.safe_load(open('.github/dependabot.yml'))"` -- OK.
   `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
   Commit: `ci: pin every third-party action to a commit SHA`.
+- T1-T4 full verification pass (after T4's commit, HEAD `edabbc8`):
+  `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
+  `python3` YAML parse of every workflow file -- all OK.
+  `rg -n 'uses: [^.].*@v[0-9]' .github` -- empty.
+  `rg -i shipwright --hidden -g '!.git' .` -- empty.
+  `make fmt-check` -- exit 0.
+  `go build ./...` -- exit 0.
+  `go test ./tools/release/...` -- ok, 0.007s.
+  T5 (open the PR, confirm CI green, update the ruleset's required checks) is out of scope for
+  this writer: no push, no PR, no GitHub mutation permitted here. Left unchecked.
