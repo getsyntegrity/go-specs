@@ -24,6 +24,12 @@ const (
 	// resolve it. It is its own reason rather than folded into a neighbouring one, which would
 	// misreport the cause as a missing or unreadable marker.
 	ReasonInvalidReportDir ConfigErrorReason = "invalid-report-dir"
+	// ReasonInvalidRetention reports a non-positive GC retention window (contract v1.2.9 §5,
+	// "Abandoned markers"). It is never written to config-error.json — GC runs outside any package
+	// process's pre-test checks, so it is not part of that record's closed vocabulary above — but it
+	// is still a *ConfigError so the `gc` CLI verb maps it to ExitConfig the same way as every other
+	// configuration failure in this package, via errors.As.
+	ReasonInvalidRetention ConfigErrorReason = "invalid-retention"
 )
 
 // ConfigError reports reporting coordination that was requested but cannot be used.

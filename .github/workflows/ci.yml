@@ -175,6 +175,141 @@ jobs:
       - name: Race-check goroutine-spawning benchmarks
         run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
 
+  report-cli:
+    # AC-23 of #146: docs/REPORTING.md's "Running it in CI with go-specs-report" section is not
+    # just prose -- this job runs the documented GitHub Actions example for real, against the
+    # report/coordination e2e fixture packages (producera, producerb), so a change that breaks the
+    # documented flow fails CI instead of only being caught the next time someone copy-pastes it.
+    #
+    # The `go test` step is deliberately red: GO_SPECS_FIXTURE_HOOK_FAIL=1 makes producera's
+    # BeforeAll hook fail on purpose (report/coordination/internal/e2efixture/producera's own
+    # documented failure gate, the same one report/coordination/finalize_e2e_test.go uses).
+    # `continue-on-error: true` on that step is exactly what the doc's GitHub Actions example
+    # teaches: it lets the job keep going so `finalize` still runs against the two producers'
+    # shards, proving contract v1.2.9 §8's claim that a reporting result is independent of the test
+    # result -- `go test` failing must never make `finalize` fail, and `finalize` succeeding must
+    # never hide that `go test` failed.
+    #
+    # The final assertion step below is this job's equivalent of the doc's own "fail the job if go
+    # test failed" consumer step: it re-fails the job once both outcomes have been checked, instead
+    # of leaving it green. A green job here would mean the red-test path was never exercised.
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+
+      - name: Build go-specs-report
+        run: go build -o "$RUNNER_TEMP/go-specs-report" ./cmd/go-specs-report
+
+      # A hand-written manifest, not the repo-wide `.go-specs/producers.txt` recipe from
+      # docs/REPORTING.md: this job only runs two fixture packages, not the whole module's
+      # producers, and finalize's `-producers` manifest must list exactly the producers a run's
+      # `go test` invocation actually covers.
+      - name: Write producer manifest
+        run: |
+          cat > "$RUNNER_TEMP/producers.txt" <<'EOF'
+          github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/producera
+          github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/producerb
+          EOF
+
+      # init's KEY=value stdout lines append straight onto $GITHUB_ENV, so every later step in
+      # this job inherits GO_SPECS_REPORT_SHARDS/_RUN_ID/_RUN_TOKEN/_REPORT_DIR automatically --
+      # same recipe as the doc's GitHub Actions example.
+      - name: go-specs-report init
+        run: |
+          "$RUNNER_TEMP/go-specs-report" init \
+            -run-id="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            -report-dir="$RUNNER_TEMP/go-specs-runs" >> "$GITHUB_ENV"
+
+      # $GITHUB_ENV is not masked automatically the way a declared `secrets:` value is, and the run
+      # token is a credential in everything but name. Read it as a shell variable, not a
+      # `${{ env.* }}` expression: Actions prints a step's script with expressions already
+      # expanded, which would log the token before the mask took effect.
+      - name: mask the run token
+        run: echo "::add-mask::$GO_SPECS_RUN_TOKEN"
+
+      - name: go test
+        id: test
+        continue-on-error: true
+        env:
+          GO_SPECS_FIXTURE_HOOK_FAIL: "1"
+        run: |
+          go test -count=1 \
+            -coverpkg=github.com/getsyntegrity/go-specs/report/coordination/internal/e2efixture/shared \
+            -coverprofile="$RUNNER_TEMP/cover.out" \
+            ./report/coordination/internal/e2efixture/producera/... \
+            ./report/coordination/internal/e2efixture/producerb/...
+
+      - name: go-specs-report finalize
+        id: finalize
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/report"
+          "$RUNNER_TEMP/go-specs-report" finalize \
+            -producers="$RUNNER_TEMP/producers.txt" \
+            -coverprofile="$RUNNER_TEMP/cover.out" \
+            -json="$RUNNER_TEMP/report/report.json" \
+            -xml="$RUNNER_TEMP/report/report.xml" \
+            -html="$RUNNER_TEMP/report/report.html" \
+            -txt="$RUNNER_TEMP/report/report.txt" \
+            -cleanup
+
+      - name: upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-specs-report-cli-fixture
+          path: ${{ runner.temp }}/report/
+
+      # Combine both outcomes explicitly, the same way docs/REPORTING.md insists a real pipeline
+      # must (contract v1.2.9 §8: neither exit code stands in for the other), then check the
+      # merged report.json actually carries the fixture's known totals (Total 4, Failed 1,
+      # Skipped 1, Passed 2 -- report/coordination/finalize_e2e_test.go) so a merge regression that
+      # still exits 0 does not slip through unnoticed.
+      - name: assert the documented flow behaved as documented
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
+        run: |
+          set -u
+          status=0
+
+          if [ "$TEST_OUTCOME" != "failure" ]; then
+            echo "::error::expected the go test step to fail (GO_SPECS_FIXTURE_HOOK_FAIL=1 makes producera's BeforeAll fail on purpose); got outcome=$TEST_OUTCOME" >&2
+            status=1
+          fi
+
+          if [ "$FINALIZE_OUTCOME" != "success" ]; then
+            echo "::error::expected go-specs-report finalize to succeed despite the red go test (contract v1.2.9 §8: reporting and test results are independent); got outcome=$FINALIZE_OUTCOME" >&2
+            status=1
+          fi
+
+          REPORT_JSON="$RUNNER_TEMP/report/report.json"
+          if [ ! -f "$REPORT_JSON" ]; then
+            echo "::error::$REPORT_JSON was not written by finalize" >&2
+            status=1
+          else
+            total=$(jq -r '.execution.total' "$REPORT_JSON")
+            failed=$(jq -r '.execution.failed' "$REPORT_JSON")
+            skipped=$(jq -r '.execution.skipped' "$REPORT_JSON")
+            passed=$(jq -r '.execution.passed' "$REPORT_JSON")
+            if [ "$total" != "4" ] || [ "$failed" != "1" ] || [ "$skipped" != "1" ] || [ "$passed" != "2" ]; then
+              echo "::error::report.json execution totals = total=$total failed=$failed skipped=$skipped passed=$passed, want total=4 failed=1 skipped=1 passed=2 (see report/coordination/finalize_e2e_test.go)" >&2
+              status=1
+            fi
+          fi
+
+          exit "$status"
+
   shipwright:
     # Disabled until the runner is stable. v0.12.0 intermittently fails before running a
     # single workflow step with "failed to acquire Dagger client: daemon connected but not
