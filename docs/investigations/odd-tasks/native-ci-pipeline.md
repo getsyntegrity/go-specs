@@ -38,10 +38,26 @@ release to happen automatically when `develop` is merged into `main`.
    pull request's head ref, not from "any push to main". The manual `workflow_dispatch` release is
    removed so there is a single path.
 3. **A `RELEASE_TOKEN` secret (fine-grained PAT, this repo only, contents and pull-requests
-   write).** Commits and PRs made with `GITHUB_TOKEN` do not trigger other workflows, so required
-   checks would never run on the changelog commit or the hotfix sync PR, and the PR could not be
-   merged. The maintainer creates the token; the workflows fail with a clear error while it is
-   missing. Rejected for now: a GitHub App (cleaner, more setup for a single maintainer).
+   write).** *(Superseded 2026-09-27 — see below; kept for history.)* Commits and PRs made with
+   `GITHUB_TOKEN` do not trigger other workflows, so required checks would never run on the
+   changelog commit or the hotfix sync PR, and the PR could not be merged. The maintainer creates
+   the token; the workflows fail with a clear error while it is missing. Rejected for now: a
+   GitHub App (cleaner, more setup for a single maintainer).
+
+   **Superseded (2026-09-27): a GitHub App replaces the PAT.** The active ruleset
+   `protect-main-develop` (PR required on `main`/`develop`, no deletion, no force push) must let
+   exactly one actor bypass it for release-prep's changelog push to `develop`. With the PAT from
+   the decision above, that bypass actor would be the maintainer's own GitHub user — who could
+   then push directly to `main`/`develop` too, defeating the ruleset the ruleset exists to
+   enforce. A GitHub App installed only on `getsyntegrity/go-specs` is a narrower actor: only the
+   App can bypass, never a human, including the maintainer. Rejected alternative: keeping the PAT
+   and accepting the maintainer as the bypass actor — rejected because it reopens exactly the
+   direct-push hole the ruleset was created to close. New secrets `RELEASE_APP_ID` and
+   `RELEASE_APP_PRIVATE_KEY` replace `RELEASE_TOKEN`; `.github/workflows/release-prep.yml` and
+   `.github/workflows/hotfix-sync.yml` mint a short-lived installation token per run via
+   `actions/create-github-app-token@v2` instead of reading a long-lived PAT, and the prepare
+   commit is attributed to the App's own bot identity rather than `github-actions[bot]` or a
+   human, since the App is the actor the ruleset now names.
 4. **Version rule.** `!` or `BREAKING CHANGE` bumps minor while below v1.0.0 (the CHANGELOG
    already says pre-1.0 releases may break, and the pending breaking removal targets v0.2.0) and
    major from v1.0.0 on. `feat` bumps minor from v1.0.0 on and patch below it. Anything else bumps
@@ -53,8 +69,8 @@ release to happen automatically when `develop` is merged into `main`.
    hides.
 6. **Branch protection is not changed by this PR's code.** Today neither `main` nor `develop` is
    protected and the only ruleset is disabled. The maintainer's rule (PR required, 0 approvals) needs
-   a ruleset, created with explicit authorization in T5, with `RELEASE_TOKEN`'s actor allowed to
-   push the changelog commit.
+   a ruleset, created with explicit authorization in T5, with the release GitHub App's actor (see
+   Decision 3's supersession) allowed to push the changelog commit.
 7. **CI split into staged jobs (maintainer request 2026-09-27).** `ci.yml`'s `test` job had grown
    into a monolith: version pin, module path, gofmt, build, vet, `go test`, `go test -race`,
    benchmark-path execution, and benchmark-path racing, all as one job that reports one PR status
@@ -101,9 +117,10 @@ release to happen automatically when `develop` is merged into `main`.
 
 ## Limits
 
-The release workflows cannot run end to end before `RELEASE_TOKEN` exists and a real
-`develop` → `main` PR is opened. T3 and T4 prove the logic with unit tests and a dry run on the real
-tag and commit history, not with a published release.
+The release workflows cannot run end to end before the release GitHub App exists (`RELEASE_APP_ID`
+and `RELEASE_APP_PRIVATE_KEY` provisioned) and a real `develop` → `main` PR is opened. T3 and T4
+prove the logic with unit tests and a dry run on the real tag and commit history, not with a
+published release.
 
 ## TDD
 
@@ -153,18 +170,22 @@ Strict TDD is on (user global config), with runner `go test`.
   Added `.github/workflows/release-prep.yml`: triggers on `pull_request`
   `[opened, synchronize, reopened, ready_for_review]` to `main`; job gated on
   `head.ref == 'develop' && head.repo.full_name == github.repository`; fails fast with `::error::`
-  before checkout if `RELEASE_TOKEN` is empty; checks out `develop` with `fetch-depth: 0` and the
-  PAT; computes the last tag (`git describe --tags --abbrev=0 origin/main`, falling back to the
-  latest local `v*` tag, then `v0.0.0`); runs `tools/release next-version`, treating exit 3 as a
-  green no-op (`::notice::` + job summary, every later step skipped); runs `tools/release
-  changelog`; commits `chore(release): prepare vX.Y.Z` as `github-actions[bot]` and pushes to
-  `develop` only when `git diff` shows a change (the tool's own idempotency, exercised by
+  before checkout if `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY` is empty; mints a short-lived
+  installation token from the release GitHub App (`actions/create-github-app-token@v2`); checks
+  out `develop` with `fetch-depth: 0` and that token; computes the last tag (`git describe --tags
+  --abbrev=0 origin/main`, falling back to the latest local `v*` tag, then `v0.0.0`); runs
+  `tools/release next-version`, treating exit 3 as a green no-op (`::notice::` + job summary,
+  every later step skipped); runs `tools/release changelog`; commits
+  `chore(release): prepare vX.Y.Z` as the App's own bot identity (looked up via `gh api
+  /users/<slug>[bot]`) and pushes to `develop` only when `git diff` shows a change (the tool's own
+  idempotency, exercised by
   `TestRewriteChangelog_Idempotent`/`TestRun_Changelog_IdempotentSecondRunExitsZero`, is what
   makes the retriggered run after that push a no-op: same last tag, same computed next version,
   changelog already carries that heading, no diff, no second push — verified by reasoning through
   the retrigger with the actual regex/classification rules, not by running the workflow itself,
-  since that needs a real PR and `RELEASE_TOKEN`, see Limits). `permissions: contents: read`
-  (write goes through the PAT); `concurrency` keyed on the PR number, `cancel-in-progress: false`.
+  since that needs a real PR and the App installed, see Limits). `permissions: contents: read`
+  (write goes through the App's installation token); `concurrency` keyed on the PR number,
+  `cancel-in-progress: false`.
 
   Dry run on real history (`git fetch origin main develop --tags`, then run from this worktree):
   `origin/main` is at `v0.1.2`; `git log v0.1.2..origin/develop` has 69 commits, including two
@@ -212,19 +233,22 @@ Strict TDD is on (user global config), with runner `go test`.
 
   Added `.github/workflows/hotfix-sync.yml`: `pull_request: types: [closed]` on `main`, gated on
   `merged == true && startsWith(head.ref, 'hotfix/') && head.repo.full_name == github.repository`
-  (disjoint from `release.yml`'s condition, since a hotfix branch is never named `develop`); opens
-  a `main` → `develop` PR via `gh pr create` using `RELEASE_TOKEN` (reused rather than asking for
-  a second secret with the same Pull-requests-write scope), or comments on an already-open one if
-  a second hotfix lands before the first sync PR is merged; fails fast with `::error::` if
-  `RELEASE_TOKEN` is missing, same message shape as release-prep.yml's check. No release step —
-  by design, per the task.
+  (disjoint from `release.yml`'s condition, since a hotfix branch is never named `develop`); mints
+  a release GitHub App installation token the same way as release-prep.yml, then opens a
+  `main` → `develop` PR via `gh pr create` using that token (the App is reused rather than
+  provisioning a second credential with the same Pull-requests-write scope), or comments on an
+  already-open one if a second hotfix lands before the first sync PR is merged; fails fast with
+  `::error::` if `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY` is missing, same message shape as
+  release-prep.yml's check. No release step — by design, per the task.
 
   Rewrote CONTRIBUTING.md's Releasing section (previously the `gh workflow run release.yml --ref
   main` manual-dispatch instructions) into: the new develop→main-PR-is-the-release model in 4
-  steps, a "Prerequisite: RELEASE_TOKEN" subsection (what scopes the fine-grained PAT needs and
+  steps, a "Prerequisite: `RELEASE_TOKEN`" subsection (what scopes the fine-grained PAT needs and
   why GITHUB_TOKEN-authored pushes don't work — Decision 3), a "Version rules" table restating
   Decision 4 for contributors, and a "Hotfixes" subsection describing the hotfix→main→(sync
-  PR)→develop flow. Left every other CONTRIBUTING.md section untouched.
+  PR)→develop flow. Left every other CONTRIBUTING.md section untouched. *(2026-09-27: that
+  Prerequisite subsection was later replaced by a GitHub App setup subsection — see Decision 3's
+  supersession above and the Progress entry below.)*
 
   Dry run on real history, continuing from T3's dry-run artifacts: `go run ./tools/release
   latest-heading -file CHANGELOG.md` (the real, unmodified file on this branch) → `v0.1.0`
@@ -260,3 +284,22 @@ Strict TDD is on (user global config), with runner `go test`.
   compilation, with `vet` at 24s. Dropped `needs: verify` from `unit`/`race`/`bench-smoke`, so all
   jobs start together, and added a GOCACHE-only `actions/cache` in `.github/actions/setup-go`, one
   key per compile flavour (vet/test/race/bench). setup-go's own cache stays off (tar "File exists").
+- Ruleset `protect-main-develop` (id 24078173) was created live on 2026-09-27 with deletion
+  protection, non_fast_forward protection, and a pull_request rule (0 required approvals,
+  merge+squash allowed), no bypass actor configured yet, required status checks to be added after
+  PR #280 merges. The old, already-disabled ruleset `gospecs` was left untouched because it
+  requires linear history, which is incompatible with merge-commit releases.
+- `RELEASE_TOKEN` (Decision 3) replaced with the release GitHub App (Decision 3's supersession),
+  per the maintainer's 2026-09-27 decision that the ruleset's bypass actor must be narrower than
+  the maintainer's own user: `.github/workflows/release-prep.yml` and
+  `.github/workflows/hotfix-sync.yml` now verify `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY` and
+  mint a short-lived installation token via `actions/create-github-app-token@v2` instead of
+  reading `secrets.RELEASE_TOKEN`; the release-prep changelog commit is attributed to the App's
+  own bot identity (`<slug>[bot]` / `<id>+<slug>[bot]@users.noreply.github.com`, looked up via
+  `gh api /users/<slug>[bot]`) instead of `github-actions[bot]`. `release.yml`'s tag step is
+  unaffected — it already used the default `GITHUB_TOKEN` and stays `github-actions[bot]`.
+  CONTRIBUTING.md's "Prerequisite: `RELEASE_TOKEN`" subsection was replaced with GitHub App setup
+  instructions (create the App, webhook off, Contents RW + Pull requests RW, install only on
+  go-specs, generate a private key, add `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY`, add the App as
+  the ruleset's sole bypass actor); the WHY (retriggering required checks that a default
+  `GITHUB_TOKEN`-authored commit/PR would not retrigger) is unchanged, only the mechanism moved.

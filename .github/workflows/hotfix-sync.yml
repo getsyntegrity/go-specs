@@ -26,24 +26,34 @@ jobs:
         uses: actions/checkout@v7
 
       # gh pr create needs a token with pull-requests: write, which the default GITHUB_TOKEN does
-      # not have read-only permissions to satisfy here; RELEASE_TOKEN already carries Pull
-      # requests (write) for release-prep.yml's own PR interactions, so it is reused rather than
-      # asking the maintainer to provision a second secret for the same scope.
-      - name: Verify RELEASE_TOKEN is configured
+      # not have read-only permissions to satisfy here; the release GitHub App already carries
+      # Pull requests (write) for release-prep.yml's own PR interactions, so its installation
+      # token is reused rather than provisioning a second credential for the same scope.
+      - name: Verify the release GitHub App is configured
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "$RELEASE_TOKEN" ]; then
-            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
             exit 1
           fi
+
+      - name: Mint a release GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       # Idempotent: if an earlier hotfix already opened an unmerged main -> develop sync PR (a
       # second hotfix landed before the first sync was merged), reuse it instead of opening a
       # second one that would conflict with the first.
       - name: Open or reuse the main -> develop sync PR
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           HOTFIX_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           EXISTING="$(gh pr list --base develop --head main --state open --json number --jq '.[0].number // empty')"

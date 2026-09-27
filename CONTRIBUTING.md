@@ -131,9 +131,23 @@ A release *is* a `develop` → `main` pull request. There is no separate release
 
 There is no `workflow_dispatch` for releases anymore, and no manual tagging step — a single path, matching Decision 2 of [`docs/investigations/odd-tasks/native-ci-pipeline.md`](docs/investigations/odd-tasks/native-ci-pipeline.md).
 
-### Prerequisite: `RELEASE_TOKEN`
+### Prerequisite: the release GitHub App
 
-`Release prep` and `Hotfix sync` both push commits, and push or open PRs, in a way that needs to retrigger this repository's other required checks — a commit or PR authored by the default `GITHUB_TOKEN` does not retrigger anything, so a required check would never run on the prepare commit or the sync PR, and neither could be merged. Both workflows instead push using the `RELEASE_TOKEN` repository secret: a fine-grained personal access token, scoped to this repository only, with **Contents (read and write)** and **Pull requests (read and write)** permissions. Create it once (Settings → Developer settings → Personal access tokens → Fine-grained tokens) and add it as a repository secret named `RELEASE_TOKEN`. Both workflows fail fast with a clear `::error::` while it is missing, rather than failing deep inside a git push with an opaque authentication error.
+`Release prep` and `Hotfix sync` both push commits, and push or open PRs, in a way that needs to retrigger this repository's other required checks — a commit or PR authored by the default `GITHUB_TOKEN` does not retrigger anything, so a required check would never run on the prepare commit or the sync PR, and neither could be merged. Both workflows instead push using a short-lived installation token minted from a dedicated GitHub App.
+
+A GitHub App is used instead of a personal access token because the ruleset `protect-main-develop` (see below) needs exactly one actor able to bypass it for the prepare commit. A personal access token's bypass actor is the maintainer's own GitHub user — who could then also push directly to `main`/`develop` themselves, defeating the ruleset. A GitHub App installed only on this repository is a narrower actor: only the App can bypass, never a human.
+
+Set it up once:
+
+1. Create the App at <https://github.com/organizations/getsyntegrity/settings/apps/new>.
+2. Leave the webhook off.
+3. Grant permissions **Contents (read and write)** and **Pull requests (read and write)** — nothing else.
+4. Install it only on `getsyntegrity/go-specs`, not org-wide.
+5. Generate a private key for the App.
+6. Add two repository secrets: `RELEASE_APP_ID` (the App's ID) and `RELEASE_APP_PRIVATE_KEY` (the private key's contents).
+7. Add the App as the sole bypass actor of the `protect-main-develop` ruleset.
+
+Both workflows fail fast with a clear `::error::` while either secret is missing, rather than failing deep inside a git push with an opaque authentication error.
 
 ### Version rules
 
@@ -149,7 +163,7 @@ The highest-ranked bump among all qualifying commits wins (breaking > `feat` > e
 
 ### Hotfixes
 
-A hotfix branches from `main`, PRs back into `main` (never targets `main` from `develop` — that's an ordinary release), and does **not** go through `Release prep` or `Release`: a `hotfix/*` PR merging into `main` does not tag or publish anything by itself. Once merged, `.github/workflows/hotfix-sync.yml` opens (or comments on an existing open) `main` → `develop` pull request automatically, titled `chore: sync hotfix <branch> into develop`, using `RELEASE_TOKEN` — completing the "merged down into `develop`" step the Branching Model above requires. If the hotfix itself should also ship as a release, that happens the ordinary way afterward: once it's synced into `develop`, open a `develop` → `main` release PR like any other release.
+A hotfix branches from `main`, PRs back into `main` (never targets `main` from `develop` — that's an ordinary release), and does **not** go through `Release prep` or `Release`: a `hotfix/*` PR merging into `main` does not tag or publish anything by itself. Once merged, `.github/workflows/hotfix-sync.yml` opens (or comments on an existing open) `main` → `develop` pull request automatically, titled `chore: sync hotfix <branch> into develop`, using the release GitHub App's installation token — completing the "merged down into `develop`" step the Branching Model above requires. If the hotfix itself should also ship as a release, that happens the ordinary way afterward: once it's synced into `develop`, open a `develop` → `main` release PR like any other release.
 
 ---
 

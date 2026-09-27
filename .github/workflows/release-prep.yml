@@ -19,11 +19,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
 
-# contents: read only: this job's one write (the prepare commit) goes through RELEASE_TOKEN, a
-# fine-grained PAT set up per CONTRIBUTING.md's Releasing section, not the ephemeral GITHUB_TOKEN.
-# GITHUB_TOKEN-authored commits and PRs do not retrigger other workflows or required checks
-# (Decision 3), so pushing the prepare commit with GITHUB_TOKEN would leave the PR's required
-# checks stuck on the pre-prepare commit and unable to pass.
+# contents: read only: this job's one write (the prepare commit) goes through a short-lived
+# installation token minted from the release GitHub App (CONTRIBUTING.md's Releasing section),
+# not the ephemeral GITHUB_TOKEN. GITHUB_TOKEN-authored commits and PRs do not retrigger other
+# workflows or required checks (Decision 3), so pushing the prepare commit with GITHUB_TOKEN
+# would leave the PR's required checks stuck on the pre-prepare commit and unable to pass.
 permissions:
   contents: read
 
@@ -40,8 +40,8 @@ jobs:
     # Narrows the four PR event types above down to exactly the release PR this workflow exists
     # for: develop -> main (never a hotfix branch or any other base), and only when the PR's head
     # is a branch of this repository, never a fork -- a fork's develop could not be pushed back to
-    # even with RELEASE_TOKEN, and a release must only ever be prepared from this repository's own
-    # develop.
+    # even with the release App's installation token, since the App is installed only on this
+    # repository, and a release must only ever be prepared from this repository's own develop.
     if: github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
@@ -50,21 +50,31 @@ jobs:
       # Checked before anything else (no checkout needed to check a secret), so a missing token
       # fails in seconds with an actionable message instead of failing deep inside a later git
       # push with an opaque authentication error.
-      - name: Verify RELEASE_TOKEN is configured
+      - name: Verify the release GitHub App is configured
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "$RELEASE_TOKEN" ]; then
-            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
             exit 1
           fi
+
+      - name: Mint a release GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       - name: Checkout develop
         uses: actions/checkout@v7
         with:
           ref: develop
           fetch-depth: 0  # full history and tags: next-version needs every commit since the last tag
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -124,16 +134,22 @@ jobs:
             -file CHANGELOG.md
 
       # actions/checkout's token: input (above) configures an auth header for the origin remote,
-      # so this push authenticates as RELEASE_TOKEN without the token ever appearing in a command
-      # line or log line.
+      # so this push authenticates as the release App's installation token without the token ever
+      # appearing in a command line or log line. The commit itself is attributed to the App's own
+      # bot identity (looked up via the API below), not github-actions[bot] or a maintainer,
+      # because the App -- not either of those -- is the ruleset's sole bypass actor.
       - name: Commit and push the prepared changelog
         if: steps.version.outputs.nothing_to_release == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if git diff --quiet -- CHANGELOG.md; then
             echo "::notice::CHANGELOG.md already prepared for ${{ steps.version.outputs.next_version }} -- nothing to commit."
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
+            APP_SLUG="${{ steps.app-token.outputs.app-slug }}"
+            APP_USER_ID="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+            git config user.name "${APP_SLUG}[bot]"
+            git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
             git add CHANGELOG.md
             git commit -m "chore(release): prepare ${{ steps.version.outputs.next_version }}"
             git push origin HEAD:develop
