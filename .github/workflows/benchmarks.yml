@@ -38,15 +38,20 @@ jobs:
     # (benchmark-charts.yml), so this more frequent trigger does not also run the expensive chart
     # generation/rolling-PR step, which stays develop-only there.
     runs-on: ubuntu-latest
+    # 30 minutes, matching benchmark-charts.yml's `chart` job: this is the same repeated-sample
+    # benchmark suite, run for regression comparison instead of chart generation.
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false

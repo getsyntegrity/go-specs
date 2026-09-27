@@ -50,6 +50,10 @@ jobs:
     # prepared from this repository's own branches.
     if: (github.event.pull_request.head.ref == 'develop' || startsWith(github.event.pull_request.head.ref, 'hotfix/')) && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # 20 minutes: a Go build/run of tools/release plus a git push, comfortably inside the
+    # release/release-prep/goreleaser band this repo uses for jobs that mint and use the release
+    # App token, well above ci.yml's plain-checkout jobs.
+    timeout-minutes: 20
     env:
       GOTOOLCHAIN: local
       # HEAD_REF holds the PR's head branch name once, so every later step reads it as a normal
@@ -77,7 +81,7 @@ jobs:
 
       - name: Mint a release GitHub App installation token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -97,7 +101,7 @@ jobs:
           fi
 
       - name: Checkout the release branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # develop for an ordinary release, or the hotfix/* branch itself for a hotfix -- either
           # way this PR's own head, which is what gets prepared and pushed back to. Passing this
@@ -107,9 +111,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0  # full history and tags: next-version needs every commit since the last tag
           token: ${{ steps.app-token.outputs.token }}
+          # persist-credentials stays at its default (true) here, unlike every other checkout in
+          # this repo: "Commit and push the prepared changelog" below pushes with plain `git push
+          # origin`, relying on the auth header actions/checkout configures from `token:` above.
+          # Setting persist-credentials: false would leave that push with no credentials at all.
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files

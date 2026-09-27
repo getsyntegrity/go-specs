@@ -15,6 +15,14 @@
 # (it is the regression guard, not decorative); the two jobs cannot share `on:` triggers with
 # conflicting path filters, which is why `ratio-guard` stays in benchmarks.yml, unaffected, and
 # this file exists at all.
+#
+# Three jobs, one concern each, chained with `needs:` since each stage's input is the previous
+# stage's output: `bench` (run the suite, upload the raw text) -> `chart` (download the text,
+# render PNGs, upload them) -> `publish` (download the PNGs, open/update the rolling PR). Splitting
+# buys no wall time -- the chain is inherently sequential -- but it does mean the release GitHub
+# App's installation token exists only in `publish`, the one job that actually pushes anything;
+# `bench` and `chart` never see a secret at all. Artifacts between jobs use a 1-day retention:
+# nothing downstream of `publish` ever needs last week's intermediate benchmark text or PNGs.
 name: Benchmark charts
 
 on:
@@ -24,11 +32,12 @@ on:
       - "benchmarks/results/*.png"
   workflow_dispatch:
 
-# Least-privilege: this job's only write (the rolling PR branch and the PR itself) goes through
-# the release GitHub App's installation token via peter-evans/create-pull-request's `token:`
-# input, not GITHUB_TOKEN -- the same reasoning as release-prep.yml's header (Decision 3 of
-# native-ci-pipeline.md): a GITHUB_TOKEN push/PR would not retrigger this PR's own required
-# checks, and only the App can bypass protect-main-develop in the first place.
+# Least-privilege: `bench` and `chart` only read. `publish`'s only write (the rolling PR branch
+# and the PR itself) goes through the release GitHub App's installation token via
+# peter-evans/create-pull-request's `token:` input, not GITHUB_TOKEN -- the same reasoning as
+# release-prep.yml's header (Decision 3 of native-ci-pipeline.md): a GITHUB_TOKEN push/PR would
+# not retrigger this PR's own required checks, and only the App can bypass protect-main-develop in
+# the first place.
 permissions:
   contents: read
 
@@ -39,10 +48,86 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  chart:
+  bench:
     runs-on: ubuntu-latest
+    # 30 minutes: -count=5 across the whole benchmark suite is the slowest step in this repo's
+    # workflows, deliberately -- see benchmarks.yml's own reasoning for why a shared runner needs
+    # repeated samples rather than a single pass.
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Benchmark numbers are only comparable across runs when the toolchain is, so this job
+      # installs the same pinned version as CI rather than a floating minor.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+      - name: Create results directory
+        run: mkdir -p benchmarks/results
+
+      - name: Run benchmarks
+        run: |
+          cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
+          cd ..
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-results
+          path: benchmarks/results/current.txt
+          retention-days: 1
+
+  chart:
+    needs: bench
+    runs-on: ubuntu-latest
+    # 10 minutes: rendering a handful of matplotlib bar charts from an already-produced text file
+    # -- no Go build, no benchmark run, nothing else in this job is slow.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download benchmark results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: benchmark-results
+          path: benchmarks/results
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install matplotlib
+        run: pip install matplotlib
+
+      - name: Generate charts
+        run: python3 scripts/bench_to_chart.py
+
+      - name: Upload chart images
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-charts
+          path: benchmarks/results/*.png
+          retention-days: 1
+
+  publish:
+    needs: chart
+    runs-on: ubuntu-latest
+    # 20 minutes: minting the App token, checking out, downloading, and opening/updating one PR --
+    # lighter than bench or chart, but still in the release/release-prep/goreleaser band since it
+    # mints and uses the release App token.
+    timeout-minutes: 20
     steps:
       # Checked before anything else, so a missing token fails in seconds with an actionable
       # message instead of peter-evans/create-pull-request failing deep inside a push with an
@@ -59,45 +144,31 @@ jobs:
 
       # Minted once, ahead of the PR step that needs it below -- only the App can bypass the
       # protect-main-develop ruleset (see CONTRIBUTING.md's Prerequisite section), and a
-      # GITHUB_TOKEN-authored PR would not retrigger this PR's own required checks.
+      # GITHUB_TOKEN-authored PR would not retrigger this PR's own required checks. This is now
+      # the only job in the workflow that ever mints it.
       - name: Mint a release GitHub App installation token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
+      # peter-evans/create-pull-request below commits from this working tree, so it needs one
+      # checked out -- it authenticates its own push and PR with the `token:` input passed to it
+      # directly, never with credentials left behind by this checkout, so nothing here needs them
+      # persisted.
       - name: Checkout
-        uses: actions/checkout@v7
-
-      # Benchmark numbers are only comparable across runs when the toolchain is, so this job
-      # installs the same pinned version as CI rather than a floating minor.
-      - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: .go-version
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+          persist-credentials: false
 
-      - name: Create results directory
-        run: mkdir -p benchmarks/results
-
-      - name: Run benchmarks
-        run: |
-          cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
-          cd ..
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Download chart images
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          python-version: "3.12"
-
-      - name: Install matplotlib
-        run: pip install matplotlib
-
-      - name: Generate charts
-        run: python3 scripts/bench_to_chart.py
+          name: benchmark-charts
+          path: benchmarks/results
 
       # Rolls every run's regenerated charts into the same open PR (branch: below is fixed, not
       # derived per run) instead of opening a new PR every push -- Decision 3 of
@@ -107,7 +178,7 @@ jobs:
       # No `[skip ci]` on the commit message (unlike the old direct-to-main commit this replaces):
       # this now becomes a real pull request, and CI must run on it like any other PR.
       - name: Open or update the rolling benchmark-charts PR
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           add-paths: benchmarks/results/*.png
