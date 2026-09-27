@@ -23,7 +23,7 @@ run "go-specs-report <verb> -h" for a verb's own flags.
 // report/coordination itself draws (its own environment interface, config.go).
 func run(args []string, env func(string) (string, bool), stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return exitUsage
 	}
 
@@ -36,10 +36,10 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	case "gc":
 		return runGC(rest, env, stdout, stderr)
 	case "-h", "-help", "--help", "help":
-		fmt.Fprint(stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "go-specs-report: unknown verb %q\n\n%s", verb, usage)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report: unknown verb %q\n\n%s", verb, usage)
 		return exitUsage
 	}
 }

@@ -28,7 +28,7 @@ func runGC(args []string, env func(string) (string, bool), stdout, stderr io.Wri
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "go-specs-report gc: unexpected argument(s) %v\n", fs.Args())
+		_, _ = fmt.Fprintf(stderr, "go-specs-report gc: unexpected argument(s) %v\n", fs.Args())
 		fs.Usage()
 		return exitUsage
 	}
@@ -44,7 +44,7 @@ func runGC(args []string, env func(string) (string, bool), stdout, stderr io.Wri
 		DryRun:    *dryRun,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "go-specs-report gc: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report gc: %v\n", err)
 		var cfgErr *coordination.ConfigError
 		if errors.As(err, &cfgErr) {
 			return coordination.ExitConfig
@@ -57,13 +57,13 @@ func runGC(args []string, env func(string) (string, bool), stdout, stderr io.Wri
 		verb = "would remove"
 	}
 	for _, id := range result.Removed {
-		fmt.Fprintf(stdout, "%s %s\n", verb, id)
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", verb, id)
 	}
 	for _, id := range result.Kept {
-		fmt.Fprintf(stdout, "kept %s\n", id)
+		_, _ = fmt.Fprintf(stdout, "kept %s\n", id)
 	}
 	for _, s := range result.Skipped {
-		fmt.Fprintf(stderr, "go-specs-report gc: skipped %s (%s)\n", s.Name, s.Reason)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report gc: skipped %s (%s)\n", s.Name, s.Reason)
 	}
 	return 0
 }

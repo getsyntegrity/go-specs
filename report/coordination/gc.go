@@ -81,7 +81,7 @@ func GC(ctx context.Context, opts GCOptions) (GCResult, error) {
 	if opts.Retention <= 0 {
 		return GCResult{}, &ConfigError{
 			Reason: ReasonInvalidRetention,
-			Value:  fmt.Sprintf("%s", opts.Retention),
+			Value:  opts.Retention.String(),
 			Detail: "GC retention must be a positive duration; a zero or negative window would treat every run as stale, including ones still in progress",
 			Remedy: "pass a positive Retention (the contract recommends 24h, comfortably larger than any plausible test run)",
 		}

@@ -25,14 +25,14 @@ func runInit(args []string, env func(string) (string, bool), stdout, stderr io.W
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "go-specs-report init: unexpected argument(s) %v\n", fs.Args())
+		_, _ = fmt.Fprintf(stderr, "go-specs-report init: unexpected argument(s) %v\n", fs.Args())
 		fs.Usage()
 		return exitUsage
 	}
 
 	resolvedRunID := resolveFlag(*runID, env, coordination.EnvRunID)
 	if resolvedRunID == "" {
-		fmt.Fprintf(stderr, "go-specs-report init: a run id is required (-run-id or %s); init never generates one — the invoker owns its uniqueness\n", coordination.EnvRunID)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report init: a run id is required (-run-id or %s); init never generates one — the invoker owns its uniqueness\n", coordination.EnvRunID)
 		return coordination.ExitConfig
 	}
 
@@ -40,7 +40,7 @@ func runInit(args []string, env func(string) (string, bool), stdout, stderr io.W
 	if resolvedToken == "" {
 		generated, err := coordination.GenerateRunToken()
 		if err != nil {
-			fmt.Fprintf(stderr, "go-specs-report init: generate run token: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "go-specs-report init: generate run token: %v\n", err)
 			return coordination.ExitConfig
 		}
 		resolvedToken = string(generated)
@@ -56,7 +56,7 @@ func runInit(args []string, env func(string) (string, bool), stdout, stderr io.W
 	// gc must NOT do this themselves — they require the already-absolute value this step produces.
 	absDir, err := filepath.Abs(resolvedDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "go-specs-report init: resolve %s: %v\n", resolvedDir, err)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report init: resolve %s: %v\n", resolvedDir, err)
 		return coordination.ExitConfig
 	}
 
@@ -67,16 +67,16 @@ func runInit(args []string, env func(string) (string, bool), stdout, stderr io.W
 		Force:   *force,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "go-specs-report init: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "go-specs-report init: %v\n", err)
 		return coordination.ExitConfig
 	}
 
 	// Printed as KEY=value so a CI step can append this straight to $GITHUB_ENV or `source` it.
 	// GO_SPECS_REPORT_SHARDS's value must match what ShardConfigFromEnv's gate parser (config.go)
 	// treats as "on".
-	fmt.Fprintf(stdout, "%s=1\n", coordination.EnvGate)
-	fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvRunID, own.RunID)
-	fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvRunToken, resolvedToken)
-	fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvReportDir, own.BaseDir)
+	_, _ = fmt.Fprintf(stdout, "%s=1\n", coordination.EnvGate)
+	_, _ = fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvRunID, own.RunID)
+	_, _ = fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvRunToken, resolvedToken)
+	_, _ = fmt.Fprintf(stdout, "%s=%s\n", coordination.EnvReportDir, own.BaseDir)
 	return 0
 }
