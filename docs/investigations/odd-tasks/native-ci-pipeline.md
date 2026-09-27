@@ -303,3 +303,8 @@ Strict TDD is on (user global config), with runner `go test`.
   go-specs, generate a private key, add `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY`, add the App as
   the ruleset's sole bypass actor); the WHY (retriggering required checks that a default
   `GITHUB_TOKEN`-authored commit/PR would not retrigger) is unchanged, only the mechanism moved.
+- 2026-09-27: GitHub App `go-specs-release` (app id 5098738; Contents RW, Pull requests RW,
+  selected repositories) created by the maintainer, secrets `RELEASE_APP_ID` /
+  `RELEASE_APP_PRIVATE_KEY` set. The App was added live as the sole bypass actor
+  (`Integration`, `always`) of ruleset `protect-main-develop` (id 24078173); rules and branches
+  unchanged. Not yet verified by a real run: that happens on the first `develop` → `main` PR.
