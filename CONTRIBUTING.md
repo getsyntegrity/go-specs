@@ -135,7 +135,7 @@ There is no `workflow_dispatch` for releases anymore, and no manual tagging step
 
 `Release prep` and `Hotfix sync` both push commits, and push or open PRs, in a way that needs to retrigger this repository's other required checks — a commit or PR authored by the default `GITHUB_TOKEN` does not retrigger anything, so a required check would never run on the prepare commit or the sync PR, and neither could be merged. Both workflows instead push using a short-lived installation token minted from a dedicated GitHub App.
 
-A GitHub App is used instead of a personal access token because the ruleset `protect-main-develop` (see below) needs exactly one actor able to bypass it for the prepare commit. A personal access token's bypass actor is the maintainer's own GitHub user — who could then also push directly to `main`/`develop` themselves, defeating the ruleset. A GitHub App installed only on this repository is a narrower actor: only the App can bypass, never a human.
+A GitHub App is used instead of a personal access token because the rulesets `protect-develop` and `protect-main` need exactly one actor able to bypass them for the prepare commit. A personal access token's bypass actor is the maintainer's own GitHub user — who could then also push directly to `main`/`develop` themselves, defeating the ruleset. A GitHub App installed only on this repository is a narrower actor: only the App can bypass, never a human.
 
 Set it up once:
 
@@ -145,7 +145,7 @@ Set it up once:
 4. Install it only on `getsyntegrity/go-specs`, not org-wide.
 5. Generate a private key for the App.
 6. Add two repository secrets: `RELEASE_APP_ID` (the App's ID) and `RELEASE_APP_PRIVATE_KEY` (the private key's contents).
-7. Add the App as the sole bypass actor of the `protect-main-develop` ruleset.
+7. Add the App as the sole bypass actor of both rulesets, `protect-develop` and `protect-main`.
 
 Both workflows fail fast with a clear `::error::` while either secret is missing, rather than failing deep inside a git push with an opaque authentication error.
 

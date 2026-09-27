@@ -243,7 +243,7 @@ jobs:
           fi
 
       # Minted once, ahead of both steps that need it below -- only the App can bypass the
-      # protect-main-develop ruleset (see CONTRIBUTING.md's Prerequisite section), so both the
+      # protect-develop / protect-main rulesets (see CONTRIBUTING.md's Prerequisite section), so both the
       # sync-branch push and the sync PR authenticate with this same short-lived installation
       # token. This is now the only job in the workflow that ever mints it.
       - name: Mint a release GitHub App installation token
@@ -290,7 +290,7 @@ jobs:
           # `-c http.https://github.com/.extraheader=` override is needed to make this push
           # authenticate as the App instead of GITHUB_TOKEN (Decision 3 of native-ci-pipeline.md:
           # a GITHUB_TOKEN-authored push would not retrigger required checks anyway, and only the
-          # App can bypass protect-main-develop in the first place).
+          # App can bypass the protect-develop / protect-main rulesets in the first place).
           git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
 
       # Idempotent like release-prep.yml's own writes: reuse an already-open PR for this exact
