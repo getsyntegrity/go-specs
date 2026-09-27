@@ -537,8 +537,9 @@ jobs:
   # dependency-review on a non-PR event (see its own comment) -- there is nothing else here that
   # skips, so no job-specific branch is needed to get that behaviour, and a future job gains the
   # same skip-tolerant treatment automatically if it ever needs a similar `if:`.
+  # No `name:` on purpose: the check GitHub reports is then the job id, `ci-ok`, the exact string
+  # the rulesets require -- a display name would be a second spelling to keep in sync.
   ci-ok:
-    name: CI ok
     needs: [verify, unit, race, bench-smoke, report-cli, lint, govulncheck, goreleaser, dependency-review]
     if: always()
     runs-on: ubuntu-latest
