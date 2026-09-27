@@ -25,9 +25,10 @@ on:
   workflow_dispatch:
 
 # Least-privilege: this job's only write (the rolling PR branch and the PR itself) goes through
-# RELEASE_TOKEN via peter-evans/create-pull-request's `token:` input, not GITHUB_TOKEN -- the same
-# reasoning as release-prep.yml's header (Decision 3 of native-ci-pipeline.md): a GITHUB_TOKEN
-# push/PR would not retrigger this PR's own required checks.
+# the release GitHub App's installation token via peter-evans/create-pull-request's `token:`
+# input, not GITHUB_TOKEN -- the same reasoning as release-prep.yml's header (Decision 3 of
+# native-ci-pipeline.md): a GITHUB_TOKEN push/PR would not retrigger this PR's own required
+# checks, and only the App can bypass protect-main-develop in the first place.
 permissions:
   contents: read
 
@@ -46,14 +47,27 @@ jobs:
       # Checked before anything else, so a missing token fails in seconds with an actionable
       # message instead of peter-evans/create-pull-request failing deep inside a push with an
       # opaque authentication error.
-      - name: Verify RELEASE_TOKEN is configured
+      - name: Verify the release GitHub App is configured
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "$RELEASE_TOKEN" ]; then
-            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
             exit 1
           fi
+
+      # Minted once, ahead of the PR step that needs it below -- only the App can bypass the
+      # protect-main-develop ruleset (see CONTRIBUTING.md's Prerequisite section), and a
+      # GITHUB_TOKEN-authored PR would not retrigger this PR's own required checks.
+      - name: Mint a release GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -95,7 +109,7 @@ jobs:
       - name: Open or update the rolling benchmark-charts PR
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           add-paths: benchmarks/results/*.png
           commit-message: "chore: update benchmark charts"
           branch: chore/benchmark-charts

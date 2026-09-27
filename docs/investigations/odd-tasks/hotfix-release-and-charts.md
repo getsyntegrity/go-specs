@@ -84,8 +84,9 @@ that `main` and `develop` only change through pull requests.
 
 ## Limits
 
-As in #280, this cannot run end to end before `RELEASE_TOKEN` exists and a real hotfix PR is
-opened. The logic is proven with unit tests and a dry run.
+As in #280, this cannot run end to end before the release GitHub App exists (`RELEASE_APP_ID` and
+`RELEASE_APP_PRIVATE_KEY` provisioned) and a real hotfix PR is opened. The logic is proven with
+unit tests and a dry run.
 
 ## Progress
 
@@ -131,8 +132,10 @@ opened. The logic is proven with unit tests and a dry run.
 
   Rewrote `.github/workflows/release.yml`: job `if` accepts a merged PR from `develop` or
   `hotfix/*` (same-repo check kept); the same `Determine release kind`/`HEAD_REF` pattern as
-  release-prep.yml; a new `Verify RELEASE_TOKEN is configured` step gated `is_hotfix == 'true'`
-  only (develop's publish still uses `GITHUB_TOKEN` exactly as before, so it needs no new secret);
+  release-prep.yml; a new `Verify the release GitHub App is configured` step gated
+  `is_hotfix == 'true'` only (develop's publish still uses `GITHUB_TOKEN` exactly as before, so it
+  needs no new secret), followed by a `Mint a release GitHub App installation token` step, also
+  gated `is_hotfix == 'true'`;
   `Determine the version to release`'s cross-check adds `-patch-only` for a hotfix. Everything
   from `Skip if already tagged` through `Verify external installability` is unchanged for both
   paths. Two new steps at the end, both gated
@@ -145,10 +148,11 @@ opened. The logic is proven with unit tests and a dry run.
   `delete_branch_on_merge: true` plus `main` being unprotected and non-default means a PR headed
   `main` would get `main` deleted by GitHub on merge; the branch name comes from the
   tool-validated `vX.Y.Z` version, never the attacker-controlled PR head ref, so it needs no extra
-  sanitizing), authenticated as `RELEASE_TOKEN` via an explicit URL with
-  `-c http.https://github.com/.extraheader=` clearing the `GITHUB_TOKEN` header `actions/checkout`
-  persisted (confirmed this matters: without the override, git applies the persisted header by URL
-  prefix regardless of the literal push URL, silently pushing as `GITHUB_TOKEN` instead). `Open or
+  sanitizing), authenticated as the release GitHub App's installation token via an explicit URL
+  with `-c http.https://github.com/.extraheader=` clearing the `GITHUB_TOKEN` header
+  `actions/checkout` persisted (confirmed this matters: without the override, git applies the
+  persisted header by URL prefix regardless of the literal push URL, silently pushing as
+  `GITHUB_TOKEN` instead). `Open or
   reuse the hotfix sync PR` mirrors the old `hotfix-sync.yml` `gh pr list`/`gh pr create` logic
   against `sync/hotfix-${VERSION}` -> `develop`, with the PR body naming the possible
   `CHANGELOG.md` conflict and its resolution (Decision 4) plus why the head branch isn't `main`.
@@ -167,9 +171,11 @@ opened. The logic is proven with unit tests and a dry run.
 - T3 done. Added `.github/workflows/benchmark-charts.yml`: triggers on push to `develop` (never
   `main`) with `paths-ignore: ["benchmarks/results/*.png"]`, plus `workflow_dispatch`; job
   permissions `contents: read` only (the write goes through `peter-evans/create-pull-request@v8`'s
-  `token: RELEASE_TOKEN` input, confirmed current major via web search -- v8, released after the
-  v7 this repo's other actions happen to be pinned to); a `Verify RELEASE_TOKEN is configured`
-  step fails fast, matching release-prep.yml's pattern; steps through chart generation are the old
+  `token:` input, confirmed current major via web search -- v8, released after the v7 this repo's
+  other actions happen to be pinned to); a `Verify the release GitHub App is configured` step
+  fails fast, matching release-prep.yml's pattern, followed by a `Mint a release GitHub App
+  installation token` step whose output feeds that `token:` input; steps through chart generation
+  are the old
   `bench` job's, unchanged; the final step opens/updates one PR from the fixed branch
   `chore/benchmark-charts` into `develop`, `delete-branch: true`, commit message
   `chore: update benchmark charts` with no `[skip ci]` (CI must run on the PR now that it's a real
@@ -225,3 +231,17 @@ opened. The logic is proven with unit tests and a dry run.
   Verified: `go run github.com/rhysd/actionlint/cmd/actionlint@latest` over the whole repo -- 0
   findings (repeated after this task, on top of T3's clean run). `python3 -c 'import yaml;
   yaml.safe_load(open(f))'` on `dependency-review.yml` and `settings.yml` -- parses clean.
+- Rebased onto `ci/native-pipeline` after it picked up `dc17a94` ("ci: mint release tokens from a
+  GitHub App instead of a personal access token"), which replaced `RELEASE_TOKEN` with the release
+  GitHub App across `release-prep.yml` and the now-removed `hotfix-sync.yml` (see
+  `native-ci-pipeline.md`'s Decision 3 supersession). This branch's own `RELEASE_TOKEN` usages --
+  added independently, before `dc17a94` landed -- needed the same conversion: `release.yml`'s
+  hotfix path (`Verify RELEASE_TOKEN is configured` -> `Verify the release GitHub App is
+  configured` + a new `Mint a release GitHub App installation token` step, both gated
+  `is_hotfix == 'true'`; the sync-branch push and the sync PR's `GH_TOKEN` now read
+  `steps.app-token.outputs.token`; the tag step's own `github-actions[bot]`/`GITHUB_TOKEN` identity
+  was left untouched, since only the sync steps ever used `RELEASE_TOKEN`) and
+  `benchmark-charts.yml` (same verify+mint steps added, `peter-evans/create-pull-request`'s
+  `token:` input repointed at the minted token). CONTRIBUTING.md's Hotfixes and Benchmark charts
+  prose, and this file's own Limits section and Progress bullets above, updated to describe the
+  App-token flow instead of `RELEASE_TOKEN`.

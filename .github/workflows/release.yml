@@ -37,8 +37,9 @@ jobs:
     # Job-level only, not a workflow-level default: this is the one workflow in the repository
     # that pushes a tag and publishes a GitHub Release, and scoping the write permission to the
     # single job that needs it keeps every other workflow's contents: read default meaningful by
-    # contrast. The hotfix sync steps at the end of this job authenticate separately with
-    # RELEASE_TOKEN (see their own comments), so they need no addition here.
+    # contrast. The hotfix sync steps at the end of this job authenticate separately with the
+    # release GitHub App's installation token (see their own comments), so they need no addition
+    # here.
     permissions:
       contents: write
     env:
@@ -60,20 +61,36 @@ jobs:
             echo "is_hotfix=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Only a hotfix needs RELEASE_TOKEN -- the develop path publishes with GITHUB_TOKEN exactly
-      # as before (Decision 2 of native-ci-pipeline.md did not change), and requiring a secret an
-      # ordinary release never used would be a needless new failure mode for it. Checked before
-      # checkout (no checkout needed to check a secret) so a missing token fails in seconds with
-      # an actionable message, matching release-prep.yml's own check.
-      - name: Verify RELEASE_TOKEN is configured
+      # Only a hotfix needs the release GitHub App's installation token -- the develop path
+      # publishes with GITHUB_TOKEN exactly as before (Decision 2 of native-ci-pipeline.md did not
+      # change), and requiring a secret an ordinary release never used would be a needless new
+      # failure mode for it. Checked before checkout (no checkout needed to check a secret) so a
+      # missing token fails in seconds with an actionable message, matching release-prep.yml's own
+      # check.
+      - name: Verify the release GitHub App is configured
         if: steps.kind.outputs.is_hotfix == 'true'
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "$RELEASE_TOKEN" ]; then
-            echo "::error::RELEASE_TOKEN is not set. Create a fine-grained personal access token scoped to this repository only, with Contents (read and write) and Pull requests (read and write) permissions, and add it as the RELEASE_TOKEN repository secret. See CONTRIBUTING.md's Releasing section." >&2
+          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
             exit 1
           fi
+
+      # Minted once, ahead of the hotfix-only steps that need it below, rather than inline at each
+      # use site -- only the App can bypass the protect-main-develop ruleset (see CONTRIBUTING.md's
+      # Prerequisite section), so both the sync-branch push and the sync PR authenticate with this
+      # same short-lived installation token.
+      - name: Mint a release GitHub App installation token
+        id: app-token
+        if: steps.kind.outputs.is_hotfix == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       # The merge commit, not main's moving HEAD: between this job starting and its "Determine
       # the version to release" step running, another PR could in principle merge into main first
@@ -210,18 +227,19 @@ jobs:
       - name: Push the hotfix sync branch
         if: steps.kind.outputs.is_hotfix == 'true' && steps.skip.outputs.already_tagged != 'true'
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           SYNC_BRANCH: sync/hotfix-${{ steps.version.outputs.version }}
         run: |
           # actions/checkout above persisted an Authorization header for GITHUB_TOKEN (its
           # default persist-credentials: true), configured for any https://github.com/ URL by
-          # prefix -- which would otherwise silently win over the RELEASE_TOKEN credentials
-          # embedded in the URL below, since git applies a matching http.<url>.extraheader
-          # regardless of how the URL was written. `-c http.https://github.com/.extraheader=`
-          # clears it for this one invocation only, so the push actually authenticates as
-          # RELEASE_TOKEN -- needed so this branch's later PR can retrigger required checks
-          # (Decision 3 of native-ci-pipeline.md: a GITHUB_TOKEN-authored push does not).
-          git -c http.https://github.com/.extraheader= push "https://x-access-token:${RELEASE_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
+          # prefix -- which would otherwise silently win over the App installation token's
+          # credentials embedded in the URL below, since git applies a matching
+          # http.<url>.extraheader regardless of how the URL was written.
+          # `-c http.https://github.com/.extraheader=` clears it for this one invocation only, so
+          # the push actually authenticates as the App -- needed so this branch's later PR can
+          # retrigger required checks (Decision 3 of native-ci-pipeline.md: a GITHUB_TOKEN-authored
+          # push does not, and only the App can bypass protect-main-develop in the first place).
+          git -c http.https://github.com/.extraheader= push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
 
       # Idempotent like release-prep.yml's own writes: reuse an already-open PR for this exact
       # sync branch instead of erroring on a second attempt (a manual workflow re-run, say) trying
@@ -230,7 +248,7 @@ jobs:
       - name: Open or reuse the hotfix sync PR
         if: steps.kind.outputs.is_hotfix == 'true' && steps.skip.outputs.already_tagged != 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SYNC_BRANCH: sync/hotfix-${{ steps.version.outputs.version }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
