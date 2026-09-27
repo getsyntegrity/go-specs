@@ -2,17 +2,17 @@
 
 ## Problem
 
-CI has three gaps. First, lint (`golangci-lint`) and `govulncheck` only ran inside the `shipwright`
-job of `.github/workflows/ci.yml`, and that job is disabled (`if: false`) because the Shipwright
-runner (`pablogore/shipwright` v0.12.0) was unstable. Neither check runs anywhere today. Second,
+CI has three gaps. First, lint (`golangci-lint`) and `govulncheck` only ran inside a job of
+`.github/workflows/ci.yml` that has since been disabled (`if: false`) because that container-based
+CI runner was unstable. Neither check runs anywhere today. Second,
 there is no code scanning. Third, releases are a manual `workflow_dispatch`, a rule inherited from
 #127 when `main` and `develop` had diverged. They are reconciled now, and the maintainer wants a
 release to happen automatically when `develop` is merged into `main`.
 
 ## What changes
 
-- Drop Shipwright (the `.shipwright/` directory and the `shipwright` job). Its checks come back as
-  native jobs: `lint` and `govulncheck`.
+- Drop the disabled container-based CI runner (its config directory and its CI job). Its checks
+  come back as native jobs: `lint` and `govulncheck`.
 - Add CodeQL (`security-and-quality` queries) on pull requests, on pushes to `develop`/`main`, and
   weekly. Dependabot targets `develop` and groups minor/patch updates.
 - Harden the workflows: a least-privilege `permissions: contents: read` default, `concurrency` that
@@ -101,7 +101,7 @@ release to happen automatically when `develop` is merged into `main`.
 
 ## Tasks
 
-- [x] T1 — CI hygiene: drop Shipwright; native `lint` and `govulncheck` jobs; least-privilege
+- [x] T1 — CI hygiene: drop the disabled container-based CI runner; native `lint` and `govulncheck` jobs; least-privilege
   permissions; `concurrency`; `goreleaser check` on PRs. Check: YAML parses, `actionlint` if
   available, CI green on the PR.
 - [x] T2 — CodeQL workflow; dependabot `target-branch: develop` plus groups. Check: YAML parses, CodeQL
@@ -129,7 +129,8 @@ Strict TDD is on (user global config), with runner `go test`.
 ## Progress
 
 - Branch `ci/native-pipeline` from `develop`.
-- T1 done. `.shipwright/` and the disabled `shipwright` job removed from `.github/workflows/ci.yml`;
+- T1 done. The runner's own config directory and its disabled CI job removed from
+  `.github/workflows/ci.yml`;
   added native `lint` (`golangci/golangci-lint-action@v7`, pinned to the locally installed
   `v2.13.1`) and `govulncheck` (`golang/govulncheck-action@v1`) jobs, both `GOTOOLCHAIN: local` +
   `.go-version` like `test`/`goreleaser`. Fixed the 3 pre-existing `make lint` findings so the new

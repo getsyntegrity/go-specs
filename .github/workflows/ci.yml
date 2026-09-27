@@ -17,18 +17,9 @@
 # had one, so it was pure CI runtime with no coverage payoff. If a real reason
 # shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
-# `lint` (golangci-lint) and `govulncheck` are native jobs below, running in
-# parallel with the rest. They used to run only inside
-# Shipwright (.shipwright/workflow.yaml, a Dagger-backed workflow that ran unit
-# tests, lint, and govulncheck concurrently), whose `shipwright` job here had
-# been permanently disabled (`if: false`) because the pinned runner
-# (pablogore/shipwright v0.12.0) intermittently failed before running a single
-# workflow step ("failed to acquire Dagger client: daemon connected but not
-# ready ... context deadline exceeded after 1 attempts", despite reporting
-# max_retries=11 -- the configured retry was not honoured). In practice that
-# meant lint and govulncheck ran nowhere. Shipwright (.shipwright/ and the
-# disabled job) is dropped entirely rather than re-enabled: native jobs don't
-# depend on that runner or on Dagger being available at all.
+# `lint` (golangci-lint) and `govulncheck` run as native jobs below, in
+# parallel with the rest, so neither depends on any external CI runner or
+# container-based workflow tool being available.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
 # every push/PR to develop/main, the same branches release.yml tags and
@@ -228,10 +219,10 @@ jobs:
       - name: Race-check goroutine-spawning benchmarks
         run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
 
-  # Replaces the lint step Shipwright used to run (golangci-lint via its own
-  # provider, see the file header). No .golangci.yml exists in this repo, so this
-  # runs with golangci-lint's own defaults -- the same defaults `make lint` falls
-  # into locally when golangci-lint is installed.
+  # lint (golangci-lint via its own provider, see the file header) runs as a
+  # native job below. No .golangci.yml exists in this repo, so it runs with
+  # golangci-lint's own defaults -- the same defaults `make lint` falls into
+  # locally when golangci-lint is installed.
   report-cli:
     # AC-23 of #146: docs/REPORTING.md's "Running it in CI with go-specs-report" section is not
     # just prose -- this job runs the documented GitHub Actions example for real, against the
@@ -394,7 +385,6 @@ jobs:
         with:
           version: v2.13.1
 
-  # Replaces the govulncheck step Shipwright used to run (see the file header).
   # Scans the whole module, matching `govulncheck ./...` -- the action's default target.
   govulncheck:
     runs-on: ubuntu-latest
