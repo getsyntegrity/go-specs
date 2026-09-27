@@ -314,7 +314,7 @@ jobs:
 
       - name: upload report artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-specs-report-cli-fixture
           path: ${{ runner.temp }}/report/
