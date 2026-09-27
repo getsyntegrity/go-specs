@@ -81,7 +81,7 @@ jobs:
 
       - name: Mint a release GitHub App installation token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -101,7 +101,7 @@ jobs:
           fi
 
       - name: Checkout the release branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # develop for an ordinary release, or the hotfix/* branch itself for a hotfix -- either
           # way this PR's own head, which is what gets prepared and pushed back to. Passing this
@@ -117,7 +117,7 @@ jobs:
           # Setting persist-credentials: false would leave that push with no credentials at all.
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files

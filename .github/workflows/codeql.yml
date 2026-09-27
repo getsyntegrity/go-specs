@@ -66,7 +66,7 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -74,13 +74,13 @@ jobs:
       # nothing to compile.
       - name: Set up Go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
         with:
           languages: ${{ matrix.language }}
           # go: manual, since the explicit `go build` step below (not autobuild) is what CodeQL's
@@ -101,6 +101,6 @@ jobs:
         run: go build ./...
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
         with:
           category: "/language:${{ matrix.language }}"

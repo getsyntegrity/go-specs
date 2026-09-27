@@ -58,14 +58,14 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # Benchmark numbers are only comparable across runs when the toolchain is, so this job
       # installs the same pinned version as CI rather than a floating minor.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
@@ -79,7 +79,7 @@ jobs:
           cd ..
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: benchmark-results
           path: benchmarks/results/current.txt
@@ -93,18 +93,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Download benchmark results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: benchmark-results
           path: benchmarks/results
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -115,7 +115,7 @@ jobs:
         run: python3 scripts/bench_to_chart.py
 
       - name: Upload chart images
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: benchmark-charts
           path: benchmarks/results/*.png
@@ -148,7 +148,7 @@ jobs:
       # the only job in the workflow that ever mints it.
       - name: Mint a release GitHub App installation token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -160,12 +160,12 @@ jobs:
       # directly, never with credentials left behind by this checkout, so nothing here needs them
       # persisted.
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Download chart images
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: benchmark-charts
           path: benchmarks/results
@@ -178,7 +178,7 @@ jobs:
       # No `[skip ci]` on the commit message (unlike the old direct-to-main commit this replaces):
       # this now becomes a real pull request, and CI must run on it like any other PR.
       - name: Open or update the rolling benchmark-charts PR
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           add-paths: benchmarks/results/*.png

@@ -64,7 +64,7 @@ branch names go through `env:`.
 - [x] T2 — CodeQL language matrix `[go, actions]`. Check: actionlint; both legs green on the PR.
 - [x] T3 — Split `release.yml` and `benchmark-charts.yml`. Check: actionlint; job outputs and
   artifacts wired; `if:` conditions preserved.
-- [ ] T4 — Pin every `uses:` by SHA with a version comment. Check: every SHA resolves to the tag it
+- [x] T4 — Pin every `uses:` by SHA with a version comment. Check: every SHA resolves to the tag it
   claims (`git ls-remote`); actionlint.
 - [ ] T5 — PR, CI green, ruleset required checks updated. Do not merge.
 
@@ -125,3 +125,33 @@ branch names go through `env:`.
   Check: `python3 -c "import yaml; yaml.safe_load(open(f))"` on both files -- OK.
   `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
   Commit: `ci: split release and benchmark chart workflows into single-purpose jobs`.
+- T4 done. Every `uses: owner/repo@vN` in `.github/workflows/*.yml` and
+  `.github/actions/setup-go/action.yml` is now `uses: owner/repo@<40-char-sha> # vX.Y.Z`. Each SHA
+  was resolved with `git ls-remote https://github.com/<owner>/<repo> refs/tags/vN refs/tags/vN^{}`
+  (the peeled `^{}` commit for `github/codeql-action`'s annotated `v3` tag; every other tag here is
+  lightweight, so the direct SHA is already the commit), then matched back to its most specific
+  `vX.Y.Z` release tag at that same commit with `git ls-remote --tags`.
+  `actions/dependency-review-action`'s `v4` is a moving branch, not a tag, on that repo -- resolved
+  the same way, landing on the same commit as its current `v4.9.0` release. Added a short SHA-pin
+  policy comment to `.github/dependabot.yml` above the `github-actions` ecosystem entry (Dependabot
+  already resolves a pinned action's new SHA and updates both it and the version comment).
+
+  | action | tag used | SHA | resolved version |
+  |---|---|---|---|
+  | actions/checkout | v7 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | v7.0.1 |
+  | actions/setup-go | v7 | `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` | v7.0.0 |
+  | actions/upload-artifact | v4 | `ea165f8d65b6e75b540449e92b4886f43607fa02` | v4.6.2 |
+  | actions/download-artifact | v4 | `d3f86a106a0bac45b974a628896c90dbdf5c8093` | v4.3.0 |
+  | actions/setup-python | v7 | `5fda3b95a4ea91299a34e894583c3862153e4b97` | v7.0.0 |
+  | actions/create-github-app-token | v2 | `fee1f7d63c2ff003460e3d139729b119787bc349` | v2.2.2 |
+  | peter-evans/create-pull-request | v8 | `5f6978faf089d4d20b00c7766989d076bb2fc7f1` | v8.1.1 |
+  | github/codeql-action/init, /analyze | v3 | `1190a975f95ce23525efb6a3fc21ea29567c1b52` | v3.38.2 |
+  | golangci/golangci-lint-action | v7 | `9fae48acfc02a90574d7c304a1758ef9895495fa` | v7.0.1 |
+  | golang/govulncheck-action | v1 | `032d45514ae346b1db93c04b0c90b841c370344f` | v1.1.0 |
+  | goreleaser/goreleaser-action | v7 | `f06c13b6b1a9625abc9e6e439d9c05a8f2190e94` | v7.2.3 |
+  | actions/dependency-review-action | v4 (branch) | `2031cfc080254a8a887f58cffee85186f0e49e48` | v4.9.0 |
+  | actions/cache | v4 | `0057852bfaa89a56745cba8c7296529d2fc39830` | v4.3.0 |
+
+  Check: `rg -n "uses: [^.].*@v[0-9]" .github` -- empty. `python3 -c "import yaml; yaml.safe_load(open('.github/dependabot.yml'))"` -- OK.
+  `go run github.com/rhysd/actionlint/cmd/actionlint@latest` -- 0 findings.
+  Commit: `ci: pin every third-party action to a commit SHA`.
