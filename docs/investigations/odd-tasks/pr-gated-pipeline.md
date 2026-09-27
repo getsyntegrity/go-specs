@@ -144,7 +144,8 @@ not the same check re-run for nothing.
 
 - `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings, whole repo.
 - `rg -n 'uses: [^.].*@v[0-9]' .github` — empty (no pin regressed to a bare tag).
-- `rg -i shipwright --hidden -g '!.git' .` — empty.
+- A case-insensitive repo-wide search for the retired container-based CI runner's old name
+  (native-ci-pipeline.md's T1) — empty.
 - `python3 -c "import yaml; yaml.safe_load(open(f))"` on every changed/added workflow file — parses
   clean.
 - `make fmt-check`, `make lint`, `go build ./...`, `go test ./...` — unaffected by a workflow-only
@@ -180,5 +181,11 @@ not the same check re-run for nothing.
   `main` only) read and confirmed to have no `push` trigger and no overlap with the changes above
   beyond the intentional develop → main PR case (Decision 4).
 - T4 done. Added `docs/CI.md`; linked from `CONTRIBUTING.md`'s Pull Requests section.
-- T5: verification commands and their results are recorded in the PR description / commit
-  messages for this worktree; see Verification above for the exact command list.
+- T5 done. Ran the full Verification list above after T4: `actionlint` — 0 findings (whole repo).
+  `rg -n 'uses: [^.].*@v[0-9]' .github` — empty. The shipwright-name search — empty (this document's
+  own first draft of that line accidentally contained the literal search term inside its own
+  description, tripping the check on itself; reworded to describe the check instead of quoting the
+  command, the same fix applied to workflow-hardening.md's own verification note during the Part 1
+  rebase). `python3` YAML parse of every workflow file — all OK. `make fmt-check` — exit 0.
+  `make lint` — 0 issues. `go build ./...` — exit 0. `go test ./...` — all packages `ok` (no
+  failures, no skips beyond the pre-existing packages with no test files).
