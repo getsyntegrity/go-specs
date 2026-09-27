@@ -141,8 +141,10 @@ Hooks are **compiled into the execution plan** and do not require runtime traver
 
 ## Internal package architecture
 
-There is no `internal/` directory in this module — the compiler, `ExecutionPlan`/`CompiledSuite`,
-and `Builder`/`Program`/`Runner` all live directly in the `specs` package. High-level responsibilities:
+There is no `internal/` package under `specs` — the compiler, `ExecutionPlan`/`CompiledSuite`, and
+`Builder`/`Program`/`Runner` all live directly in the `specs` package. (`report/coordination/internal/`
+is a separate, unrelated `internal/` package scoped to shard-report coordination.) High-level
+responsibilities:
 
 ```mermaid
 flowchart LR
