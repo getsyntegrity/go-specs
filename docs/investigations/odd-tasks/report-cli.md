@@ -140,3 +140,13 @@ state is observed, then GREEN.
 
   Verification: `make fmt-check`: clean (no output). `go vet ./...`: clean. `go build ./...`:
   clean. `go test ./...`: all packages `ok` (no `-race`, per standing test-execution rules).
+- T4 review fixes: the GitHub Actions mask step read the token through a `${{ env.* }}`
+  expression, which Actions prints expanded before the mask applies, so it now uses the shell
+  variable. The Shipwright script used bash-only `<(...)` under `/bin/sh`, plus an in-repo
+  `go run ./cmd/...`. The producer-manifest filter matched any package whose tests *link*
+  `report/coordination`, including `cmd/go-specs-report`, which is not a producer; it now matches
+  test files that call `ShardWriterFromEnv`. The drift check is now executable. Re-verified with
+  `dash`: the generator lists 5 packages (only `report/coordination` needs removing by hand, as
+  documented); drift check exits 0 when clean and 1 when stale; the generic script exits
+  test=1/finalize=0/script=1 and test=0/finalize=1/script=1; the Shipwright script exits 1 with
+  hook failure on and 0 with it off, and writes `report.json` both times; both YAML blocks parse.
