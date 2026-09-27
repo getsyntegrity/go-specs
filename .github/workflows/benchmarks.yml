@@ -2,11 +2,16 @@ name: Benchmark Suite
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 jobs:
   bench:
+    # Chart generation and the commit-back step below are expensive and mutate the repo, so they
+    # keep the original main-only cadence (plus manual dispatch on any ref, unchanged from before
+    # `develop` was added to the push trigger). The lightweight ratio-guard job below is the one
+    # that also runs on develop -- see its comment for why.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -36,14 +41,6 @@ jobs:
           cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
           cd ..
 
-      # In-process baseline ratio guard (#243): machine-independent because it compares the
-      # Runner/Describe cost against a hand-written no-framework loop in the same process, same
-      # run, rather than asserting a raw ns/op threshold. Opt-in (GOSPECS_BENCH_GUARD=1 via
-      # `make bench-ratio-guard`) and kept out of ci.yml/`make bench-smoke` deliberately, so it
-      # never sits on the PR critical path -- see BENCHMARKS.md.
-      - name: Benchmark ratio guard
-        run: make bench-ratio-guard
-
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -66,3 +63,33 @@ jobs:
             git commit -m "chore: update benchmark charts [skip ci]"
             git push
           fi
+
+  ratio-guard:
+    # In-process baseline ratio guard (#243): machine-independent because it compares the
+    # Runner/Describe cost against a hand-written no-framework loop in the same process, same run,
+    # rather than asserting a raw ns/op threshold. Opt-in (GOSPECS_BENCH_GUARD=1 via
+    # `make bench-ratio-guard`) and kept out of ci.yml/`make bench-smoke` deliberately, so it never
+    # sits on the PR critical path (pull_request is not one of this workflow's triggers).
+    #
+    # Runs on push to develop, not just main: develop is the integration branch every feature, fix
+    # and refactor lands on (CONTRIBUTING.md), and main only moves on a release/hotfix PR, so
+    # main-only would leave the guard checking a branch that barely moves while regressions like
+    # #235 accrue on develop commit by commit. It is its own job, separate from `bench` above, so
+    # this more frequent trigger does not also run (or repeatedly no-op) the expensive chart
+    # generation/commit-back step, which stays main-only.
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+
+      - name: Benchmark ratio guard
+        run: make bench-ratio-guard

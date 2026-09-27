@@ -102,9 +102,15 @@ above the ~9%/~22% run-to-run spread actually observed). See the constants and t
 `regression_guard_test.go` for the full derivation.
 
 The guard is opt-in (`GOSPECS_BENCH_GUARD=1`, or `make bench-ratio-guard`) and deliberately kept out
-of `ci.yml`/`make bench-smoke`, so it never sits on the PR critical path. It runs from
-`benchmarks.yml` on push to `main` and on `workflow_dispatch`, the same cadence as the rest of the
-timing-sensitive suite in that workflow. Override a bound locally or in CI with
+of `ci.yml`/`make bench-smoke`, so it never sits on the PR critical path. It runs from its own
+`ratio-guard` job in `benchmarks.yml`, on push to **both** `develop` and `main`, and on
+`workflow_dispatch`. `develop` is the branch every feature, fix and refactor actually lands on
+(see `CONTRIBUTING.md`'s branching model) -- `main` only moves on a release/hotfix PR -- so a
+main-only trigger would leave the guard checking a branch that barely moves while regressions like
+#235 accrue on `develop` commit by commit. The `ratio-guard` job is separate from the `bench` job
+above (chart generation and its commit-back step), which keeps its original main-only-push (plus
+manual dispatch) cadence: it is expensive and mutates the repo, and there is no reason to run it on
+every `develop` push just because the guard does. Override a bound locally or in CI with
 `GOSPECS_BENCH_GUARD_BOUND_RUNNER` / `GOSPECS_BENCH_GUARD_BOUND_DESCRIBE` if a deliberate, reviewed
 change moves the baseline.
 
