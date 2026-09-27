@@ -56,7 +56,7 @@ H10), and putting the flag on `ExecutionPlan` (pinned at exactly 192 bytes).
 
 ## Progress
 
-- Engram mirror `odd/describe-failfast/tasks`: pending (engram reported multiple active sessions).
+- Engram mirror `odd/describe-failfast/tasks`: pending (engram reported multiple active sessions). Rebased onto origin/develop d57243b; commit hashes below are post-rebase.
 - T1 done. `CompiledSuite.SetFailFast(bool)` added (specs/execution_plan.go), stored behind the
   existing lazily-allocated `groups *planGroups` pointer (new `planGroups.failFast` field, no new
   `CompiledSuite`/`ExecutionPlan` field — H10 intact). `runPlanSpecsInOrder`/`runExecution` now
