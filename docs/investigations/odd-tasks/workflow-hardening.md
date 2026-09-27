@@ -61,7 +61,7 @@ branch names go through `env:`.
 
 - [x] T1 — Baseline hardening (timeouts, persist-credentials, permissions, concurrency). Check:
   actionlint, YAML parse.
-- [ ] T2 — CodeQL language matrix `[go, actions]`. Check: actionlint; both legs green on the PR.
+- [x] T2 — CodeQL language matrix `[go, actions]`. Check: actionlint; both legs green on the PR.
 - [ ] T3 — Split `release.yml` and `benchmark-charts.yml`. Check: actionlint; job outputs and
   artifacts wired; `if:` conditions preserved.
 - [ ] T4 — Pin every `uses:` by SHA with a version comment. Check: every SHA resolves to the tag it
@@ -86,3 +86,14 @@ branch names go through `env:`.
   Check: `python3 -c "import yaml,glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]"` — all 7 files parse.
   `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings.
   Commit: `ci: add timeouts, drop persisted credentials and tighten permissions in every workflow`.
+- T2 done. `analyze` in codeql.yml is now a `strategy: { fail-fast: false, matrix: { language:
+  [go, actions] } }` job. `Set up Go` and the manual `go build ./...` step are gated on
+  `matrix.language == 'go'`; `Initialize CodeQL` passes `languages: ${{ matrix.language }}` and
+  `build-mode: manual` for go / `none` for actions; `Perform CodeQL analysis` passes `category:
+  "/language:${{ matrix.language }}"`. GitHub Actions renders the two matrix jobs as `analyze
+  (go)` and `analyze (actions)` automatically, no explicit `name:` needed. Whether both legs
+  actually go green is only verifiable once this runs on GitHub (open question for T5, not
+  reproducible locally).
+  Check: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/codeql.yml'))"` — OK.
+  `go run github.com/rhysd/actionlint/cmd/actionlint@latest` — 0 findings.
+  Commit: `ci: analyze workflows with CodeQL alongside Go`.
