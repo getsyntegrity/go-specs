@@ -5,8 +5,14 @@ import (
 	"testing"
 )
 
-// incomparableHint is the part of the failure message that explains an incomparable dynamic type.
-const incomparableHint = "is not comparable with ==; use ctx.Expect(...).ToEqual"
+// deepHint and errorHint are the parts of the failure message that explain an incomparable dynamic
+// type. A non-error value is pointed at ctx.Expect(...).ToEqual, which compares it with
+// reflect.DeepEqual. An error is not: ctx.Expect asks errors.Is for errors too, and errors.Is has
+// already said no by the time the message is built, so the remedy is an Is method on the type.
+const (
+	deepHint  = "is not comparable with ==; use ctx.Expect(...).ToEqual for a deep comparison"
+	errorHint = "is not comparable with == and errors.Is found no match; give"
+)
 
 // failureOf runs assertion against a capturing backend and returns whether it failed and with what
 // message. A panic is reported as a test error: the typed path must never panic on a comparison.
@@ -30,14 +36,13 @@ func TestTypedEqualityExplainsIncomparableDynamicTypes(t *testing.T) {
 	cases := []struct {
 		name             string
 		actual, expected any
-		hint             bool
+		hint             string // "" when the message must carry neither hint
 	}{
-		{"equal slices", []int{1}, []int{1}, true},
-		{"different slices", []int{1}, []int{2}, true},
-		{"equal maps", map[string]int{"x": 1}, map[string]int{"x": 1}, true},
-		{"incomparable errors", dslSliceError{"a"}, dslSliceError{"a"}, true},
-		{"different dynamic types", []int{1}, map[string]int{"x": 1}, false},
-		{"different comparable values", 1, 2, false},
+		{"equal slices", []int{1}, []int{1}, deepHint},
+		{"different slices", []int{1}, []int{2}, deepHint},
+		{"equal maps", map[string]int{"x": 1}, map[string]int{"x": 1}, deepHint},
+		{"different dynamic types", []int{1}, map[string]int{"x": 1}, ""},
+		{"different comparable values", 1, 2, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,11 +57,57 @@ func TestTypedEqualityExplainsIncomparableDynamicTypes(t *testing.T) {
 					t.Errorf("%s passed, want a failure", label)
 					continue
 				}
-				if got := strings.Contains(message, incomparableHint); got != tc.hint {
-					t.Errorf("%s message %q: contains hint=%v, want %v", label, message, got, tc.hint)
-				}
+				checkHint(t, label, message, tc.hint)
 			}
 		})
+	}
+}
+
+// checkHint fails unless message carries exactly the hint named by want, and never the other one.
+func checkHint(t *testing.T, label, message, want string) {
+	t.Helper()
+	for _, hint := range []string{deepHint, errorHint} {
+		if got := strings.Contains(message, hint); got != (hint == want) {
+			t.Errorf("%s message %q: contains %q=%v, want %v", label, message, hint, got, hint == want)
+		}
+	}
+}
+
+// Codex review on #260: for errors, ctx.Expect(...).ToEqual asks errors.Is, not reflect.DeepEqual,
+// so pointing there would not help — two dslSliceError{"a"} fail through ctx.Expect too. The message
+// for an incomparable error must name the remedy that does work instead.
+func TestIncomparableErrorFailureDoesNotRecommendCtxExpect(t *testing.T) {
+	var a, e error = dslSliceError{"a"}, dslSliceError{"a"}
+	if outcome(t, "Expect.ToEqual", func(c *Context) { c.Expect(a).ToEqual(e) }) {
+		t.Fatal("ctx.Expect(...).ToEqual passed; the premise of this test no longer holds")
+	}
+	const want = "expected [a] to equal [a], but dynamic type specs.dslSliceError is not comparable with == " +
+		"and errors.Is found no match; give specs.dslSliceError an Is method to define its equality"
+	probes := map[string]func(*Context){
+		"EqualTo":         func(c *Context) { EqualTo(c, a, e) },
+		"ExpectT.ToEqual": func(c *Context) { ExpectT(c, a).ToEqual(e) },
+	}
+	for label, probe := range probes {
+		if _, got := failureOf(t, label, probe); got != want {
+			t.Errorf("%s message = %q, want %q", label, got, want)
+		}
+	}
+}
+
+// Codex review on #262: an incomparable error that already has an Is method, which said no to this
+// target, must not be told to add one. The message says its Is method found no match instead.
+func TestIncomparableErrorWithIsMethodIsNotToldToAddOne(t *testing.T) {
+	var a, e error = dslCodesError{7}, dslCodesError{8}
+	const want = "expected [7] to equal [8], but dynamic type specs.dslCodesError is not comparable with == " +
+		"and its Is method found no match"
+	probes := map[string]func(*Context){
+		"EqualTo":         func(c *Context) { EqualTo(c, a, e) },
+		"ExpectT.ToEqual": func(c *Context) { ExpectT(c, a).ToEqual(e) },
+	}
+	for label, probe := range probes {
+		if _, got := failureOf(t, label, probe); got != want {
+			t.Errorf("%s message = %q, want %q", label, got, want)
+		}
 	}
 }
 
