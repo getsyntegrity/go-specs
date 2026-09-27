@@ -1,13 +1,18 @@
-# Release prep: while a develop -> main release PR is open, compute the next version from
-# Conventional Commits and rewrite CHANGELOG.md's [Unreleased] section into a dated release
-# heading, then push that commit back to develop -- Decision 1 of
+# Release prep: while a develop -> main release PR, or a hotfix/* -> main PR, is open, compute the
+# next version from Conventional Commits and rewrite CHANGELOG.md's [Unreleased] section into a
+# dated release heading, then push that commit back to the PR's own head branch -- Decision 1 of
 # docs/investigations/odd-tasks/native-ci-pipeline.md: the version and changelog are visible in
 # the PR *before* it merges, rather than written after the merge and synced back with a second PR.
 #
+# A hotfix/* PR is prepared the same way, with one difference: its version is computed with
+# `-patch-only` (tools/release next-version), which always bumps patch and fails if the range
+# contains a breaking change or a feat commit -- Decision 1 of
+# docs/investigations/odd-tasks/hotfix-release-and-charts.md: a hotfix must not change the API.
+#
 # Runs on every PR event that can change what should be prepared (opened, a new push, reopened,
 # or taken out of draft) targeting main, but only actually does anything when the job condition
-# below narrows it to a genuine develop -> main release PR from this repository -- a PR from a
-# fork, or one targeting main from any other branch (a hotfix, say), skips every step.
+# below narrows it to a genuine develop -> main or hotfix/* -> main PR from this repository -- a PR
+# from a fork skips every step.
 #
 # release.yml (the workflow that tags and publishes once this PR is merged) reads the version this
 # workflow prepared back out of CHANGELOG.md's top heading, rather than recomputing it, and fails
@@ -37,15 +42,29 @@ concurrency:
 
 jobs:
   prepare:
-    # Narrows the four PR event types above down to exactly the release PR this workflow exists
-    # for: develop -> main (never a hotfix branch or any other base), and only when the PR's head
-    # is a branch of this repository, never a fork -- a fork's develop could not be pushed back to
-    # even with the release App's installation token, since the App is installed only on this
-    # repository, and a release must only ever be prepared from this repository's own develop.
-    if: github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository
+    # Narrows the four PR event types above down to exactly the two release PRs this workflow
+    # exists for: develop -> main (an ordinary release) or hotfix/* -> main (a hotfix), never any
+    # other base -- and only when the PR's head is a branch of this repository, never a fork -- a
+    # fork's branch could not be pushed back to even with the release App's installation token,
+    # since the App is installed only on this repository, and a release must only ever be
+    # prepared from this repository's own branches.
+    if: (github.event.pull_request.head.ref == 'develop' || startsWith(github.event.pull_request.head.ref, 'hotfix/')) && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # 20 minutes: a Go build/run of tools/release plus a git push, comfortably inside the
+    # release/release-prep/goreleaser band this repo uses for jobs that mint and use the release
+    # App token, well above ci.yml's plain-checkout jobs.
+    timeout-minutes: 20
     env:
       GOTOOLCHAIN: local
+      # HEAD_REF holds the PR's head branch name once, so every later step reads it as a normal
+      # shell variable instead of re-interpolating `${{ github.event.pull_request.head.ref }}`
+      # directly into a `run:` script's text. A branch name is attacker-controlled (anyone can
+      # open a PR from a branch they name), and GitHub Actions substitutes an expression straight
+      # into the script's source text before the shell ever runs it -- a branch cleverly named to
+      # embed shell metacharacters would then execute as code, not sit inertly as data, the moment
+      # it's pasted in. `$HEAD_REF` expanded inside a quoted shell string has no such risk: bash
+      # substitutes its value verbatim, it is never re-parsed as shell syntax.
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
       # Checked before anything else (no checkout needed to check a secret), so a missing token
       # fails in seconds with an actionable message instead of failing deep inside a later git
@@ -62,22 +81,43 @@ jobs:
 
       - name: Mint a release GitHub App installation token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
-      - name: Checkout develop
-        uses: actions/checkout@v7
+      # No checkout needed: the job condition above already narrowed head.ref to develop or
+      # hotfix/*, so this only distinguishes which of those two it is, for the -patch-only branch
+      # further down.
+      - name: Determine release kind
+        id: kind
+        run: |
+          if [[ "$HEAD_REF" == hotfix/* ]]; then
+            echo "is_hotfix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_hotfix=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout the release branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: develop
+          # develop for an ordinary release, or the hotfix/* branch itself for a hotfix -- either
+          # way this PR's own head, which is what gets prepared and pushed back to. Passing this
+          # expression to an action's `ref:` *input* is not the injection vector the HEAD_REF
+          # comment above describes: actions/checkout hands it to git as a ref argument, never
+          # through shell script text it builds by pasting workflow YAML into a `run:` block.
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0  # full history and tags: next-version needs every commit since the last tag
           token: ${{ steps.app-token.outputs.token }}
+          # persist-credentials stays at its default (true) here, unlike every other checkout in
+          # this repo: "Commit and push the prepared changelog" below pushes with plain `git push
+          # origin`, relying on the auth header actions/checkout configures from `token:` above.
+          # Setting persist-credentials: false would leave that push with no credentials at all.
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
@@ -87,7 +127,7 @@ jobs:
       # for a repository with no tags at all -- a bootstrap case this repo does not currently need
       # but next-version's strict SemVer input requires something well-formed), collects every
       # commit since it in this tool's NUL-delimited format (version.go's doc comment), and asks
-      # tools/release for the next version. Exit 3 means nothing on develop is releasable yet
+      # tools/release for the next version. Exit 3 means nothing on this branch is releasable yet
       # (version.go/ErrNothingReleasable): that is a legitimate outcome, not a failure, so the
       # step (and therefore the job) still exits 0, and every later step is skipped via the
       # nothing_to_release output.
@@ -104,12 +144,20 @@ jobs:
           git log --format='%B%x00' "${LAST_TAG}..HEAD" > /tmp/release-commits.txt
 
           set +e
-          NEXT_VERSION="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          if [ "${{ steps.kind.outputs.is_hotfix }}" = "true" ]; then
+            # Decision 1 of docs/investigations/odd-tasks/hotfix-release-and-charts.md: a hotfix
+            # must not change the API, so -patch-only always bumps patch and fails loudly, naming
+            # the offending commits, if a breaking change or a feat commit landed on the branch --
+            # instead of silently computing the minor/major bump the ordinary path would.
+            NEXT_VERSION="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt -patch-only)"
+          else
+            NEXT_VERSION="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          fi
           STATUS=$?
           set -e
 
           if [ "$STATUS" -eq 3 ]; then
-            echo "::notice::Nothing to release since ${LAST_TAG} -- no commit on develop is a releasable Conventional Commit. Stopping without preparing a release."
+            echo "::notice::Nothing to release since ${LAST_TAG} -- no commit on this branch is a releasable Conventional Commit. Stopping without preparing a release."
             echo "nothing_to_release=true" >> "$GITHUB_OUTPUT"
             exit 0
           elif [ "$STATUS" -ne 0 ]; then
@@ -124,7 +172,10 @@ jobs:
       # already carries this exact version's heading, it reports "nothing to do" and leaves
       # CHANGELOG.md untouched, so the diff check in the next step naturally finds nothing to
       # commit and this workflow does not push a second time for the same version (its own header
-      # explains why that retrigger happens at all).
+      # explains why that retrigger happens at all). Decision 2 of hotfix-release-and-charts.md:
+      # an empty [Unreleased] fails here with ErrEmptyUnreleased's actionable message -- expected
+      # every time on a fresh hotfix branch, since main's [Unreleased] is empty right after a
+      # release, until the hotfix's own changelog entry is added.
       - name: Update CHANGELOG.md
         if: steps.version.outputs.nothing_to_release == 'false'
         run: |
@@ -152,7 +203,7 @@ jobs:
             git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
             git add CHANGELOG.md
             git commit -m "chore(release): prepare ${{ steps.version.outputs.next_version }}"
-            git push origin HEAD:develop
+            git push origin "HEAD:${HEAD_REF}"
           fi
 
       - name: Write job summary
@@ -165,5 +216,5 @@ jobs:
           elif [ -n "${{ steps.version.outputs.next_version }}" ]; then
             echo "### Release prep" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Next version: \`${{ steps.version.outputs.next_version }}\` (since \`${{ steps.version.outputs.last_tag }}\`)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Next version: \`${{ steps.version.outputs.next_version }}\` (since \`${{ steps.version.outputs.last_tag }}\`, ${{ steps.kind.outputs.is_hotfix == 'true' && 'hotfix, patch-only' || 'develop' }})" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -53,6 +53,45 @@ func TestRun_NextVersion_MissingFlagsExitOne(t *testing.T) {
 	}
 }
 
+func TestRun_NextVersion_PatchOnly_Success(t *testing.T) {
+	commitsPath := writeTempFile(t, commits("chore: tidy go.mod"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"next-version", "-last", "v0.1.2", "-commits", commitsPath, "-patch-only"}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run(next-version -patch-only) exit = %d, want 0; stderr:\n%s", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "v0.1.3" {
+		t.Errorf("run(next-version -patch-only) stdout = %q, want %q", got, "v0.1.3")
+	}
+}
+
+func TestRun_NextVersion_PatchOnly_BreakingOrFeatExitsOneNamingSubjects(t *testing.T) {
+	commitsPath := writeTempFile(t, commits("fix: correct off-by-one", "feat!: drop legacy API"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"next-version", "-last", "v0.1.2", "-commits", commitsPath, "-patch-only"}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("run(next-version -patch-only) exit = %d, want 1; stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "feat!: drop legacy API") {
+		t.Errorf("run(next-version -patch-only) stderr = %q, want it to name the offending commit subject", stderr.String())
+	}
+}
+
+func TestRun_NextVersion_PatchOnly_NothingReleasableExitsThree(t *testing.T) {
+	commitsPath := writeTempFile(t, commits("chore: update benchmark charts [skip ci]"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"next-version", "-last", "v0.1.2", "-commits", commitsPath, "-patch-only"}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 3 {
+		t.Fatalf("run(next-version -patch-only) exit = %d, want 3; stderr:\n%s", code, stderr.String())
+	}
+}
+
 func TestRun_UnknownSubcommandExitsOne(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr)

@@ -6,11 +6,21 @@
 # without the weekly run, a query added after the last push to a stable file would never fire on
 # it. workflow_dispatch is for a manual re-run, e.g. right after bumping the query pack.
 #
-# The build is manual (`go build ./...`) rather than CodeQL's `autobuild` action: go-specs pins
+# The Go build is manual (`go build ./...`) rather than CodeQL's `autobuild` action: go-specs pins
 # its toolchain in .go-version and GOTOOLCHAIN=local like every other workflow in this repo, and
 # autobuild's own Go heuristics install whatever toolchain they find best rather than honouring
 # that pin -- the same reason ci.yml and release.yml both set up Go explicitly instead of trusting
 # a generic default.
+#
+# `analyze` runs as a `[go, actions]` matrix, two parallel legs under one job id: `go` scans this
+# repository's Go source, `actions` scans the workflow YAML in .github/workflows and
+# .github/actions itself -- the script-injection class release-prep.yml and release.yml's own
+# HEAD_REF comments describe is exactly the pattern the `actions` language's queries look for.
+# Neither leg needs the other's setup: only `go` checks out a toolchain and runs a build step,
+# gated on `matrix.language == 'go'`; `actions` has no code to build, so its `init` step passes
+# `build-mode: none` instead. `fail-fast: false` keeps one leg's failure from cancelling the
+# other -- they check unrelated things, so a red `go` leg says nothing about whether `actions` is
+# clean. GitHub Actions names each matrix job `analyze (go)` / `analyze (actions)` automatically.
 name: CodeQL
 
 on:
@@ -34,25 +44,49 @@ permissions:
   contents: read
   security-events: write
 
+# Cancel a PR's superseded runs, the same reasoning as ci.yml's own concurrency block; never
+# cancel a scheduled or push run, since those are the record of what actually ran and a cancelled
+# scheduled scan would silently skip the week it was meant to cover.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # 20 minutes, not the 10 most jobs in this repo get: a CodeQL database build (Initialize +
+    # Build + analysis) does real static-analysis work on top of the Go build the `go` leg
+    # already runs, and is slower than a plain `go build`/`go vet` check.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, actions]
     env:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # Only the `go` leg needs a toolchain: `actions` analyzes workflow YAML directly, with
+      # nothing to compile.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          languages: go
+          languages: ${{ matrix.language }}
+          # go: manual, since the explicit `go build` step below (not autobuild) is what CodeQL's
+          # build tracer wraps -- see the file header. actions: none, since there is no build step
+          # for a language whose only source is the workflow YAML itself.
+          build-mode: ${{ matrix.language == 'go' && 'manual' || 'none' }}
           # security-and-quality is a superset of the security-extended query pack: it adds
           # maintainability/reliability queries on top of the vulnerability-focused default
           # suite, matching this repo's stated goal of correctness and determinism, not just
@@ -60,11 +94,13 @@ jobs:
           queries: security-and-quality
 
       # Explicit build instead of autobuild, per the file header: this is what actually compiles
-      # under the pinned toolchain and GOTOOLCHAIN=local CodeQL then traces and analyzes.
+      # under the pinned toolchain and GOTOOLCHAIN=local CodeQL then traces and analyzes. Only the
+      # `go` leg has anything to build.
       - name: Build
+        if: matrix.language == 'go'
         run: go build ./...
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          category: "/language:go"
+          category: "/language:${{ matrix.language }}"

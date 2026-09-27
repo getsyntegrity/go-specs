@@ -165,6 +165,16 @@ func TestNextVersion_BumpRules(t *testing.T) {
 			commits: commits("chore: update benchmark charts [skip ci]", "feat: add widget"),
 			want:    "v0.1.1",
 		},
+		{
+			// benchmark-charts.yml (T3 of docs/investigations/odd-tasks/hotfix-release-and-charts.md)
+			// commits without "[skip ci]" now, since its chart update lands through a real
+			// pull request into develop and CI must run on that PR -- but the resulting
+			// commit still must not itself look releasable once it reaches develop.
+			name:    "bot chart commit ignored (current form, no skip-ci suffix), real feat still counted",
+			lastTag: "v0.1.0",
+			commits: commits("chore: update benchmark charts", "feat: add widget"),
+			want:    "v0.1.1",
+		},
 		// --- highest bump wins across multiple commits ---
 		{
 			name:    "breaking outranks feat and fix in the same range",
@@ -202,6 +212,7 @@ func TestNextVersion_NothingReleasable(t *testing.T) {
 		{"only merge commits", commits("Merge pull request #1 from x/y", "Merge branch 'develop' into main")},
 		{"only non-conventional subjects", commits("wip", "oops", "quick fix")},
 		{"only the bot chart commit", commits("chore: update benchmark charts [skip ci]")},
+		{"only the bot chart commit (no skip-ci suffix, current form)", commits("chore: update benchmark charts")},
 	}
 
 	for _, tt := range tests {
@@ -241,6 +252,153 @@ func TestNextVersion_StrictSemverLastTag(t *testing.T) {
 	}
 }
 
+// TestNextVersionPatchOnly_BumpsPatchRegardlessOfType covers the hotfix path (T1 of
+// docs/investigations/odd-tasks/hotfix-release-and-charts.md): a hotfix must only ever bump the
+// patch component, never minor or major, no matter which non-feat/non-breaking Conventional
+// Commit types are present in the range.
+func TestNextVersionPatchOnly_BumpsPatchRegardlessOfType(t *testing.T) {
+	tests := []struct {
+		name    string
+		lastTag string
+		commits string
+		want    string
+	}{
+		{
+			name:    "single fix",
+			lastTag: "v0.1.2",
+			commits: commits("fix: correct off-by-one"),
+			want:    "v0.1.3",
+		},
+		{
+			name:    "pre-1.0 last tag still just bumps patch",
+			lastTag: "v0.1.2",
+			commits: commits("chore: tidy go.mod", "docs: fix typo"),
+			want:    "v0.1.3",
+		},
+		{
+			name:    "post-1.0 last tag still just bumps patch",
+			lastTag: "v1.4.2",
+			commits: commits("perf: avoid an allocation"),
+			want:    "v1.4.3",
+		},
+		{
+			name:    "merge commit and non-conventional subject ignored, real fix still counted",
+			lastTag: "v0.1.2",
+			commits: commits("Merge pull request #42 from getsyntegrity/feature-x", "wip", "fix: correct off-by-one"),
+			want:    "v0.1.3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NextVersionPatchOnly(tt.lastTag, tt.commits)
+			if err != nil {
+				t.Fatalf("NextVersionPatchOnly(%q, ...) unexpected error: %v", tt.lastTag, err)
+			}
+			if got != tt.want {
+				t.Errorf("NextVersionPatchOnly(%q, ...) = %q, want %q", tt.lastTag, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextVersionPatchOnly_RejectsBreakingOrFeat covers the "a hotfix must not change the API"
+// rule (Decision 1 of hotfix-release-and-charts.md): any breaking change or feat commit in the
+// range fails with ErrPatchOnlyDisallowedCommit, and the error names the offending commit
+// subjects so a maintainer can see exactly which commits need to be excluded or re-targeted.
+func TestNextVersionPatchOnly_RejectsBreakingOrFeat(t *testing.T) {
+	tests := []struct {
+		name          string
+		commits       string
+		wantSubstring []string
+	}{
+		{
+			name:          "bang breaking",
+			commits:       commits("fix: correct off-by-one", "feat!: drop legacy API"),
+			wantSubstring: []string{"feat!: drop legacy API"},
+		},
+		{
+			name:          "BREAKING CHANGE footer",
+			commits:       commits("fix: patch a thing\n\nBREAKING CHANGE: removes the old field"),
+			wantSubstring: []string{"fix: patch a thing"},
+		},
+		{
+			name:          "plain feat",
+			commits:       commits("fix: correct off-by-one", "feat: add widget"),
+			wantSubstring: []string{"feat: add widget"},
+		},
+		{
+			name:          "multiple offending commits are all named",
+			commits:       commits("feat: add widget", "feat!: drop legacy API"),
+			wantSubstring: []string{"feat: add widget", "feat!: drop legacy API"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NextVersionPatchOnly("v0.1.2", tt.commits)
+			if !errors.Is(err, ErrPatchOnlyDisallowedCommit) {
+				t.Fatalf("NextVersionPatchOnly(...) error = %v, want ErrPatchOnlyDisallowedCommit", err)
+			}
+			for _, want := range tt.wantSubstring {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("NextVersionPatchOnly(...) error = %q, want it to name offending subject %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// TestNextVersionPatchOnly_NothingReleasableExitsAsToday keeps the "nothing to release" outcome
+// (mapped by main.go to exit 3) identical between the ordinary and -patch-only paths, per T1's
+// "Nothing releasable -> exit 3 as today".
+func TestNextVersionPatchOnly_NothingReleasableExitsAsToday(t *testing.T) {
+	tests := []struct {
+		name    string
+		commits string
+	}{
+		{"empty input", ""},
+		{"only merge commits", commits("Merge pull request #1 from x/y", "Merge branch 'develop' into main")},
+		{"only non-conventional subjects", commits("wip", "oops", "quick fix")},
+		{"only the bot chart commit", commits("chore: update benchmark charts [skip ci]")},
+		{"only the bot chart commit (no skip-ci suffix, current form)", commits("chore: update benchmark charts")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NextVersionPatchOnly("v0.1.2", tt.commits)
+			if !errors.Is(err, ErrNothingReleasable) {
+				t.Fatalf("NextVersionPatchOnly(...) error = %v, want ErrNothingReleasable", err)
+			}
+		})
+	}
+}
+
+// TestNextVersionPatchOnly_StrictSemverLastTag reuses the same -last validation NextVersion
+// applies, since a hotfix still needs a well-formed last tag to bump from.
+func TestNextVersionPatchOnly_StrictSemverLastTag(t *testing.T) {
+	tests := []struct {
+		name    string
+		lastTag string
+	}{
+		{"missing v prefix", "0.1.0"},
+		{"missing patch", "v0.1"},
+		{"pre-release suffix", "v0.1.0-rc.1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NextVersionPatchOnly(tt.lastTag, commits("fix: correct off-by-one"))
+			if err == nil {
+				t.Fatalf("NextVersionPatchOnly(%q, ...) expected an error, got none", tt.lastTag)
+			}
+			if errors.Is(err, ErrNothingReleasable) || errors.Is(err, ErrPatchOnlyDisallowedCommit) {
+				t.Fatalf("NextVersionPatchOnly(%q, ...) = %v, want a strict semver validation error", tt.lastTag, err)
+			}
+		})
+	}
+}
+
 func TestClassifyCommit(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -259,6 +417,7 @@ func TestClassifyCommit(t *testing.T) {
 		{"free text", "wip", kindOther, false},
 		{"unknown type", "oops: not a real type", kindOther, false},
 		{"bot chart commit", "chore: update benchmark charts [skip ci]", kindOther, false},
+		{"bot chart commit (no skip-ci suffix, current form)", "chore: update benchmark charts", kindOther, false},
 		{"chore is other", "chore: tidy go.mod", kindOther, true},
 	}
 
