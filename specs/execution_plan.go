@@ -330,10 +330,85 @@ func (s *CompiledSuite) SetFailFast(v bool) {
 
 // Run executes all specs in the plan. Uses one context from the pool per spec.
 func (s *CompiledSuite) Run(tb testing.TB) {
+	s.run(tb, nil)
+}
+
+// RunShard runs shard shardIndex of shardCount of s for CI (issue #251): the `Describe`/`Spec`
+// engine's counterpart to the `Builder` engine's package-level RunShard (scheduler.go), so a suite
+// built through specs.Describe/BuildSuite (CompiledSuite over ExecutionPlan) can be split across CI
+// jobs the same way a *Program built with Builder already can. It reports through s.Reporter exactly
+// as Run does, so one method covers both the plain and the reporter-attached case; nothing about the
+// shard is ever stored on s — the selection is computed here and dropped when RunShard returns.
+//
+// # Assignment unit
+//
+// Units are numbered u = 0..U-1, in declaration order, over three shapes:
+//
+//   - a whole top-level BeforeAll/AfterAll group, including every group nested inside it — its hooks
+//     run exactly once for all of its specs (docs/SUITE_HOOKS_CONTRACT.md H1-H6), so the group can
+//     never be split across shards without running a hook more than once or not at all;
+//   - a whole ItParallel batch outside such a group — one concurrent unit, and H9's "the batch
+//     finishes before a stop" is defined over it as a whole; a batch never straddles a hook group's
+//     boundary (planGroups.parallel's doc comment), so this is always well-formed;
+//   - a single spec otherwise — it has its own BeforeEach/AfterEach compiled into its own instruction
+//     range and shares no state with any other spec, so it is sharded on its own.
+//
+// This is finer-grained than the Builder engine's package-level RunShard, which can only shard whole
+// coalesced hook groups, and it balances shards better on a suite with few large groups. Unit u is
+// assigned to shard u % shardCount — the same round-robin rule ShardSpecs, ShardBCProgram and
+// Builder's RunShard already use, so the same declared tree always yields the same units and the same
+// assignment, on both compile paths (bytecode compiler and Analyze/registry).
+//
+// # Validation
+//
+// shardCount must be >= 1 and 0 <= shardIndex < shardCount; anything else fails tb through tb.Fatalf
+// with the shared validateShardPartition diagnostic (#174), exactly like the Builder engine's
+// RunShard, instead of silently running the whole suite on every worker. s, s.Plan or tb being nil is
+// a silent no-op, mirroring Run.
+//
+// # Reporting
+//
+// This shard's own specs run and report exactly as they do under Run, including Filtered when -run
+// discards one. A spec belonging to another shard's unit is never started at all: no hook runs for
+// it, no reporter event is emitted for it, and SuiteEndEvent.TotalSpecs/FailedSpecs count only this
+// shard's own specs — the same contract the Builder engine's RunShardWithReporter already gives.
+// Compile-time SkipIt/PendingIt marks have no plan index and belong to no shard's units; shard 0
+// alone reports them, so the union across every shard reports each one exactly once. A valid shard
+// that draws nothing at all — more shards than units, or a non-zero shard with no marks — runs
+// nothing and emits no suite events, which is not a failure: it mirrors Run's own early return for an
+// empty suite, and the Builder engine's RunShard/RunShardWithReporter for an empty shard.
+//
+// # FailFast
+//
+// CompiledSuite.SetFailFast(true) applies within this shard only: a failure stops the rest of this
+// shard's own units; other shards are other processes and never see it.
+func (s *CompiledSuite) RunShard(tb testing.TB, shardIndex, shardCount int) {
+	if s == nil || s.Plan == nil || tb == nil {
+		return
+	}
+	if !shardConfigOK(tb, shardIndex, shardCount) {
+		return
+	}
+	s.run(tb, s.buildShardSelection(shardIndex, shardCount))
+}
+
+// run is the shared body of Run and RunShard (issue #251). sel == nil is Run's own case, "every
+// spec" — the only case TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath covers, and the
+// one this function must keep allocation-free: building a shardSelection happens only in RunShard,
+// never here. A non-nil sel restricts the run to one shard's units; see shardSelection and
+// buildShardSelection for how it is built and what it filters.
+func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 	if s == nil || s.Plan == nil || tb == nil {
 		return
 	}
 	if len(s.Plan.ProgramStart) == 0 && !s.hasMarks() {
+		return
+	}
+	if !sel.reportsMarks() && !sel.anySelected() {
+		// RunShard only (sel != nil here, since a nil sel always reportsMarks): this shard draws
+		// nothing — no marks to report (shard 0's job) and no unit assigned to it. A valid shard
+		// that draws nothing runs nothing and emits no suite events at all; that is not a failure
+		// (RunShard's own doc comment, "Reporting").
 		return
 	}
 	if observe := suiteRunObserver.Load(); observe != nil {
@@ -343,11 +418,12 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	defer putTestBackend(backend)
 
 	if s.Reporter == nil {
-		s.runSpecs(backend, nil)
+		s.runSpecs(backend, nil, sel)
 		return
 	}
 	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
-	// -run filtering can still make the reported count differ from len(plan.ProgramStart).
+	// -run filtering can still make the reported count differ from len(plan.ProgramStart), and so
+	// can sel excluding another shard's specs (RunShard, issue #251).
 	counter := &specCounter{EventReporter: s.Reporter}
 	name := s.Name
 	if name == "" {
@@ -355,7 +431,7 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 	}
 	suiteStart := time.Now()
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
-	s.runSpecs(backend, counter)
+	s.runSpecs(backend, counter, sel)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:          name,
 		Time:          time.Now(),
@@ -366,6 +442,113 @@ func (s *CompiledSuite) Run(tb testing.TB) {
 		SkippedSpecs:  counter.skipped,
 		PendingSpecs:  counter.pending,
 	})
+}
+
+// shardSelection restricts CompiledSuite.run to one shard's assignment units (RunShard, issue #251).
+// specs[i] is true when flat-plan index i belongs to a unit this shard draws; every index belonging
+// to an excluded unit stays false (the zero value). Built once, fresh, inside RunShard by
+// buildShardSelection, and always discarded when RunShard returns: nothing here is ever stored on
+// CompiledSuite, ExecutionPlan or planGroups, so Run's own path (sel == nil throughout run/runSpecs/
+// runPlanSpecsInOrder/runTopRange) never allocates one and never pays for sharding it never asked
+// for.
+type shardSelection struct {
+	specs      []bool
+	shardIndex int
+}
+
+// included reports whether flat-plan index i belongs to this shard. A nil sel (Run's own case)
+// always reports true — "every spec", with no slice to index into — so every call site can treat a
+// nil sel exactly like "no sharding" without a separate branch.
+func (sel *shardSelection) included(i int) bool {
+	if sel == nil {
+		return true
+	}
+	return i >= 0 && i < len(sel.specs) && sel.specs[i]
+}
+
+// reportsMarks reports whether this run is the one that reports compile-time SkipIt/PendingIt marks
+// (RunShard's decision: shard 0 only, so the union across every shard reports each mark exactly
+// once). A nil sel (Run's own case) always reports true: there is only one run, and it always
+// reports them, exactly as it did before RunShard existed.
+func (sel *shardSelection) reportsMarks() bool {
+	return sel == nil || sel.shardIndex == 0
+}
+
+// anySelected reports whether this shard's selection includes at least one flat-plan index. A nil
+// sel (Run's own case) always reports true.
+func (sel *shardSelection) anySelected() bool {
+	if sel == nil {
+		return true
+	}
+	for _, included := range sel.specs {
+		if included {
+			return true
+		}
+	}
+	return false
+}
+
+// buildShardSelection computes shard shardIndex's subset of s's units (RunShard's assignment rule):
+// a whole top-level BeforeAll/AfterAll group (with every group nested inside it), a whole ItParallel
+// batch outside such a group, or a single spec otherwise, numbered u = 0..U-1 in declaration order
+// and assigned to shard u % shardCount. Callers must have validated shardIndex/shardCount first (see
+// shardConfigOK); this never fails — it only computes an assignment, which may legitimately draw
+// nothing (see run's empty-shard handling).
+//
+// On the flat path — no BeforeAll/AfterAll and no ItParallel, CompiledSuite.runSpecs' own condition
+// for it — every unit is a single spec at its own plan index, so the unit number and the plan index
+// are the same number and no tree walk is needed. Otherwise a throwaway groupRun.buildTree() gives
+// the exact top-level walk runTopRange itself later uses (r.top, r.parallelByStart), so the two can
+// never disagree about where one unit ends and the next begins: a top-level group's unit spans
+// group.Start..group.End (every nested group falls inside that range by construction — see
+// buildTree's doc comment), a top-level ItParallel batch spans its own Start..End, and every other
+// top-level index is a single-spec unit.
+//
+// Allocates a []bool the length of the flat plan (and, on the group path, the throwaway groupRun's
+// own bookkeeping); only ever called from RunShard, never from Run's own path.
+func (s *CompiledSuite) buildShardSelection(shardIndex, shardCount int) *shardSelection {
+	n := len(s.Plan.ProgramStart)
+	sel := &shardSelection{specs: make([]bool, n), shardIndex: shardIndex}
+	assign := func(u, start, end int) {
+		if u%shardCount != shardIndex {
+			return
+		}
+		for i := start; i <= end; i++ {
+			sel.specs[i] = true
+		}
+	}
+	if s.groups == nil || (len(s.groups.groups) == 0 && len(s.groups.parallel) == 0) {
+		for i := 0; i < n; i++ {
+			assign(i, i, i)
+		}
+		return sel
+	}
+	r := &groupRun{pg: s.groups, plan: s.Plan}
+	r.buildTree()
+	u := 0
+	k := 0
+	for i := 0; i < n; {
+		if k < len(r.top) && s.groups.groups[r.top[k]].Start == i {
+			g := r.top[k]
+			k++
+			group := &s.groups.groups[g]
+			assign(u, group.Start, group.End)
+			u++
+			i = group.End + 1
+			continue
+		}
+		if pi, ok := r.parallelByStart[i]; ok {
+			rng := s.groups.parallel[pi]
+			assign(u, rng.Start, rng.End)
+			u++
+			i = rng.End + 1
+			continue
+		}
+		assign(u, i, i)
+		u++
+		i++
+	}
+	return sel
 }
 
 // hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt (issue #245):
@@ -415,14 +598,16 @@ func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
 }
 
 // runSpecs runs every spec of the suite once: it first reports this suite's compile-time
-// SkipIt/PendingIt marks (issue #245), if any — they carry no before/body/after and never open a
-// subtest, so they are reported independently of whichever path runs the real specs below — then
-// runs the real specs through runPlanSpecsInOrder, unchanged from before issue #207, for a suite
-// without any BeforeAll/AfterAll group and without any ItParallel group (H10), or through
-// runPlanWithGroups otherwise — runPlanWithGroups is also where an ItParallel range is launched
-// concurrently (issue #245's second spec; see group_hooks.go's runParallelGroup).
-func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) {
-	if s.groups != nil {
+// SkipIt/PendingIt marks (issue #245), if any and if sel says this run reports them (RunShard, issue
+// #251, restricts that to shard 0 — see shardSelection.reportsMarks) — they carry no before/body/
+// after and never open a subtest, so they are reported independently of whichever path runs the real
+// specs below — then runs the real specs through runPlanSpecsInOrder, unchanged from before issue
+// #207, for a suite without any BeforeAll/AfterAll group and without any ItParallel group (H10), or
+// through runPlanWithGroups otherwise — runPlanWithGroups is also where an ItParallel range is
+// launched concurrently (issue #245's second spec; see group_hooks.go's runParallelGroup). sel
+// restricts either path to one shard's units; nil means every spec (Run's own case).
+func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter, sel *shardSelection) {
+	if s.groups != nil && sel.reportsMarks() {
 		reportMarks(rep, s.groups.skipped, false)
 		reportMarks(rep, s.groups.pending, true)
 	}
@@ -432,24 +617,31 @@ func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter) 
 		// was called with no group/parallel ever registered (issue #251) — either way this is still
 		// the flat path, and s.groups.failFast is false unless SetFailFast(true) was actually called.
 		failFast := s.groups != nil && s.groups.failFast
-		runPlanSpecsInOrder(backend, rep, s.Plan, failFast)
+		runPlanSpecsInOrder(backend, rep, s.Plan, failFast, sel)
 		return
 	}
-	runPlanWithGroups(backend, rep, s.Plan, s.groups)
+	runPlanWithGroups(backend, rep, s.Plan, s.groups, sel)
 }
 
-// runPlanSpecsInOrder runs every spec in the plan once, in declaration order. Each spec's own
-// before/body/after hooks are already flat — compiled into its own instruction range — so there is
-// no group nesting to walk. A suite with BeforeAll/AfterAll never reaches here; see
-// runPlanWithGroups.
+// runPlanSpecsInOrder runs every spec in the plan once, in declaration order — or, when sel is
+// non-nil (RunShard, issue #251), only the specs sel selects for this shard: an excluded index is
+// skipped entirely, with no report and no effect on failFast, exactly as if it had never been
+// declared. On this path (no BeforeAll/AfterAll, no ItParallel) every spec is its own sharding unit
+// and its own plan index (buildShardSelection), so filtering by plan index is exactly filtering by
+// unit. Each spec's own before/body/after hooks are already flat — compiled into its own instruction
+// range — so there is no group nesting to walk. A suite with BeforeAll/AfterAll never reaches here;
+// see runPlanWithGroups.
 //
 // failFast implements CompiledSuite.SetFailFast (issue #251) for this path: once a spec fails, the
 // loop returns before starting the next one, so the specs after it never run and are never
 // reported at all — mirroring Runner.FailFast's stop-at-the-next-check contract (runner.go). A
 // spec's own AfterEach still runs regardless, since it is part of that spec's own instruction
 // range (runProgram's deferred loop), not a separate step this loop could skip.
-func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, failFast bool) {
+func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, failFast bool, sel *shardSelection) {
 	for i := 0; i < len(plan.ProgramStart); i++ {
+		if !sel.included(i) {
+			continue
+		}
 		failed := runExecution(backend, rep, plan, i)
 		if failFast && failed {
 			return
