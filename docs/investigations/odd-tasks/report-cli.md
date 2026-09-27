@@ -66,7 +66,7 @@ killed job leaves behind, and the contract's CI recipes are an explicit stub
 - [x] T3 — `cmd/go-specs-report` (`init`, `finalize`, `gc`) with behaviour tests: exits 0, 78 and
   1; strict missing producers; ownership; gc; the finalization barrier. Route: delegated writer
   (2+ non-trivial files). Check: `go test ./cmd/...`.
-- [ ] T4 — Docs: CLI reference, three `RunID` recipes, the manifest recipe, and generic CI, GitHub
+- [x] T4 — Docs: CLI reference, three `RunID` recipes, the manifest recipe, and generic CI, GitHub
   Actions and Shipwright examples. Route: delegated writer. Check: readback, and the example
   commands run against the fixture.
 - [ ] T5 — PR against `develop` referencing #146, with CI results. Route: inline. Check: CI green.
@@ -110,3 +110,33 @@ state is observed, then GREEN.
   No deviation from the spec's flag/verb/exit-code design. Open question: `docs/REPORTING.md`
   (T4) has not been written yet, so `init`/`finalize`/`gc`'s exact flags are documented only in
   their own `-h` output and this file — T4 owns publishing the CI recipes.
+- T4: `docs/REPORTING.md`'s stub replaced with "Running it in CI with `go-specs-report`"
+  (install, the three verbs' flags/env fallbacks, exit codes 0/78/1/2, strict-missing-producers
+  rationale, three `RunID` recipes, the producer-manifest `go list` pipeline with a CI drift
+  check, worked generic/GitHub Actions/Shipwright examples, and `gc` usage). The existing
+  library "Wiring a run" section is kept and now points at the CLI section as the
+  lower-friction option. Commit `9a1e08d`
+  (`docs(report): document go-specs-report CLI, RunID and manifest recipes, and CI examples (#146)`).
+  README.md has no existing reporting section, so it was left unchanged per the task's own
+  condition.
+
+  Executable proof (built `go-specs-report` from this worktree, run against the real
+  `report/coordination/internal/e2efixture/{producera,producerb}` fixtures, run id
+  `proof-manual-*`, manifest listing both packages):
+  - Hook-failure gate on (`GO_SPECS_FIXTURE_HOOK_FAIL=1`), correct manifest: `go test` exited
+    `1` (producera's deliberately failing `BeforeAll`), `go-specs-report finalize` exited `0`
+    ("found 2, missing 0, rejected 0"; `report.json`/`report.xml` written), and the generic
+    script's own combined exit was `1` — driven entirely by the test failure, not by finalize.
+  - Hook-failure gate off, manifest with one extra non-existent producer appended: `go test`
+    exited `0`, `go-specs-report finalize` exited `1` ("found 2, missing 1, rejected 0",
+    `missing: .../nonexistent`), and the script's combined exit was `1` — this time driven by
+    finalize, proving the two failure paths are independently reachable.
+  - `gc -retention=1ns -dry-run` then `gc -retention=1ns` against a freshly-`init`'d run:
+    printed `would remove <id>` then `removed <id>`; `gc -retention=0s` correctly refused with
+    exit `78` (retention must be positive).
+  - YAML validation: the GitHub Actions and Shipwright examples were each extracted to a temp
+    file and parsed with `python3 -c "import yaml; yaml.safe_load(open(...))"` — both parsed
+    without error.
+
+  Verification: `make fmt-check`: clean (no output). `go vet ./...`: clean. `go build ./...`:
+  clean. `go test ./...`: all packages `ok` (no `-race`, per standing test-execution rules).
