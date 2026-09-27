@@ -1,11 +1,32 @@
+# Dependabot targets develop, not this repo's default branch behaviour: every feature, fix and
+# dependency bump lands on develop first (CONTRIBUTING.md's Branching Model), and main only moves
+# through a develop -> main release/hotfix PR, so an update PR opened against main would sit
+# outside that flow and never get released the ordinary way.
+#
+# Both ecosystems group their own minor and patch updates into a single PR, leaving major bumps
+# ungrouped -- a major version can carry a breaking change worth reviewing (and bisecting, if it
+# regresses something) on its own, while a minor/patch bump is routine enough that one PR per
+# dependency per week is pure review overhead for no extra safety.
 version: 2
 updates:
   - package-ecosystem: "gomod"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+    groups:
+      gomod-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

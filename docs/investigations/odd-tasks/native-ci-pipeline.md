@@ -61,7 +61,7 @@ release to happen automatically when `develop` is merged into `main`.
 - [x] T1 — CI hygiene: drop Shipwright; native `lint` and `govulncheck` jobs; least-privilege
   permissions; `concurrency`; `goreleaser check` on PRs. Check: YAML parses, `actionlint` if
   available, CI green on the PR.
-- [ ] T2 — CodeQL workflow; dependabot `target-branch: develop` plus groups. Check: YAML parses, CodeQL
+- [x] T2 — CodeQL workflow; dependabot `target-branch: develop` plus groups. Check: YAML parses, CodeQL
   runs on the PR.
 - [ ] T3 — `tools/release`: next version from commits, and the CHANGELOG rewrite. Behaviour tests
   (strict TDD). Plus the `release-prep` workflow on `develop` → `main` PRs. Check:
@@ -99,3 +99,11 @@ Strict TDD is on (user global config), with runner `go test`.
   it was left alone in T1 — T4 rewrites it per the design doc. `goreleaser check` already ran in
   the existing `goreleaser` job; no change needed there beyond inheriting the new
   `permissions`/`concurrency` blocks.
+- T2 done. Added `.github/workflows/codeql.yml`: `github/codeql-action@v3`, language `go`,
+  `security-and-quality` queries, triggers on pull_request/push to develop+main, a weekly cron,
+  and workflow_dispatch; manual `go build ./...` (not autobuild) under `GOTOOLCHAIN: local` +
+  `.go-version`, so the traced build matches every other workflow's pinned toolchain; job
+  permissions `actions: read`, `contents: read`, `security-events: write` (its own block, since
+  the ci.yml/benchmarks.yml `contents: read` default doesn't cover SARIF upload). Added
+  `target-branch: develop` and a minor+patch update group to both `dependabot.yml` ecosystems
+  (`gomod`, `github-actions`); major bumps stay ungrouped.
