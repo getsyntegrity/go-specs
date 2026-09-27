@@ -79,6 +79,12 @@ See [docs/DSL.md](docs/DSL.md#specfit-skipit-and-pendingit).
 See [examples/basic](examples/basic), [examples/hooks](examples/hooks) and
 [examples/suite_hooks](examples/suite_hooks) for runnable examples.
 
+A reusable set of specs applied to several implementations of one interface — a "shared
+behavior" — needs no DSL primitive of its own: it is an ordinary `func(*specs.Spec, ...)` that
+registers on the `*Spec` it is handed, called from each `Describe` that needs it. See
+[docs/DSL.md](docs/DSL.md#shared-behaviors-reusing-specs-across-implementations) and
+[examples/shared_behaviors](examples/shared_behaviors).
+
 ## Benchmarks
 
 go-specs is built for low latency and zero allocations on its own hot path. The honest summary
