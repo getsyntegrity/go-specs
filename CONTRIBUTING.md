@@ -188,6 +188,12 @@ PRs must include:
 * benchmarks (if performance related)
 * documentation updates if APIs change
 
+A PR is validated by `ci.yml` and `codeql.yml` running as its own `pull_request` checks, aggregated
+into the single required status check `ci-ok` (plus CodeQL's own `analyze (go)`/`analyze
+(actions)`) — no workflow re-runs the same checks again after merge. See
+[`docs/CI.md`](docs/CI.md) for the full pipeline reference: the workflow inventory, required
+checks, ruleset settings, and the SHA-pin policy every third-party action follows.
+
 ---
 
 # Benchmark Validation
