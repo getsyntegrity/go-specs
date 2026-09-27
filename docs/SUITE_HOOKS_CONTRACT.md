@@ -307,6 +307,33 @@ engine implements it via `CompiledSuite.SetFailFast`
   from ever starting. A hook failure (`BeforeAll` or `AfterAll`) counts as a failure for `FailFast`,
   exactly like a spec failure.
 
+### Sharding — `CompiledSuite.RunShard`
+
+[#251](https://github.com/getsyntegrity/go-specs/issues/251) spec 2 added
+`CompiledSuite.RunShard(tb, shardIndex, shardCount)`, the canonical engine's counterpart to the
+package-level `RunShard` (`specs/scheduler.go`) that already shards a `Builder`-built `*Program`. Its
+assignment unit respects the group boundaries H1-H9 already establish, so sharding can never split
+what those rules require to stay whole:
+
+- a top-level `BeforeAll`/`AfterAll` group — including every group nested inside it — is one
+  indivisible unit: its hooks run exactly once for all of its specs (H1-H6), so splitting the group
+  across shards would run a hook more than once or not at all;
+- an `ItParallel` batch is one indivisible unit too: it is the one concurrent unit H9's "the batch
+  finishes before a stop" is defined over, and a batch never straddles a hook group's boundary
+  (`planGroups.parallel`), so this is always well-formed;
+- every other spec is sharded on its own — it has its own `BeforeEach`/`AfterEach` and shares no
+  state with any other spec.
+
+Units are numbered `u = 0..U-1` in declaration order and assigned to shard `u % shardCount`, the same
+round-robin rule `ShardSpecs`, `ShardBCProgram` and the package-level `RunShard` already use, so the
+same declared tree always yields the same assignment. `SetFailFast` (H9) applies within the running
+shard only. See `specs/compiled_suite_shard_test.go` and `specs/group_hooks_shard_test.go` for the
+full contract this pins.
+
+Known limit: `report/coordination`'s own "shard" is one `go test` package process's result file, an
+unrelated meaning from the spec partition above; merging several `RunShard` jobs' per-job results
+into one is not handled by `report/coordination` today.
+
 ### H10 — Cost: opt-in only
 
 A suite that registers no `BeforeAll`/`AfterAll` anywhere keeps its current allocation counts

@@ -240,11 +240,13 @@ below), so `testing` has no opportunity to catch a `Setenv` call here the way it
 process-global state must be touched, do it outside `ItParallel`, in a `BeforeAll`/`BeforeEach` that
 runs before the group, or in a sequential `It`.
 
-Every spec in the parallel group always runs to completion before execution moves on; `FailFast`
-only takes effect at the next group boundary — on `Builder`/`Runner` (`Runner.FailFast`) and, since
-[#251](https://github.com/getsyntegrity/go-specs/issues/251), on `*Spec`/`CompiledSuite`
-(`CompiledSuite.SetFailFast`) — it cannot cancel a sibling `ItParallel` spec mid-group, on either
-engine.
+A failing sequential spec stops the run before the *next spec* — never merely at the next group
+boundary — on both engines: `Builder`/`Runner` (`Runner.FailFast`) and, since
+[#251](https://github.com/getsyntegrity/go-specs/issues/251), `*Spec`/`CompiledSuite`
+(`CompiledSuite.SetFailFast`). An already-launched `ItParallel` batch is never cut short by that
+stop: `FailFast` cannot cancel a sibling `ItParallel` spec mid-group, so every spec in the batch
+always runs to completion first, and only once the whole batch has finished does the stop apply,
+before whatever comes after it — on either engine.
 
 ### `ctx.T.Parallel()` is not supported
 
