@@ -245,8 +245,8 @@ of a small Go program.
    missing `ExpectedProducers`), or a recorded `config-error.json`; `1` for any other reporting
    failure, including a missing or rejected producer; `0` otherwise — this is independent of
    whether the tests themselves passed, which is exactly why finalize is always run as its own
-   step (issue #146). The full CI wiring — a generic shell script, GitHub Actions, and Shipwright —
-   is in [Running it in CI with `go-specs-report`](#running-it-in-ci-with-go-specs-report) below.
+   step (issue #146). The full CI wiring — a generic shell script and GitHub Actions — is in
+   [Running it in CI with `go-specs-report`](#running-it-in-ci-with-go-specs-report) below.
 
 Deriving a conforming `GO_SPECS_RUN_ID` is CI-specific and easy to get wrong. On GitHub Actions
 `GITHUB_RUN_ID` is stable across re-runs and shared by every matrix leg, so the conforming shape is
@@ -589,51 +589,14 @@ jobs:
         run: exit 1
 ```
 
-**Shipwright:**
-
-Shipwright's build steps run sequentially inside one pod, and a failing step stops the build before
-any later step runs — there is no per-job `if: always()` equivalent between steps the way GitHub
-Actions has. Both `go test`'s status and `finalize`'s status must therefore be captured and
-combined *inside one step's own script*, exactly like the generic shell example above; a
-`BuildStrategy`/`ClusterBuildStrategy` step (or a `Build` with an inline script step) is the natural
-place to run it. `name`, `image`, and `workingDir`/parameter names below are illustrative — match
-them to your own strategy and build definitions:
-
-```yaml
-apiVersion: shipwright.io/v1beta1
-kind: ClusterBuildStrategy
-metadata:
-  name: go-specs-report-test        # illustrative strategy name
-spec:
-  steps:
-    - name: test-and-report          # illustrative step name
-      image: golang:1.25             # illustrative image
-      workingDir: $(params.shp-source-context)
-      command: ["/bin/sh", "-c"]
-      args:
-        - |
-          set -u
-          export GO_SPECS_RUN_ID="${BUILD_NAME:-build}-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-          export GO_SPECS_REPORT_DIR="$(mktemp -d)"
-          GSR="go run github.com/getsyntegrity/go-specs/cmd/go-specs-report@<version>"
-          # POSIX sh has no `<(...)`: write init's KEY=value lines to a file, then source it.
-          $GSR init -run-id="$GO_SPECS_RUN_ID" \
-            -report-dir="$GO_SPECS_REPORT_DIR" > "$GO_SPECS_REPORT_DIR/init.env" || exit $?
-          set -a; . "$GO_SPECS_REPORT_DIR/init.env"; set +a
-
-          go test -count=1 -coverprofile=cover.out ./...
-          test_status=$?
-
-          mkdir -p artifacts
-          $GSR finalize \
-            -producers=.go-specs/producers.txt -coverprofile=cover.out \
-            -json=artifacts/report.json -cleanup
-          finalize_status=$?
-
-          if [ "$test_status" -ne 0 ] || [ "$finalize_status" -ne 0 ]; then
-            exit 1
-          fi
-```
+**Other CI runners:** the two examples above cover a generic POSIX shell script and GitHub
+Actions. `pablogore/shipwright` (this repository's own `.shipwright/workflow.yaml` tool — not
+shipwright.io's Kubernetes `Build`/`ClusterBuildStrategy` CRDs) is not covered here: as of v0.12.0
+it has no arbitrary shell-command step and no always-run step, so `finalize` cannot be guaranteed
+to run after a failing `go test`, and its `go-test` provider hardcodes `go test`'s flags without
+`-count=1` (mandatory above), which silently reintroduces the cached-package failure mode. Any
+runner that can execute a shell script — generic CI, a self-hosted agent, or a future
+`pablogore/shipwright` release that grows one — can use the generic script above unchanged.
 
 #### `gc`: cleaning up abandoned runs
 
