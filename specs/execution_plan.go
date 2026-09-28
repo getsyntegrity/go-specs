@@ -723,13 +723,23 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
 
-// runSpecProgramIsolated creates the real subtest and runs program inside it. Split out from
-// runSpecProgram because the closure below captures named returns by reference: if it lived directly
-// in runSpecProgram, Go's escape analysis would heap-allocate that function's message/output for
-// every call — including the non-*testing.T fast paths above that never reach this line — since
-// escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
-// the capture inside its own function scopes that heap allocation to the isolation path only (see the
-// identical split for runner.go's runSpecRecovered/runSpecIsolated).
+// runSpecProgramIsolated creates the real subtest and runs program inside it.
+//
+// It deliberately does not go through spec_body_parallel.go's runSubtestGuardingParallel, unlike
+// runner.go's runSpecIsolated and group_hooks.go's two call sites. That helper is written to be
+// reusable, so it builds its bookkeeping struct and wrapping closure fresh on every call — exactly
+// once per spec, since a fresh closure is the only way to hand it a fresh body. On this path,
+// though, the same *Context is reused spec to spec (contextPool; see acquireContext), and program is
+// the only thing that actually changes between calls, so this function inlines the same guarding
+// logic against fields on ctx instead (isoStarted, isoDone, isoSub, isoProgram, isoMessage,
+// isoOutput — see their doc comment on Context) and builds the subtest closure itself, ctx.isoRun,
+// only once per Context rather than once per spec (#244). Before this cache, every spec here paid
+// five allocations testing.T.Run itself does not charge: the message/output pair escaping as
+// closure-captured named returns, that closure's own funcval, runSubtestGuardingParallel's
+// bookkeeping struct, and its wrapping closure. ctx.isoRun closes only over ctx, so once it exists it
+// is valid for every later spec that lands on this same pooled Context, whichever suite it belongs
+// to — runSpecProgramIsolated always repopulates isoProgram and resets isoStarted/isoDone
+// immediately before every t.Run call, so nothing from a previous spec leaks into the next one.
 //
 // ctx stays bound to the subtest's backend until t.Run has returned, and the backend goes back to its
 // pool only then, not in a defer inside the closure. testing runs the subtest's Cleanup functions
@@ -739,11 +749,30 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // is read back from ctx.backend, which ctx.Reset set to it, rather than from a variable the closure
 // captures, so this adds no allocation.
 func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed, skipped bool) {
-	var parked bool
-	ran, failed, skipped, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
-		ctx.Reset(asTestBackend(subT))
-		message, output = runProgram(program, ctx)
-	})
+	if ctx.isoRun == nil {
+		ctx.isoRun = func(subT *testing.T) {
+			ctx.isoSub = subT
+			ctx.isoStarted.Store(true)
+			defer ctx.isoDone.Store(true)
+			ctx.Reset(asTestBackend(subT))
+			ctx.isoMessage, ctx.isoOutput = runProgram(ctx.isoProgram, ctx)
+		}
+	}
+	ctx.isoProgram = program
+	// runProgram may end through runtime.Goexit before assigning the cached results.
+	// A filtered subtest never runs the closure at all. In either case, the next
+	// spec must not inherit a previous spec's panic text or stack trace.
+	ctx.isoMessage, ctx.isoOutput = "", ""
+	ctx.isoStarted.Store(false)
+	ctx.isoDone.Store(false)
+	t.Run(subtestName, ctx.isoRun)
+	ran = ctx.isoStarted.Load()
+	parked := ran && !ctx.isoDone.Load()
+	if ran && !parked {
+		failed = ctx.isoSub.Failed()
+		skipped = ctx.isoSub.Skipped()
+	}
+	message, output = ctx.isoMessage, ctx.isoOutput
 	if parked {
 		// The body called the unsupported ctx.T.Parallel(). ctx is still Reset to that subtest's
 		// backend and the parked body needs it that way, so stop the run rather than let the caller
@@ -751,8 +780,8 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
 	failed = failed || ctx.hasFailed()
-	// skipped is folded against this final failed, not the raw subtest failed runSubtestGuardingParallel
-	// returned, so it always agrees with the Failed value this function actually reports: a body that
+	// skipped is folded against this final failed, not the raw subtest failed the guard above
+	// computed, so it always agrees with the Failed value this function actually reports: a body that
 	// fails and then calls SkipNow must be reported Failed, not Skipped (#254), whichever of the
 	// subtest or the Context recorded that failure.
 	skipped = skipped && !failed

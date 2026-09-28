@@ -38,6 +38,37 @@ func printBuiltInAssertionMessageReport(rep *recordingReporter) {
 	}
 }
 
+// A recovered panic populates the cached isolation result. The next spec ends
+// through Fatalf/Goexit, before runProgram can assign a new result. Its event
+// must contain its own assertion message and no stack from the earlier panic.
+func TestSequentialIsolationDoesNotReusePriorFailure(t *testing.T) {
+	const helperEnv = "GO_SPECS_ISOLATION_STALE_RESULT_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		var rep recordingReporter
+		DescribeWithReporter(t, "suite", &rep, func(s *Spec) {
+			s.It("first", func(*Context) { panic("first panic") })
+			s.It("second", func(ctx *Context) { ctx.Expect(42).To(Equal(43)) })
+		})
+		for _, e := range rep.specFinished {
+			fmt.Printf("SPEC_FINISHED name=%s message=%q output=%q\n", e.Name, e.Message, e.Output)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSequentialIsolationDoesNotReusePriorFailure$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the deliberately failing specs to fail: %s", output)
+	}
+	if !strings.Contains(string(output), `SPEC_FINISHED name=first message="panic: first panic"`) {
+		t.Fatalf("first panic was not reported: %s", output)
+	}
+	want := fmt.Sprintf("SPEC_FINISHED name=second message=%q output=%q", wantEqualFailureMessage, "")
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("second spec inherited a prior result; want %s, got:\n%s", want, output)
+	}
+}
+
 // TestBuiltInAssertionMessageReachesSpecResultEventRealProcess proves #272 for every execution model
 // that can run a spec body against a real *testing.T subtest: Describe/ExecutionPlan flat
 // (runSpecProgramIsolated), Describe/ExecutionPlan with a BeforeAll (routes through

@@ -101,6 +101,13 @@ import (
 // sub is written before started is stored and read only after started loads true, so the atomic
 // orders it too. The three live in one struct because the closure's capture moves them to the heap:
 // as separate variables that is one allocation each, per spec, on the real *testing.T path.
+//
+// This general-purpose version still allocates its bookkeeping struct and wrapping closure fresh on
+// every call, because it exists to wrap an arbitrary body — runner.go's runSpecIsolated and both
+// group_hooks.go call sites use it exactly that way. execution_plan.go's runSpecProgramIsolated does
+// not: it reuses the same *Context spec to spec, so it inlines this same guarding logic against
+// fields on ctx instead and builds its subtest closure only once per Context rather than once per
+// spec (#244) — see that function's doc comment.
 func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, skipped, parked bool) {
 	var st struct {
 		started, done atomic.Bool
