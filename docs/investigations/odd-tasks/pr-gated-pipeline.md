@@ -45,9 +45,10 @@ spend runner minutes and add noise to the commit's check list.
    pass before a PR merges, so it has no reason to re-run on the develop → main / hotfix/* → main
    merge that follows — that merge revalidates nothing new.
 4. **`benchmark-charts.yml` is unchanged** (`push: [develop]` only, confirmed — see Decision 3) and
-   **`release-prep.yml`/`release.yml` are unchanged**, confirmed to have no trigger overlap with the
-   above beyond the intentional case of a release PR getting both full CI and release prep (Decision
-   4).
+   **`release-prep.yml`/`release.yml` keep their triggers**, confirmed to have no trigger overlap
+   with the above beyond the intentional case of a release PR getting both full CI and release prep
+   (Decision 4). `release-prep.yml` gains one guard before its push: the prepare commit must change
+   only `CHANGELOG.md` (Decision 5).
 5. **`docs/CI.md`** is a new, repository-agnostic guide to the whole pipeline: workflow inventory,
    branch model, required checks, ruleset settings, the SHA-pin policy, and a porting checklist —
    linked from `CONTRIBUTING.md`.
@@ -56,10 +57,11 @@ spend runner minutes and add noise to the commit's check list.
 
 1. **No `push` trigger on `ci.yml`, at all (maintainer decision 2026-09-27, "PR is the only
    gate").** Every commit that reaches `develop` or `main` arrives through a pull request merge or
-   (once enabled) a merge-queue entry; both already run `ci.yml` via `pull_request` or
-   `merge_group`. A `push` trigger on either branch can therefore only ever re-run a tree
-   `pull_request` (or `merge_group`) already ran, whether that tree is a freshly merged commit or a
-   release-prep/hotfix-sync bot commit landing directly on the branch. Rejected: keeping `push` on
+   (once enabled) a merge-queue entry, both of which already run `ci.yml` via `pull_request` or
+   `merge_group` — with one exception, release-prep's prepare commit, covered by Decision 5. A
+   `push` trigger on either branch would therefore only re-run a tree `pull_request` (or
+   `merge_group`) already ran, or, for the prepare commit, one the release PR's
+   `pull_request: synchronize` run checks moments later anyway. Rejected: keeping `push` on
    `main` only (dropping it on `develop`) — main's `push` is exactly as redundant as develop's,
    since `release.yml`'s own `pull_request: closed` trigger is what actually gates a merge to
    `main`, and nothing runs `ci.yml`/`codeql.yml` as a merge *requirement* there anyway.
@@ -96,6 +98,27 @@ spend runner minutes and add noise to the commit's check list.
    did. The event → workflow matrix below calls this out explicitly rather than folding it into the
    "zero duplicates" claim, which is about `ci.yml` (the actual gate), not every workflow in the
    repository.
+5. **release-prep's prepare commit is the one commit that reaches `develop` before `ci.yml` runs on
+   it; it is kept changelog-only rather than gated (review of PR #291 at `c1b6287`, 2026-09-27).**
+   On a develop → main release PR the head branch *is* `develop`, so `release-prep.yml` pushes
+   `chore(release): prepare vX.Y.Z` straight onto `develop` through the release App's ruleset
+   bypass. With no `push` trigger on `ci.yml`, the first CI run to see that commit is the release
+   PR's `pull_request: synchronize` run, after the commit is already on `develop`. This is accepted
+   because the commit cannot change anything CI checks: its parent is a `develop` tip that a pull
+   request already validated, it changes only `CHANGELOG.md`, and no build, test, lint, or
+   GoReleaser step reads that file (`.goreleaser.yaml` builds its changelog from git history, and
+   `tools/release` reads the file only in `release-prep.yml`/`release.yml` themselves). The
+   release PR still needs `ci-ok` on that commit before it can merge, so nothing reaches `main`
+   unvalidated. `release-prep.yml` now enforces the changelog-only condition instead of assuming
+   it: after committing, it diffs the prepare commit against its parent and refuses to push, with
+   an `::error::`, if any path other than `CHANGELOG.md` changed. Rejected: (a) putting
+   `push: [develop]` back on `ci.yml`, filtered to the App's commits — every PR merge would again
+   start a `ci.yml` run (all jobs skipped at best), undoing Decision 1 for one commit per release;
+   (b) running the full suite inside `release-prep.yml` before the push — duplicates `ci.yml` in a
+   job that holds the App's installation token, only for the `synchronize` run to repeat it
+   seconds later; (c) pushing the prepare commit somewhere other than `develop` — reverses Decision
+   1 of `native-ci-pipeline.md` (version and changelog visible in the release PR itself) and is out
+   of scope for this change.
 
 ## Event → workflow matrix
 
@@ -108,7 +131,7 @@ that always evaluates false for that event).
 | Merge to `develop` (PR merge → `push`) | — | `push` (baseline) | `push` (trend) | `push` (rolling chart PR) | — | — |
 | [if a merge queue is later enabled] entry into `develop`'s merge queue | `merge_group` | `merge_group` | — | — | — | — |
 | `develop` → `main` release PR opened or synced | `pull_request` (base `main`) | `pull_request` (base `main`) | — | — | `pull_request` | — |
-| release-prep's own prepare-commit push (lands on `develop`, the PR's head) | `pull_request: synchronize` re-run only (no `push` run) | **both**: `push` (baseline) *and* `pull_request: synchronize` (diff) — Decision 4, not a bug | — | `push` (rolling chart PR) | `pull_request: synchronize` re-run | — |
+| release-prep's own prepare-commit push (lands on `develop`, the PR's head) | `pull_request: synchronize` re-run only (no `push` run), after the commit is already on `develop` — Decision 5 | **both**: `push` (baseline) *and* `pull_request: synchronize` (diff) — Decision 4, not a bug | `push` (trend) | `push` (rolling chart PR) | `pull_request: synchronize` re-run | — |
 | Merge to `main` (release or hotfix PR merge → `pull_request: closed`, plus a `push`) | — | — | — | — | — | `pull_request: closed` (`release` job, `+hotfix-sync` if hotfix) |
 | Hotfix PR opened or synced (base `main`) | `pull_request` | `pull_request` | — | — | `pull_request` | — |
 | Hotfix's sync PR opened (`sync/hotfix-*` → `develop`, from `hotfix-sync`) | `pull_request` | `pull_request` | — | — | — | — |
@@ -191,3 +214,11 @@ not the same check re-run for nothing.
   `python3` YAML parse of every workflow file — all OK. `make fmt-check` — exit 0.
   `make lint` — 0 issues. `go build ./...` — exit 0. `go test ./...` — all packages `ok` (no
   failures, no skips beyond the pre-existing packages with no test files).
+- Review of PR #291 at `c1b6287` (changes requested). P1: release-prep's prepare commit reaches
+  `develop` through the App's bypass before any `ci.yml` run, contradicting `docs/CI.md`'s claim
+  that every commit on that branch was validated first. Resolved as a documented, enforced
+  exception (Decision 5): `release-prep.yml` refuses to push a prepare commit that changes anything
+  but `CHANGELOG.md`; `ci.yml`'s header, `docs/CI.md` (Goals and inventory), `CONTRIBUTING.md`, and
+  Decision 1 now state the exception instead of the absolute claim. Minor: the matrix row for
+  release-prep's push showed `benchmarks.yml` as "—", but `ratio-guard` keeps `push: [develop]`
+  and does run on that push; the cell now reads `push` (trend).

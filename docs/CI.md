@@ -9,8 +9,14 @@ the end). It assumes no prior context beyond CONTRIBUTING.md's Branching Model.
 - **The pull request is the only CI/CodeQL gate.** A commit reaching `develop` or `main` has
   already been validated once, by the pull request (or merge-queue entry) that put it there; no
   workflow re-runs the same check against the same tree afterward just because a `push` event also
-  fired. See `docs/investigations/odd-tasks/pr-gated-pipeline.md` for the evidence this fixed and
-  the event-to-workflow matrix proving it.
+  fired. **One exception:** `release-prep.yml`'s `chore(release): prepare vX.Y.Z` commit is pushed
+  straight onto `develop` by the release GitHub App (a ruleset bypass actor), so it lands there
+  before `ci.yml` has run on it; the release PR's `pull_request: synchronize` run validates it
+  afterward, and `ci-ok` must pass on it before it can reach `main`. The exception is kept narrow on
+  purpose: `release-prep.yml` refuses to push unless that commit changes `CHANGELOG.md` and nothing
+  else, on top of a `develop` tip a pull request already validated, and no build, test, lint, or
+  GoReleaser step reads `CHANGELOG.md`. See `docs/investigations/odd-tasks/pr-gated-pipeline.md`
+  (Decision 5) for why, and for the event-to-workflow matrix.
 - **One required status check name.** A branch ruleset names `ci-ok`, never an individual job, so
   adding, renaming, or splitting a job inside `ci.yml` never also means editing the ruleset.
 - **Every third-party action is pinned to a commit SHA**, not a mutable tag, so a re-pointed tag
@@ -24,10 +30,10 @@ the end). It assumes no prior context beyond CONTRIBUTING.md's Branching Model.
 | File | Trigger(s) | Job(s) | Purpose |
 |---|---|---|---|
 | `ci.yml` | `pull_request` (`develop`, `main`), `merge_group`, `workflow_dispatch` | `verify`, `unit`, `race`, `bench-smoke`, `report-cli`, `lint`, `govulncheck`, `goreleaser`, `dependency-review` (PR-only), `ci-ok` | The gate. Static checks, the full test suite, the race detector, a smoke-run of every benchmark, a real run of the documented `go-specs-report` CLI flow, lint, `govulncheck`, a GoReleaser dry run, and a dependency-advisory diff — each its own job, each its own line in the PR's status list, aggregated by `ci-ok`. |
-| `codeql.yml` | `pull_request` (`develop`, `main`), `merge_group`, `push` (`develop` only), weekly `schedule`, `workflow_dispatch` | `analyze` (matrix: `go`, `actions`) | Static security/quality analysis, two legs: `go` scans this repository's Go source, `actions` scans the workflow YAML itself for the script-injection class of problem. `push: [develop]` maintains the default-branch alert baseline GitHub's PR alert-diffing needs; it is the one deliberate exception to "PR is the only gate" (see `pr-gated-pipeline.md` Decision 4). |
+| `codeql.yml` | `pull_request` (`develop`, `main`), `merge_group`, `push` (`develop` only), weekly `schedule`, `workflow_dispatch` | `analyze` (matrix: `go`, `actions`) | Static security/quality analysis, two legs: `go` scans this repository's Go source, `actions` scans the workflow YAML itself for the script-injection class of problem. `push: [develop]` maintains the default-branch alert baseline GitHub's PR alert-diffing needs; it is a deliberate exception to "PR is the only gate" (see `pr-gated-pipeline.md` Decision 4). |
 | `benchmarks.yml` | `push` (`develop` only), `workflow_dispatch` | `ratio-guard` | A post-merge trend signal (Runner/Describe cost vs. a hand-written no-framework loop, same process, same run), not a merge gate — nothing requires it to pass before a PR merges. |
 | `benchmark-charts.yml` | `push` (`develop` only, `paths-ignore` on its own chart output), `workflow_dispatch` | `bench` → `chart` → `publish` | Regenerates `benchmarks/results/*.png` and rolls the result into a single reused pull request (`chore/benchmark-charts` → `develop`) instead of committing directly — `main`/`develop` only change through pull requests. Three jobs so the release App's installation token exists only in `publish`, the one job that pushes anything. |
-| `release-prep.yml` | `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`; `main` only) | `prepare` | While a `develop` → `main` or `hotfix/*` → `main` PR is open, computes the next version from Conventional Commits and rewrites `CHANGELOG.md`'s `[Unreleased]` section into a dated release heading, pushed back onto the PR's own head branch — so the version and changelog are visible in the PR before it merges. |
+| `release-prep.yml` | `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`; `main` only) | `prepare` | While a `develop` → `main` or `hotfix/*` → `main` PR is open, computes the next version from Conventional Commits and rewrites `CHANGELOG.md`'s `[Unreleased]` section into a dated release heading, pushed back onto the PR's own head branch — so the version and changelog are visible in the PR before it merges. For a release PR that head is `develop` itself, which makes this push the one exception to the PR-only gate; the push is refused unless the commit changes only `CHANGELOG.md` (see Goals). |
 | `release.yml` | `pull_request` (`closed`; `main` only) | `release`, `hotfix-sync` (`needs: release`, hotfix-only) | On a genuine merge, re-derives the version, cross-checks it against what `release-prep.yml` wrote, tags the merge commit, runs GoReleaser, and verifies the published tag is externally installable. For a hotfix, `hotfix-sync` additionally pushes a disposable `sync/hotfix-vX.Y.Z` branch and opens (or reuses) a PR from it into `develop`. |
 
 ## Branch model

@@ -41,10 +41,14 @@
 # Decision 2 has the full reasoning.
 #
 # No `push` trigger (docs/investigations/odd-tasks/pr-gated-pipeline.md,
-# Decision 1): the only way code reaches `develop` or `main` is a pull
-# request or a merge-queue entry, both already covered below, so a `push`
-# trigger here would only ever re-run this exact same commit a second time,
-# after `pull_request` already ran it once.
+# Decision 1): code reaches `develop` or `main` through a pull request or a
+# merge-queue entry, both already covered below, so a `push` trigger here
+# would only re-run a commit `pull_request` already ran. The one exception is
+# release-prep.yml's `chore(release): prepare` commit, which the release App
+# pushes straight onto `develop`: release-prep.yml refuses that push unless
+# the commit changes only CHANGELOG.md, and the release PR's
+# `pull_request: synchronize` run validates it before it can reach `main`
+# (Decision 5).
 name: CI
 
 on:

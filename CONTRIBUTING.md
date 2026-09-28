@@ -190,7 +190,9 @@ PRs must include:
 
 A PR is validated by `ci.yml` and `codeql.yml` running as its own `pull_request` checks, aggregated
 into the single required status check `ci-ok` (plus CodeQL's own `analyze (go)`/`analyze
-(actions)`) — no workflow re-runs the same checks again after merge. See
+(actions)`) — no workflow re-runs the same checks again after merge. The one commit that reaches
+`develop` before `ci.yml` has run on it is release prep's `chore(release): prepare` commit, which
+may change only `CHANGELOG.md` and is validated by the release PR before it can reach `main`. See
 [`docs/CI.md`](docs/CI.md) for the full pipeline reference: the workflow inventory, required
 checks, ruleset settings, and the SHA-pin policy every third-party action follows.
 
