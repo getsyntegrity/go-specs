@@ -76,10 +76,10 @@ Valid formats are `xml`, `html`, `txt`, and `json`.
 
 | Format | Renderer | Notes |
 |---|---|---|
-| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. |
+| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. Unstarted (#274) has no JUnit equivalent either, so it renders as `<skipped message="not run: fail-fast"/>` and also folds into `skipped`; unlike every other status it never counts toward `total`, so the `tests` attribute is `total + unstarted` rather than `total` alone — a JUnit consumer still sees the full declared suite size, not the smaller "reached" count. |
 | HTML | `report.RenderHTML` | Single self-contained file: inline CSS, no external stylesheet/script/font/image reference — safe to open offline or archive as a CI artifact. |
 | Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case with its message and output, then a coverage table. |
-| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "2"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208), because a v1 consumer switching exhaustively over `status` would misread a pending case. A new field alone never bumps it. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
+| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "3"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208); `"3"` adds `"status": "unstarted"`, the `unstarted` totals field, and `Case.declared` (#274) — a v1/v2 consumer switching exhaustively over `status` would misread an unstarted case. A new field alone never bumps it. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
 
 Every renderer takes the same `report.NormalizedReport` and an `io.Writer`; `RenderXML` and
 `RenderHTML` escape all case names, messages, and output through `encoding/xml` and
@@ -99,6 +99,24 @@ Every case is normalized to exactly one of:
   running; a spec that fails and then calls `SkipNow` is Failed instead, matching `go test` itself
 - **Filtered** — excluded by external test selection (e.g. `go test -run`) before its body ran
 - **Pending** — a compile-time `Pending`/`PendingIt` spec ([#208](https://github.com/getsyntegrity/go-specs/issues/208)); its body never ran either, but the spec is declared and not yet implemented, distinct from a spec that is intentionally excluded (Skipped)
+- **Unstarted** — a spec `CompiledSuite.SetFailFast(true)` or `Runner.FailFast` prevented from ever being reached, after an earlier spec in the same run already failed ([#274](https://github.com/getsyntegrity/go-specs/issues/274)). Its body never ran either, but unlike every status above, an Unstarted spec never counts toward `Totals.Total` — `Total` keeps its pre-existing meaning of "specs that entered execution, plus declared Skip/Pending that were actually processed", and a fail-fast-prevented spec never did either. When the unreached spec was itself a compile-time `SkipIt`/`Skip` or `PendingIt`/`Pending`, its original declaration survives as `Case.Declared` (`"skip"` or `"pending"`), so a consumer can still tell what it *would* have been reported as.
+
+### `Unstarted` semantics and assumptions (issue #274)
+
+Example: a suite declares 3 specs and enables fail-fast; the first spec fails. The report says
+`Total: 1, Failed: 1, Unstarted: 2` — not `Total: 1` alone, and not `Total: 3`. `SkipIt`/`PendingIt`
+specs inside a group the fail-fast stop never reached are Unstarted too, keeping their original
+declaration in `Case.Declared`.
+
+Two points below are flagged assumptions (not a maintainer decision), made explicit here and in the
+PR that introduced them:
+
+- A spec after the stop point that `go test -run` would itself have filtered out is still reported
+  Unstarted, not Filtered — go-specs cannot evaluate `-run` without reimplementing `testing`'s own
+  matcher, so it cannot tell "fail-fast stopped me" from "`-run` would also have excluded me".
+- `RunShard` reports only the unstarted specs of its own shard's units: fail-fast is shard-local, so
+  a shard that never itself failed reports no Unstarted specs, even if a sibling shard's fail-fast
+  stopped early.
 
 ## Multi-package reporting: `go test ./...` across many packages
 

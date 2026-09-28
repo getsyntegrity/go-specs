@@ -70,22 +70,28 @@ type junitSkipped struct {
 // Failed -> <failure>, Error -> <error>, Skipped/Filtered -> <skipped>. Pending has no JUnit
 // equivalent, so it renders as <skipped message="pending"/> and folds into the same skipped
 // attribute, exactly as Filtered does — see renderJUnitCase and issue #208.
+//
+// Unstarted (issue #274, a spec a fail-fast stop prevented from ever running) has no JUnit
+// equivalent either, so it renders as <skipped message="not run: fail-fast"/> and also folds into
+// the skipped attribute. Unlike Pending/Filtered/Skipped it never counts toward Total, so the
+// tests attribute is deliberately Total+Unstarted rather than Total alone — a JUnit consumer must
+// still see the full declared suite size, not the smaller "reached" count.
 func RenderXML(w io.Writer, r NormalizedReport) error {
 	doc := junitTestSuites{
-		Tests:    r.Execution.Total,
+		Tests:    r.Execution.Total + r.Execution.Unstarted,
 		Failures: r.Execution.Failed,
 		Errors:   r.Execution.Error,
-		Skipped:  r.Execution.Skipped + r.Execution.Filtered + r.Execution.Pending,
+		Skipped:  r.Execution.Skipped + r.Execution.Filtered + r.Execution.Pending + r.Execution.Unstarted,
 		Time:     formatSeconds(r.Duration),
 	}
 	props := coverageProperties(r.Coverage)
 	for _, s := range r.Suites {
 		js := junitTestSuite{
 			Name:       s.Name,
-			Tests:      s.Totals.Total,
+			Tests:      s.Totals.Total + s.Totals.Unstarted,
 			Failures:   s.Totals.Failed,
 			Errors:     s.Totals.Error,
-			Skipped:    s.Totals.Skipped + s.Totals.Filtered + s.Totals.Pending,
+			Skipped:    s.Totals.Skipped + s.Totals.Filtered + s.Totals.Pending + s.Totals.Unstarted,
 			Time:       formatSeconds(s.Duration),
 			Properties: props,
 		}
@@ -120,6 +126,8 @@ func renderJUnitCase(suiteName string, c Case) junitTestCase {
 		tc.Skipped = &junitSkipped{Message: "filtered"}
 	case StatusPending:
 		tc.Skipped = &junitSkipped{Message: "pending"}
+	case StatusUnstarted:
+		tc.Skipped = &junitSkipped{Message: "not run: fail-fast"}
 	}
 	return tc
 }

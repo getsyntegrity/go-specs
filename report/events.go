@@ -10,14 +10,15 @@ type SuiteStartEvent struct {
 
 // SuiteEndEvent is emitted when a suite finishes executing.
 type SuiteEndEvent struct {
-	Name          string
-	Time          time.Time
-	Duration      time.Duration // elapsed time between this suite's SuiteStartEvent and this event
-	TotalSpecs    int           // passed + failed + skipped + filtered + pending
-	FailedSpecs   int
-	SkippedSpecs  int
-	FilteredSpecs int // specs excluded by external test selection (e.g. `go test -run`) before their body ran
-	PendingSpecs  int // compile-time PendingIt/Pending specs: declared but not implemented, body never ran
+	Name           string
+	Time           time.Time
+	Duration       time.Duration // elapsed time between this suite's SuiteStartEvent and this event
+	TotalSpecs     int           // passed + failed + skipped + filtered + pending
+	FailedSpecs    int
+	SkippedSpecs   int
+	FilteredSpecs  int // specs excluded by external test selection (e.g. `go test -run`) before their body ran
+	PendingSpecs   int // compile-time PendingIt/Pending specs: declared but not implemented, body never ran
+	UnstartedSpecs int // specs a fail-fast stop prevented from ever running (issue #274); never counted in TotalSpecs
 }
 
 // SpecStartEvent captures the start of an individual spec (It/Then).
@@ -63,6 +64,34 @@ func (k HookKind) String() string {
 	}
 }
 
+// DeclaredKind marks how an Unstarted spec (issue #274) was originally declared in source before a
+// fail-fast stop prevented it from ever running: DeclaredSkip for a compile-time SkipIt/Skip spec,
+// DeclaredPending for a compile-time PendingIt/Pending spec, DeclaredNone for an ordinary spec (or
+// whenever the field does not apply, i.e. every non-Unstarted SpecResultEvent). It is a compact
+// uint8 enum for the same reason HookKind is (see its doc above): it occupies remaining
+// SpecResultEvent padding instead of growing the struct, so adding it costs nothing per spec.
+type DeclaredKind uint8
+
+const (
+	// DeclaredNone is the zero value: no compile-time SkipIt/PendingIt declaration applies.
+	DeclaredNone DeclaredKind = iota
+	DeclaredSkip
+	DeclaredPending
+)
+
+// String returns "skip", "pending", or "" for DeclaredNone — the same text report.Case.Declared
+// carries as a plain string.
+func (k DeclaredKind) String() string {
+	switch k {
+	case DeclaredSkip:
+		return "skip"
+	case DeclaredPending:
+		return "pending"
+	default:
+		return ""
+	}
+}
+
 // SpecResultEvent captures the result of an individual spec.
 //
 // SpecStartEvent is always the exact event this spec's SpecStarted call sent (same Time, not
@@ -92,6 +121,12 @@ type SpecResultEvent struct {
 	// not executed", Pending is "not implemented yet". A spec is never more than one of
 	// Skipped/Filtered/Pending.
 	Pending bool
+	// Unstarted is true for a spec that CompiledSuite.SetFailFast(true) or Runner.FailFast prevented
+	// from ever being reached, after an earlier spec already failed (issue #274). Failed is always
+	// false and Duration is always 0, exactly as for Filtered/compile-time-Skipped/Pending, but the
+	// cause differs again: none of those describe the suite simply never getting there. A spec is
+	// never more than one of Skipped/Filtered/Pending/Unstarted.
+	Unstarted bool
 	// Hook marks this result as a synthetic group hook case (issue #207, docs/SUITE_HOOKS_CONTRACT.md
 	// H8): HookBeforeAll or HookAfterAll, HookNone for a real spec. It lives only here, on the
 	// result event — the matching SpecStartEvent this spec's SpecStarted call carried is never
@@ -103,7 +138,14 @@ type SpecResultEvent struct {
 	// deliberately: it occupies padding those bools already leave before Duration, so
 	// SpecResultEvent's size is unchanged from before this field existed (H10) — see
 	// report/hook_case_test.go's TestSpecResultEventSizeUnchanged.
-	Hook     HookKind
+	Hook HookKind
+	// Declared preserves an Unstarted spec's original compile-time declaration (issue #274):
+	// DeclaredSkip or DeclaredPending when the unreached spec was itself a SkipIt/PendingIt,
+	// DeclaredNone otherwise (including for every non-Unstarted event). Placed next to Hook for the
+	// same reason: it occupies the same existing padding, so this field costs nothing per spec
+	// either — see report/hook_case_test.go's
+	// TestSpecResultEventCarriesUnstartedAndDeclaredWithNoSizeGrowth.
+	Declared DeclaredKind
 	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when
 	// Filtered or Pending, and for a compile-time Skipped spec, since none of those ever ran a body.
 	// A runtime-Skipped spec (ctx.T.Skip/Skipf/SkipNow, issue #254) is the one Skipped case where

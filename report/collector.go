@@ -58,19 +58,22 @@ func (c *Collector) SpecFinished(e SpecResultEvent) {
 		Message:  e.Message,
 		Output:   e.Output,
 		Hook:     e.Hook.String(),
+		Declared: e.Declared.String(),
 	})
 	c.report.Suites[c.openAt].Totals.add(status)
 	c.report.Execution.add(status)
 }
 
-// classifyStatus derives a Status from a SpecResultEvent. Filtered, Skipped, Pending and Failed
-// are mutually exclusive on the source event (see events.go). Within Failed, an event with
+// classifyStatus derives a Status from a SpecResultEvent. Unstarted, Filtered, Skipped, Pending and
+// Failed are mutually exclusive on the source event (see events.go). Within Failed, an event with
 // non-empty Output carries a recovered panic's stack trace — the only case that produces one
 // today, per events.go's Output doc — so it is classified as Error rather than Failed; an ordinary
 // assertion failure has no Output and is classified as Failed. This heuristic needs revisiting if
 // a future event producer starts attaching Output to non-panic failures too.
 func classifyStatus(e SpecResultEvent) Status {
 	switch {
+	case e.Unstarted:
+		return StatusUnstarted
 	case e.Filtered:
 		return StatusFiltered
 	case e.Skipped:

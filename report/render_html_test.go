@@ -73,6 +73,31 @@ func TestRenderHTMLShowsPendingStatus(t *testing.T) {
 	}
 }
 
+// TestRenderHTMLShowsUnstartedStatus proves a fail-fast-prevented spec (issue #274) gets its own
+// status-unstarted CSS class and its count surfaces in the summary totals.
+func TestRenderHTMLShowsUnstartedStatus(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 0, Unstarted: 1},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 0, Unstarted: 1},
+			Cases:  []Case{{Name: "never reached", Status: StatusUnstarted}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "status-unstarted") {
+		t.Fatalf("expected a status-unstarted CSS class, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Unstarted: <strong>1</strong>") {
+		t.Fatalf("expected the summary to show Unstarted: 1, got:\n%s", out)
+	}
+}
+
 func TestRenderHTMLShowsSummaryAndCoverage(t *testing.T) {
 	var buf bytes.Buffer
 	if err := RenderHTML(&buf, sampleReport()); err != nil {

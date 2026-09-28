@@ -6,6 +6,27 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Added
+
+- **Breaking (report schema `"2"` → `"3"`).** A spec `CompiledSuite.SetFailFast(true)` or
+  `Runner.FailFast` prevents from ever running — because an earlier spec in the same run already
+  failed — is now reported as a new status, `report.StatusUnstarted` (`"unstarted"`), instead of
+  simply never appearing in the report. `report.Totals` gains an `Unstarted` field and
+  `report.Case` gains a `Declared` field (`"skip"`/`"pending"`/empty) that preserves a
+  `SkipIt`/`PendingIt` spec's original declaration when the group containing it was never reached.
+  `Totals.Total` keeps its pre-existing meaning — specs that entered execution, plus declared
+  skip/pending that were actually processed — and an Unstarted spec never counts toward it, so a
+  3-spec suite whose first spec fails now reports `Total: 1, Failed: 1, Unstarted: 2` rather than
+  `Total: 1` alone. JUnit XML (`report.RenderXML`) renders an Unstarted case as
+  `<skipped message="not run: fail-fast"/>`, folded into the `skipped` attribute like Pending and
+  Filtered already are; its `tests` attribute becomes `total + unstarted` so a JUnit consumer still
+  sees the full declared suite size. JSON, HTML and plain-text renderers gain matching
+  `unstarted`/`Unstarted` fields. Applies to both execution engines (`CompiledSuite` and
+  Builder/`Runner`), including hook groups, `ItParallel` batches and `RunShard` (shard-local: a
+  shard reports only its own unstarted specs). See `docs/REPORTING.md`'s "Unstarted semantics and
+  assumptions" for two flagged assumptions this decision does not itself settle.
+  ([#274](https://github.com/getsyntegrity/go-specs/issues/274))
+
 ### Fixed
 
 - `Contain`'s `FailureMessage` reported a genuinely missing element, an actual type it has no

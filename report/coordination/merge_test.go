@@ -57,6 +57,24 @@ func TestMergeReportsSumsExecutionTotalsAndDuration(t *testing.T) {
 	}
 }
 
+// TestMergeReportsSumsUnstartedToo proves sumTotals sums the new Unstarted field (issue #274)
+// exactly like every other Totals field, including across a shard that reported none.
+func TestMergeReportsSumsUnstartedToo(t *testing.T) {
+	envs := []ShardEnvelope{
+		envelopeFor("example.com/m/alpha",
+			report.Suite{Name: "Alpha", Cases: []report.Case{{Name: "one", Status: report.StatusPassed}}},
+			report.Totals{Total: 1, Passed: 1}, 10*time.Millisecond),
+		envelopeFor("example.com/m/beta",
+			report.Suite{Name: "Beta", Cases: []report.Case{{Name: "two", Status: report.StatusUnstarted}}},
+			report.Totals{Total: 0, Unstarted: 1}, 5*time.Millisecond),
+	}
+	merged := mergeReports(envs)
+	want := report.Totals{Total: 1, Passed: 1, Unstarted: 1}
+	if merged.Execution != want {
+		t.Fatalf("Execution = %+v, want %+v", merged.Execution, want)
+	}
+}
+
 func TestMergeReportsOrdersSuitesByPackagePathRegardlessOfInputOrder(t *testing.T) {
 	envs := threeEnvelopes()
 	inOrder := mergeReports(envs)
