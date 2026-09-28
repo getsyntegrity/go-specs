@@ -72,6 +72,20 @@ func (o *reporterObserver) specStarted(name string, path []string) report.SpecSt
 func (o *reporterObserver) specFinished(start report.SpecStartEvent, result specResult) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.finishLocked(start, time.Since(start.Time), result)
+}
+
+// specReported emits SpecStarted then SpecFinished for a spec that already ran, under one lock, so
+// a batch reported in declaration order is never interleaved with another reporter call.
+func (o *reporterObserver) specReported(start report.SpecStartEvent, duration time.Duration, result specResult) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.rep.SpecStarted(start)
+	o.finishLocked(start, duration, result)
+}
+
+// finishLocked tallies result and emits its SpecFinished; o.mu must be held.
+func (o *reporterObserver) finishLocked(start report.SpecStartEvent, duration time.Duration, result specResult) {
 	o.total++
 	if result.Failed {
 		o.failed++
@@ -79,7 +93,6 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 	if result.Skipped {
 		o.skipped++
 	}
-	duration := time.Since(start.Time)
 	if result.Filtered {
 		o.filtered++
 		duration = 0

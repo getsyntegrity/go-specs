@@ -8,6 +8,7 @@ package specs
 import (
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/getsyntegrity/go-specs/report"
 )
@@ -177,6 +178,10 @@ type specExecutionObserver interface {
 	// nil for a group built without breadcrumbs — see group.specPath.
 	specStarted(name string, path []string) report.SpecStartEvent
 	specFinished(start report.SpecStartEvent, result specResult)
+	// specReported reports one already-finished spec: SpecStarted immediately followed by
+	// SpecFinished, with the spec's own recorded duration instead of one measured at call time.
+	// parallelStep uses it to emit a batch in declaration order once every body has completed.
+	specReported(start report.SpecStartEvent, duration time.Duration, result specResult)
 	// specSkipped reports one compile-time-skipped spec (SkipIt/Skip): a single SpecStarted +
 	// SpecFinished{Skipped: true} pair, with no body ever run. Only Runner.Run's sequential group
 	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
@@ -233,6 +238,13 @@ func runAll(steps []step) step {
 	}
 }
 
+// parallelTiming is one parallelStep goroutine's own start time and duration, buffered until the
+// whole batch has finished so the calling goroutine can report it in declaration order.
+type parallelTiming struct {
+	start    time.Time
+	duration time.Duration
+}
+
 // parallelStep returns a single step that runs all steps in parallel (each in its own goroutine).
 // Used by the builder to compile ItParallel groups. Allocations (WaitGroup, goroutines) happen
 // inside the step, not in the runner loop.
@@ -262,14 +274,15 @@ func runAll(steps []step) step {
 // an ItParallel body; use ctx.Expect(...) instead of ctx.T directly.
 //
 // names holds one entry per steps entry (its ItParallel name); when the caller's Context has an
-// execObserver (i.e. Runner.Run has a Reporter), each goroutine reports its own spec directly —
-// SpecStarted right before running it, SpecFinished once results[i] is known (after classifying
-// nil/parallelAbort{}/a real panic) — instead of the group being reported as a single opaque unit.
+// execObserver (i.e. Runner.Run has a Reporter), each spec is reported individually instead of the
+// group being one opaque unit. Each goroutine only captures its own outcome (start time, duration,
+// result — classified after nil/parallelAbort{}/a real panic) and never touches the reporter; once
+// wg.Wait returns, the calling goroutine emits SpecStarted then SpecFinished per spec in declaration
+// order (#315), mirroring Spec's runParallelGroup, so the report order is stable however the bodies
+// happen to complete. Each event carries its spec's own start time and duration.
 // Failed is that spec's own result, not the group's aggregate failure record; a recovered panic also
-// carries its stack trace in Output, so it is classified as an error, not a failure (#314). Events from different
-// goroutines may interleave in any order; only started-before-finished is guaranteed per spec.
-// obs is read once from ctx before any goroutine starts, then only read (never mutated) by them,
-// so no synchronization is needed for the pointer itself; obs's own methods serialize the actual
+// carries its stack trace in Output, so it is classified as an error, not a failure (#314).
+// obs is read once from ctx before any goroutine starts; obs's own methods serialize the actual
 // report.EventReporter calls, since not every EventReporter implementation is concurrency-safe.
 //
 // scopeNames parallels names and steps, holding each spec's declared enclosing Describe names (see
@@ -283,25 +296,21 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		obs := ctx.execObserver
 		results := make([]failureRecord, len(steps))
 		outputs := make([]string, len(steps)) // a recovered panic's stack trace, by spec index
+		var timings []parallelTiming          // each spec's own start/duration; only with an observer
+		if obs != nil {
+			timings = make([]parallelTiming, len(steps))
+		}
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
-			name := specName(names, i)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
 				child := acquireContext(backend)
-				var started report.SpecStartEvent
+				var startTime time.Time
 				if obs != nil {
-					var scopes []string
-					if i < len(scopeNames) {
-						scopes = scopeNames[i]
-					}
-					path := make([]string, 0, len(scopes)+1)
-					path = append(path, scopes...)
-					path = append(path, name)
-					started = obs.specStarted(name, path)
+					startTime = time.Now()
 				}
 				defer func() {
 					// Recording rule shared with the worker-pool engines — see panic_report.go. Only
@@ -315,7 +324,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 						outputs[i] = string(debug.Stack())
 					}
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message, Output: outputs[i]})
+						timings[i] = parallelTiming{start: startTime, duration: time.Since(startTime)}
 					}
 					releaseContext(child)
 				}()
@@ -323,6 +332,23 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 			}()
 		}
 		wg.Wait()
+		if obs != nil {
+			for i := range steps {
+				var scopes []string
+				if i < len(scopeNames) {
+					scopes = scopeNames[i]
+				}
+				name := specName(names, i)
+				path := make([]string, 0, len(scopes)+1)
+				path = append(path, scopes...)
+				path = append(path, name)
+				obs.specReported(
+					report.SpecStartEvent{Name: name, Path: path, Time: timings[i].start},
+					timings[i].duration,
+					specResult{Failed: results[i].Failed, Message: results[i].Message, Output: outputs[i]},
+				)
+			}
+		}
 		for _, r := range results {
 			if r.Failed {
 				ctx.recordFailure()
