@@ -1049,11 +1049,20 @@ func runProgram(program []Instruction, ctx *Context) (message, output string) {
 	}
 	defer func() {
 		message, output = recoverSpecFailure(ctx, recover(), "panic")
+		// ctx.Go tasks finish before AfterEach runs (#318); a task panic ranks after the body's own
+		// panic and before an after-hook's, matching the order they happened in.
+		if m, o := ctx.settleTasks(false); message == "" {
+			message, output = m, o
+		}
 		for _, inst := range after {
 			m, o := runAfterInstructionRecovered(ctx, inst)
 			if message == "" {
 				message, output = m, o
 			}
+		}
+		// Tasks an after hook started are awaited too, and then the spec is closed to new ones.
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
 		}
 	}()
 	for _, inst := range program {

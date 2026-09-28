@@ -78,8 +78,8 @@ Valid formats are `xml`, `html`, `txt`, and `json`.
 |---|---|---|
 | JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. Unstarted (#274) has no JUnit equivalent either, so it renders as `<skipped message="not run: fail-fast"/>` and also folds into `skipped`; unlike every other status it never counts toward `total`, so the `tests` attribute is `total + unstarted` rather than `total` alone — a JUnit consumer still sees the full declared suite size, not the smaller "reached" count. |
 | HTML | `report.RenderHTML` | Single self-contained file: inline CSS, no external stylesheet/script/font/image reference — safe to open offline or archive as a CI artifact. |
-| Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case with its message and output, then a coverage table. |
-| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "3"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208); `"3"` adds `"status": "unstarted"`, the `unstarted` totals field, and `Case.declared` (#274) — a v1/v2 consumer switching exhaustively over `status` would misread an unstarted case. A new field alone never bumps it. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
+| Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case, named by its full scope path (`Suite/when x/spec`), with its message and output, then a coverage table. |
+| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "3"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208); `"3"` adds `"status": "unstarted"`, the `unstarted` totals field, and `Case.declared` (#274) — a v1/v2 consumer switching exhaustively over `status` would misread an unstarted case. A new field alone never bumps it: the module-wide merge adds an optional suite-level `package` (the producing Go import path, omitted for a single-package report), and the version stays `"3"` (#308). JUnit carries it as the `package` attribute on `<testsuite>` and as a `<package>/` prefix on each `classname`; TXT prints `Suite: <name> (package <path>)`; HTML shows it beside the suite heading. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
 
 Every renderer takes the same `report.NormalizedReport` and an `io.Writer`; `RenderXML` and
 `RenderHTML` escape all case names, messages, and output through `encoding/xml` and
@@ -321,17 +321,31 @@ by both).
 | | `-producers` | — | Required: a path to the manifest file described below. There is no default and no `go list` fallback. |
 | | `-coverprofile` | — | Optional: the one combined file `go test -coverprofile=...` wrote. Omit it if the run collected no coverage. |
 | | `-json`, `-xml`, `-txt`, `-html` | — | Optional, one per format you want written; omit a flag to skip that format. At least one is normally set, or finalize does the ownership/producer bookkeeping and writes nothing. |
-| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. |
+| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. `-cleanup` requires at least one output flag, and no output path may resolve inside the run directory (relative paths and symlinks are resolved first); either mistake exits `78` before anything is rendered or deleted, and the shards stay in place. |
 | `gc` | `-report-dir` | `GO_SPECS_REPORT_DIR` | Optional, default `.go-specs/runs`, and — like `finalize` — must already be absolute. |
 | | `-retention` | — | Optional, default `24h`. Must be a positive duration; `gc` refuses `0s` or negative values with exit `78`, because a zero window would treat a run still in progress as abandoned. |
 | | `-dry-run` | — | Report what would be removed without touching the filesystem — run this first when pointing `gc` at a shared directory you do not fully trust yet. |
+
+#### How `finalize` publishes reports
+
+Each output file is written to a temporary file in its own directory, set to mode `0644` (an
+explicit `chmod`, so the process umask cannot narrow it and a runner or artifact collector under a
+different user can read it), flushed to disk with `fsync`, renamed into place, and then its
+directory is `fsync`ed so the rename survives a crash (the directory sync is skipped on Windows and
+where the filesystem does not support it). A successful `finalize` therefore promises the reports
+are durable, not just visible.
+
+Multiple outputs are published one at a time, each atomically, but **not as a group**. If a later
+output fails (for example, its directory is not writable), the earlier outputs stay published, no
+shard is cleaned up, and the error names the output that failed by path and format. Re-run
+`finalize` once the cause is fixed; it overwrites the earlier outputs.
 
 #### Exit codes
 
 | Code | Meaning | What the invoker should do |
 |---|---|---|
 | `0` | Reporting succeeded for that verb. For `finalize`, this says nothing about whether `go test` itself passed — see below. | Nothing extra; the verb did its job. |
-| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
+| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, a `config-error.json` that exists but cannot be parsed, `-cleanup` without an output target or with one inside the run directory, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
 | `1` | A reporting failure after configuration checked out: a missing producer, a rejected shard, or a merge/render/IO error. | Read the printed summary (`missing:` / `rejected:` lines on stderr) and fix the run — a package did not publish a valid shard, or the manifest lists a package that no longer exists. |
 | `2` | CLI usage error: no verb, an unknown verb, an unknown flag, or unexpected positional arguments (the stdlib `flag` package's own convention). | Fix the command line; this never reaches the library at all. |
 

@@ -213,6 +213,9 @@ func ShardBCProgram(prog BCProgram, shard, total int) BCProgram {
 // -shard=2/10 are accepted, with or without a second leading dash, because Go's flag package accepts
 // all four spellings and a form this parser skipped would silently mean "no sharding".
 //
+// The flag is not registered with Go's flag package, so under go test it must follow `-args --`
+// (go test ./x -args -- -shard 1/2); without the `--` the test binary rejects it as undefined.
+//
 // Returns ErrShardNotConfigured when no -shard flag is present, and a *ShardConfigError when one is
 // present but its value is unusable — including when it is the last argument and carries no value.
 // A malformed flag is never reported as an absent one.

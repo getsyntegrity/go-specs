@@ -3,9 +3,9 @@ Total: 6  Passed: 2  Failed: 1  Error: 1  Skipped: 1  Filtered: 1  Pending: 0  U
 Duration: 0.019s
 
 Suite: Checkout
-  FAIL  Checkout rejects an expired card (0.003s)
+  FAIL  Checkout/Checkout rejects an expired card (0.003s)
         message: expected status 402, got 200
-  ERROR Checkout crashes on a nil cart (0.002s)
+  ERROR Checkout/Checkout crashes on a nil cart (0.002s)
         message: recovered panic: nil pointer dereference
         output: goroutine 1 [running]:
 main.crash()

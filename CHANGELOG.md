@@ -6,12 +6,31 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Fixed
+
+- Finalized report files are now published with mode `0644` (via an explicit chmod, independent of umask) instead of `os.CreateTemp`'s `0600`, and are durable: the temp file is `fsync`ed before the rename and the containing directory is synced after it (skipped on Windows and where unsupported). Multiple targets are published individually, each atomically; a failure part-way leaves earlier targets published and the error names the failing target. The mode is exported as `coordination.ReportFileMode` (#319).
+- A malformed `config-error.json` now makes `coordination.Finalize` return a `*ConfigError` (reason `malformed-config-error`, message naming the file and the parse failure), so `go-specs-report finalize` exits 78 instead of 1, renders nothing and keeps the shards (#311).
+- `coordination.Finalize` (and `go-specs-report finalize`) now rejects, before rendering or deleting anything, `Cleanup` with no output target and any output target whose resolved path (relative paths made absolute, symlinks resolved) lies inside the run directory. Both are configuration failures (`*ConfigError`, exit 78) and leave every shard in place; before, `finalize -cleanup` with no output flags silently deleted all shards, and a target inside the run directory was rendered and then deleted (#309).
+
+- Documentation now shows a `go test` shard invocation that works: `go test ./... -args -- -shard 1/2` (or `SHARD=1/2`). `-shard` is not registered with Go's `flag` package, so the previously implied `-args -shard 1/2` exits with `flag provided but not defined`. Verified through a real `go test` subprocess; invalid values still fail closed (#312).
+- Registering on a `*Spec` after its `Describe`/`When` scope closed (a captured handle used after `Describe` returned, or from inside an executing `It`) now panics with an actionable `specs: Spec.<Method> called after its Describe/When scope closed` message instead of a nil dereference or a write into a reused compiler (#317). The zero-value `Spec` diagnostic is unchanged.
+- **Breaking.** `BeforeEach`/`AfterEach` registered after an `It` (or other spec) or a nested `Describe`/`When` in the same scope now panic at build time on `Spec` (compiler and `Analyze` paths) and `Builder`, instead of silently applying only to later specs (#307). Declare per-spec hooks before the first spec or nested scope of their scope; suites that relied on the old behavior must reorder them. See `docs/DSL.md`.
+
+- JUnit XML no longer emits an empty `<properties></properties>` element when no coverage is attached; the container appears only when it holds coverage `<property>` entries, as some JUnit validators require (#316).
+
+- Coverage profile parsing (`report.ParseCoverageProfile`, `report.ParseCoverageProfileMerged`, and so `go-specs report` finalization) now rejects a `mode:` other than `set`/`count`/`atomic`, negative execution or statement counts, and a repeated file/span with conflicting statement counts, instead of returning inflated or corrupt totals (#310).
+
+- TXT and HTML reports now print each ordinary case as its full scope path (`Checkout/when the cart is empty/fails`) instead of the bare leaf name, so two failing specs with the same name under different `When` blocks are distinguishable and the disambiguated paths from #275 are actually visible in those formats. Group hook cases keep their `<group path> [BeforeAll]` label (#313).
+
+- Module-wide merged reports now record which package each suite came from. `report.Suite` gains a `Package` field, filled from each shard's `PackagePath` and rendered as `package` in JSON, a `package` attribute plus a package-prefixed `classname` in JUnit, `Suite: <name> (package <path>)` in TXT, and a label beside the suite heading in HTML. Two packages with identical suite and spec names are no longer ambiguous. Single-package reports are unchanged (empty package omitted everywhere); the JSON `schemaVersion` stays `"3"` because a new field alone never bumps it (#308).
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.
 
 ### Added
 
+- `ctx.Go(func(*Context))` runs a task that is bound to its spec, the supported way to make concurrent assertions (#318). The spec waits for every task before its `AfterEach` hooks run and before it is reported or its `Context` is reused; assertion failures, `ctx.T` failures and panics inside a task are charged to the spec that started it (a panic is reported as an error), and tasks may start further tasks. Calling `ctx.Go` after its spec finished panics with an actionable `specs:` message, but only until that pooled `Context` is reused by a later spec; after reuse a `ctx.Go` issued through a stale handle does not panic and may be attributed to whichever spec owns the `Context` then (a task's own `*Context` is never pooled and always panics). Retaining a spec's `ctx` past the end of its spec, including in a goroutine launched directly with `go`, is unsupported and unprotected, because a pooled `Context` cannot tell a stale goroutine from the next spec. Specs that never call `ctx.Go` allocate nothing extra. See `docs/DSL.md`.
 - **Breaking (report schema `"2"` → `"3"`).** A spec `CompiledSuite.SetFailFast(true)` or
   `Runner.FailFast` prevented from ever running — because an earlier spec in the same run already
   failed — is now reported as a new status, `report.StatusUnstarted` (`"unstarted"`), instead of

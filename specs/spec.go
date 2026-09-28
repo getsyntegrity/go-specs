@@ -2,6 +2,7 @@ package specs
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -38,6 +39,13 @@ type Spec struct {
 	plan        *ExecutionPlan // set by top-level Describe when using bytecode compiler (no arena)
 	compileOnce sync.Once
 	suite       *CompiledSuite
+
+	// closed is set when the Describe/When callback that handed out this Spec returns (issue
+	// #317). The compiler behind a closed Spec is already released to a pool, so a captured handle
+	// used later (after Describe returned, or from inside a running It) must fail with a clear
+	// message instead of dereferencing a released plan or writing into another suite's compiler.
+	// Stored in the Spec itself, so it costs no allocation.
+	closed atomic.Bool
 }
 
 // describeTopLevel is the shared implementation behind Describe, DescribeWithReporter, DescribeFlat
@@ -72,6 +80,7 @@ func describeTopLevel(tb testing.TB, name string, rep report.EventReporter, fn f
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	if tb != nil {
 		s.Compile()
 		s.Run()
@@ -98,6 +107,7 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	var groups *planGroups
 	s.plan, groups = c.takePlanAndGroups()
 	validateHookGroups(s.plan, groups)
@@ -119,6 +129,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		if fn != nil {
 			fn(s)
 		}
+		s.closed.Store(true)
 		var groups *planGroups
 		s.plan, groups = c.takePlanAndGroups()
 		validateHookGroups(s.plan, groups)
@@ -137,6 +148,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	s.Compile()
 	return s.suite
 }
@@ -215,10 +227,14 @@ func (s *Spec) Compile() {
 // requireBuildTarget panics when s has neither a compiler nor a registry to write into. Every Spec
 // handed out by an entry point carries exactly one of the two; a Spec with neither was constructed
 // directly by external code, so there is no destination for the registration being made and no
-// outcome other than discarding it silently.
+// outcome other than discarding it silently. It also panics when s is closed (issue #317): the
+// Describe/When callback that handed it out already returned, so its build target is finished.
 func (s *Spec) requireBuildTarget(method string) {
 	if s.compiler == nil && s.registry == nil {
 		panic("specs: Spec." + method + " called on a Spec with no build target; obtain a *Spec from Describe/BuildSuite instead of constructing one")
+	}
+	if s.closed.Load() {
+		panic("specs: Spec." + method + " called after its Describe/When scope closed; register specs and hooks only while the enclosing Describe/When callback is running, not from a captured *Spec after it returned or from inside an It body")
 	}
 }
 
@@ -227,14 +243,17 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("Describe")
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
+		child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c}
+		defer child.closed.Store(true)
+		fn(child)
 		return
 	}
-	s.requireBuildTarget("Describe")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
+	defer child.closed.Store(true)
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
@@ -246,14 +265,17 @@ func (s *Spec) When(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("When")
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
+		child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c}
+		defer child.closed.Store(true)
+		fn(child)
 		return
 	}
-	s.requireBuildTarget("When")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
+	defer child.closed.Store(true)
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
 	defer pop()
@@ -265,12 +287,12 @@ func (s *Spec) It(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("It")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitIt(name, fn)
 		return
 	}
-	s.requireBuildTarget("It")
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	pop()
@@ -286,12 +308,12 @@ func (s *Spec) SkipIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("SkipIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitSkip(name)
 		return
 	}
-	s.requireBuildTarget("SkipIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itSkip)
@@ -307,12 +329,12 @@ func (s *Spec) PendingIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("PendingIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitPending(name)
 		return
 	}
-	s.requireBuildTarget("PendingIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itPending)
@@ -337,12 +359,12 @@ func (s *Spec) FIt(name string, fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("FIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitFocusedIt(name, fn)
 		return
 	}
-	s.requireBuildTarget("FIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itFocus)
@@ -367,11 +389,11 @@ func (s *Spec) ItParallel(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("ItParallel")
 	if c := s.compiler; c != nil {
 		c.EmitItParallel(name, fn)
 		return
 	}
-	s.requireBuildTarget("ItParallel")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itParallel)
@@ -383,11 +405,11 @@ func (s *Spec) BeforeEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("BeforeEach")
 	if c := s.compiler; c != nil {
 		c.AppendBefore(fn)
 		return
 	}
-	s.requireBuildTarget("BeforeEach")
 	s.registry.appendBeforeHook(fn)
 }
 
@@ -396,11 +418,11 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("AfterEach")
 	if c := s.compiler; c != nil {
 		c.AppendAfter(fn)
 		return
 	}
-	s.requireBuildTarget("AfterEach")
 	s.registry.appendAfterHook(fn)
 }
 
@@ -413,11 +435,11 @@ func (s *Spec) BeforeAll(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("BeforeAll")
 	if c := s.compiler; c != nil {
 		c.AppendBeforeAll(fn)
 		return
 	}
-	s.requireBuildTarget("BeforeAll")
 	s.registry.appendBeforeAllHook(fn)
 }
 
@@ -429,10 +451,10 @@ func (s *Spec) AfterAll(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("AfterAll")
 	if c := s.compiler; c != nil {
 		c.AppendAfterAll(fn)
 		return
 	}
-	s.requireBuildTarget("AfterAll")
 	s.registry.appendAfterAllHook(fn)
 }

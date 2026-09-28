@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 
 	"github.com/getsyntegrity/go-specs/report"
 )
@@ -59,7 +61,10 @@ type FinalizeResult struct {
 //
 // It runs, in order, honouring ctx cancellation between each step:
 //
-//  1. VerifyRunOwnership against run.json — fail-closed on any mismatch.
+//  1. VerifyRunOwnership against run.json — fail-closed on any mismatch. Then the options are
+//     validated before anything is read, rendered or deleted: Cleanup without any Target, or a
+//     Target whose resolved path (relative paths made absolute, symlinks resolved) lies inside
+//     the run directory, is a *ConfigError (exit 78) and every shard stays available.
 //  2. A config-error.json check. If present, it returns immediately with FinalizeResult.ConfigError
 //     set and nothing merged or rendered, so the caller can exit 78 (§8).
 //  3. Shard discovery and verification (discoverShards): every final shard is checked against
@@ -68,8 +73,10 @@ type FinalizeResult struct {
 //  4. A deterministic merge of every accepted shard (mergeReports).
 //  5. Coverage, read from opts.CoverProfile through the block-deduplicating parser
 //     (report.ParseCoverageProfileMerged), when a profile path was given.
-//  6. Rendering every Target atomically (temp file in the target's own directory, then rename),
-//     creating parent directories as needed.
+//  6. Rendering every Target, one at a time, each atomically (temp file in the target's own
+//     directory, chmod to ReportFileMode 0644, fsync, rename, fsync of the directory), creating
+//     parent directories as needed. Targets are published individually, not as a group: a
+//     failure part-way leaves earlier targets published, and the error names the failing one.
 //  7. Cleanup — removing the run directory — only when opts.Cleanup is set AND the finalize
 //     succeeded completely: no missing producers, no rejected shards, no render error.
 //
@@ -86,6 +93,12 @@ func Finalize(ctx context.Context, opts FinalizeOptions) (FinalizeResult, error)
 		return FinalizeResult{}, err
 	}
 	base := ownership.BaseDir
+
+	// Reject option combinations that could destroy the only report output before anything is
+	// read, rendered or deleted (issue #309).
+	if err := validateFinalizeTargets(opts, base); err != nil {
+		return FinalizeResult{}, err
+	}
 
 	if err := ctx.Err(); err != nil {
 		return FinalizeResult{}, err
@@ -220,8 +233,17 @@ func parseCoverProfile(path string) (report.Coverage, error) {
 	return cov, nil
 }
 
-// renderTargetsAtomically renders rep to every target, each one atomically: a temp file created in
-// the target's own directory, then renamed into place. Unlike a shard's create-no-replace publish
+// ReportFileMode is the permission every finalized report file is published with: 0644, readable
+// by other users (a CI runner or artifact collector often runs as a different user than finalize)
+// and writable only by the owner. It is applied with an explicit chmod, so the process umask does
+// not narrow it.
+const ReportFileMode os.FileMode = 0o644
+
+// renderTargetsAtomically renders rep to every target, one after another, each one atomically: a
+// temp file created in the target's own directory, chmod'ed to ReportFileMode, synced to stable
+// storage, renamed into place, and then its directory synced so the rename survives a crash. The
+// targets are NOT published as a group: if a later target fails, the earlier ones stay published
+// and the returned error names the target that failed (its path and format). Unlike a shard's create-no-replace publish
 // (publish.go), a rendered report target is expected to be overwritten on a re-run of finalize, so
 // this uses an ordinary replacing rename rather than link+unlink.
 func renderTargetsAtomically(targets []report.Target, rep report.NormalizedReport) error {
@@ -251,6 +273,17 @@ func renderTargetAtomically(t report.Target, rep report.NormalizedReport) error 
 	tmpPath := tmp.Name()
 
 	renderErr := renderReportFormat(tmp, t.Format, rep)
+	if renderErr == nil {
+		// os.CreateTemp makes the file 0600; a runner or artifact collector under another user
+		// could not read the published report. Chmod is explicit so the result does not depend
+		// on the process umask.
+		renderErr = tmp.Chmod(ReportFileMode)
+	}
+	if renderErr == nil {
+		// Flush file contents to stable storage before the rename makes them visible, so a crash
+		// never leaves a published name pointing at an empty or partial report.
+		renderErr = tmp.Sync()
+	}
 	closeErr := tmp.Close()
 	if renderErr != nil {
 		_ = os.Remove(tmpPath)
@@ -264,7 +297,37 @@ func renderTargetAtomically(t report.Target, rep report.NormalizedReport) error 
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("publish %s: %w", t.Path, err)
 	}
+	// Make the rename itself durable. It is already visible, so a failure here is reported but
+	// the report stays published.
+	if err := syncDir(filepath.Dir(t.Path)); err != nil {
+		return fmt.Errorf("sync directory of %s: %w", t.Path, err)
+	}
 	return nil
+}
+
+// syncDir flushes a directory's entries (a just-renamed file) to stable storage. It is skipped on
+// Windows, where directories cannot be opened for sync, and it ignores only the errors that mean
+// this platform or filesystem does not support syncing a directory (EINVAL, ENOTSUP,
+// errors.ErrUnsupported); any other failure is returned.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) || errors.Is(syncErr, errors.ErrUnsupported) {
+			syncErr = nil
+		}
+		if syncErr != nil {
+			return syncErr
+		}
+	}
+	return closeErr
 }
 
 func renderReportFormat(w io.Writer, format report.Format, rep report.NormalizedReport) error {

@@ -220,8 +220,24 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 // runBytecodeWorkerSpec and parallelStep). Applied per spec so one spec's fatal assertion or panic
 // doesn't stop the worker from running the rest of its specs.
 func runWorkerSpec(fn func(*Context), ctx *Context, results *[]failureRecord, idx int) {
-	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
+	defer func() {
+		recoverParallelSpecFailure(recover(), results, idx)
+		settleParallelTasks(ctx, results, idx) // wait for ctx.Go tasks (#318)
+	}()
 	fn(ctx)
+}
+
+// recordFailure stores an already-built failure, with its captured location, as this spec's failure
+// unless one is already there (first write wins, like record). Used when a ctx.Go task's private
+// failure is folded onto the spec's backend (context_go.go); called only from the spec's goroutine.
+func (p *parallelBackend) recordFailure(f failureRecord) {
+	if p.results == nil || p.specIndex < 0 || p.specIndex >= len(*p.results) {
+		return
+	}
+	if (*p.results)[p.specIndex].Failed {
+		return
+	}
+	(*p.results)[p.specIndex] = f
 }
 
 // failureReporter is the minimal interface needed to report failures (avoids requiring full

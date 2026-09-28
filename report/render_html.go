@@ -49,7 +49,7 @@ const htmlTemplate = `<!DOCTYPE html>
 </div>
 
 {{range .Suites}}
-<h2>{{.Name}}</h2>
+<h2>{{.Name}}{{if .Package}} <small class="package">{{.Package}}</small>{{end}}</h2>
 <div class="summary">
   <span>total={{.Totals.Total}}</span>
   <span>passed={{.Totals.Passed}}</span>
@@ -125,6 +125,7 @@ type htmlCase struct {
 
 type htmlSuite struct {
 	Name     string
+	Package  string
 	Duration string
 	Totals   htmlTotals
 	Cases    []htmlCase
@@ -161,6 +162,7 @@ func RenderHTML(w io.Writer, r NormalizedReport) error {
 	for _, s := range r.Suites {
 		hs := htmlSuite{
 			Name:     s.Name,
+			Package:  s.Package,
 			Duration: formatSeconds(s.Duration),
 			Totals:   toHTMLTotals(s.Totals),
 		}

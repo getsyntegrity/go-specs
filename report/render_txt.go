@@ -24,7 +24,11 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	bw.printf("Duration: %ss\n", formatSeconds(r.Duration))
 
 	for _, s := range r.Suites {
-		bw.printf("\nSuite: %s\n", s.Name)
+		if s.Package != "" {
+			bw.printf("\nSuite: %s (package %s)\n", s.Name, s.Package)
+		} else {
+			bw.printf("\nSuite: %s\n", s.Name)
+		}
 		for _, c := range s.Cases {
 			renderTXTCase(bw, c)
 		}
@@ -49,16 +53,27 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	return bw.err
 }
 
-// caseDisplayName is the human-facing name TXT and HTML print for a case. A real spec keeps its
-// own Name, exactly as before. A synthetic group hook case is named only by its marker
-// ("[BeforeAll]"/"[AfterAll]"), which every group shares, so it is prefixed with its group Path
-// (joined with "/") — otherwise two sibling groups' hook failures would print identically. This is
-// the same identity JUnit gets from junitClassName (docs/SUITE_HOOKS_CONTRACT.md H8).
+// caseDisplayName is the human-facing name TXT and HTML print for a case. A real spec prints its
+// full scope path joined with "/" ("Checkout/when the cart is empty/fails"), so two specs with the
+// same leaf name under different When/Describe branches stay distinguishable (issues #275, #313).
+// The trailing element is the case's own Name, which for a generated candidate carries its ordinal
+// and values. A case with no enclosing scopes keeps its plain Name.
+//
+// A synthetic group hook case is named only by its marker ("[BeforeAll]"/"[AfterAll]"), which every
+// group shares, so it is prefixed with its group Path (joined with "/") and keeps the bracketed
+// marker as a readable label — the same identity JUnit gets from junitClassName
+// (docs/SUITE_HOOKS_CONTRACT.md H8).
 func caseDisplayName(c Case) string {
-	if c.Hook == "" || len(c.Path) == 0 {
+	if c.Hook != "" {
+		if len(c.Path) == 0 {
+			return c.Name
+		}
+		return strings.Join(c.Path, "/") + " " + c.Name
+	}
+	if len(c.Path) <= 1 {
 		return c.Name
 	}
-	return strings.Join(c.Path, "/") + " " + c.Name
+	return strings.Join(c.Path[:len(c.Path)-1], "/") + "/" + c.Name
 }
 
 func renderTXTCase(bw *errWriter, c Case) {

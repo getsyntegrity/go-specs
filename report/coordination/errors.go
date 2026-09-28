@@ -30,6 +30,15 @@ const (
 	// is still a *ConfigError so the `gc` CLI verb maps it to ExitConfig the same way as every other
 	// configuration failure in this package, via errors.As.
 	ReasonInvalidRetention ConfigErrorReason = "invalid-retention"
+	// ReasonInvalidFinalizeOptions reports FinalizeOptions that would lose or misplace the report:
+	// Cleanup with no output target, or a target inside the run directory. Like
+	// ReasonInvalidRetention it is never written to config-error.json; it exists so Finalize
+	// returns a *ConfigError and the `finalize` verb exits ExitConfig.
+	ReasonInvalidFinalizeOptions ConfigErrorReason = "invalid-finalize-options"
+	// ReasonMalformedConfigError reports a config-error.json that exists but cannot be decoded.
+	// The record proves a package failed its pre-test checks, so an unreadable one is still a
+	// configuration failure (exit 78), never an ordinary reporting failure.
+	ReasonMalformedConfigError ConfigErrorReason = "malformed-config-error"
 )
 
 // ConfigError reports reporting coordination that was requested but cannot be used.

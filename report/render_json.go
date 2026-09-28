@@ -34,6 +34,7 @@ type jsonExecution struct {
 
 type jsonSuite struct {
 	Name       string     `json:"name"`
+	Package    string     `json:"package,omitempty"`
 	DurationMs int64      `json:"durationMs"`
 	Totals     jsonTotals `json:"totals"`
 	Cases      []jsonCase `json:"cases"`
@@ -118,6 +119,7 @@ func toJSONSuite(s Suite) jsonSuite {
 	}
 	return jsonSuite{
 		Name:       s.Name,
+		Package:    s.Package,
 		DurationMs: s.Duration.Milliseconds(),
 		Totals:     toJSONTotals(s.Totals),
 		Cases:      cases,

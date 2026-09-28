@@ -84,6 +84,10 @@ func (c *Context) hasFailed() bool {
 func (c *Context) resetFailure() {
 	if c != nil {
 		c.failure = failureRecord{}
+		// The ctx.Go bookkeeping is per spec exactly like the failure record, and the same runners
+		// that call this per spec (Runner, the isolated plan path) reuse one Context across specs
+		// without a full Reset, so it is cleared here (context_go.go, #318).
+		c.recycleTasks()
 	}
 }
 

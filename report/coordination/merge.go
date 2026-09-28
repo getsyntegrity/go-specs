@@ -29,7 +29,12 @@ func mergeReports(envelopes []ShardEnvelope) report.NormalizedReport {
 	merged := report.NormalizedReport{SchemaVersion: report.SchemaVersion}
 	for _, env := range sorted {
 		rep := env.Report
-		merged.Suites = append(merged.Suites, rep.Suites...)
+		// Stamp each suite with the shard's package so identical suite/spec names from different
+		// packages stay distinguishable (#308). rep.Suites is copied by value, never mutated.
+		for _, s := range rep.Suites {
+			s.Package = env.PackagePath
+			merged.Suites = append(merged.Suites, s)
+		}
 		merged.Execution = sumTotals(merged.Execution, rep.Execution)
 		merged.Duration += rep.Duration
 	}
