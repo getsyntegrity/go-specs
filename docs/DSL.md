@@ -247,15 +247,63 @@ means "the specification exists, the implementation does not."
 
 `FIt` with a `nil` `fn` is a no-op. If a `Describe`/`BuildSuite` call registers at least one `FIt`
 anywhere in its tree, only focused specs compile — every other `It`, `SkipIt` and `PendingIt` in
-that same call is dropped, not merely skipped, exactly like `Builder.FIt`/`finalize`'s focus filter.
-Focus is scoped to that one top-level call, never process-wide. `BeforeEach`/`AfterEach` and
-`BeforeAll`/`AfterAll` around a focused spec still run; a `BeforeAll`/`AfterAll` group left with
-zero runnable specs after focus filtering is never entered — the same H3 rule
-(`docs/SUITE_HOOKS_CONTRACT.md`) that already applies to a group declaring no `It` at all.
+that same call is dropped from execution, exactly like `Builder.FIt`/`finalize`'s focus filter, but
+(since [#273](https://github.com/getsyntegrity/go-specs/issues/273)) it is no longer dropped
+*without a trace*: see "Committed focus fails the enclosing test" below. Focus is scoped to that one
+top-level call, never process-wide. `BeforeEach`/`AfterEach` and `BeforeAll`/`AfterAll` around a
+focused spec still run; a `BeforeAll`/`AfterAll` group left with zero runnable specs after focus
+filtering is never entered — the same H3 rule (`docs/SUITE_HOOKS_CONTRACT.md`) that already applies
+to a group declaring no `It` at all.
 
 Both `Spec` build paths agree: the bytecode compiler (the default, top-level `Describe`/
 `BuildSuite`) and the `Analyze`/registry path produce the same outcomes for the same declared tree
 — see `specs/spec_builder_equivalence_test.go` for the table proving `Spec` and `Builder` agree too.
+
+### Committed focus fails the enclosing test
+
+**Breaking change, [#273](https://github.com/getsyntegrity/go-specs/issues/273).** A suite-wide
+`FIt` used to compile only the focused specs and drop every other `It`/`SkipIt`/`PendingIt`
+entirely — no plan entry, no report, no trace at all. That let a forgotten debugging focus turn a
+failing suite green, silently, both locally and in CI: one failing `It` plus one passing `FIt`
+reported `Total:1 Passed:1` and a passing test.
+
+The policy now is:
+
+| | `GO_SPECS_ALLOW_FOCUS` unset (default) | `GO_SPECS_ALLOW_FOCUS=1` |
+|---|---|---|
+| Focus still filters (only focused specs run) | yes | yes |
+| Every excluded spec (`It`, `SkipIt`, `PendingIt`, `ItParallel`) is reported `Filtered` | yes | yes |
+| The enclosing test fails via `tb.Errorf` (focused specs still run and report their own result) | **yes, always — local and CI** | no |
+
+There is no CI-only detection: a forgotten `FIt` fails the same way on a laptop as it does in a CI
+job, which is the point — "fail only under CI" was considered and rejected, because it would still
+let the same suite pass green on a laptop. The failure message names how many specs are focused and
+how many were excluded, e.g.:
+
+```
+go-specs: 1 focused spec(s) (FIt) are active, 2 spec(s) excluded; remove FIt or set GO_SPECS_ALLOW_FOCUS=1
+```
+
+and, for the `Analyze`/registry build path, the focused spec's own file:line, since that path
+already records it on every node; the bytecode-compiler and `Builder` paths name the spec's full
+`Describe`/`It` breadcrumb instead — file:line is not cheaply available there without adding new
+capture machinery to an allocation-sensitive path.
+
+`GO_SPECS_ALLOW_FOCUS=1` is the only opt-out, and it disables *only* this failure — not the focus
+filtering itself, which still applies exactly as documented above. Set it as a real environment
+variable, or per-test via `t.Setenv("GO_SPECS_ALLOW_FOCUS", "1")`; it is read once per suite
+build/run, never per spec, so it costs nothing on the normal (unfocused) passing path.
+
+Every engine is covered the same way: the bytecode compiler and the `Analyze`/registry path behind
+`specs.Describe`/`specs.BuildSuite`, and `Builder`/`Runner` behind `specs.NewBuilder`. `RunShard`
+(both `CompiledSuite.RunShard` and the package-level `specs.RunShard`) reports each excluded spec
+exactly once across every shard — deterministically, the same shard that already owns compile-time
+`SkipIt`/`PendingIt` mark reporting (shard 0) — while every shard's own `RunShard` call still fails
+its own enclosing test when focus is active, since each shard is ordinarily its own CI job.
+
+Migration: a suite that intentionally keeps a committed `FIt` around (a WIP branch, or a
+deliberately focused CI debugging run) must now either remove the `FIt`, or set
+`GO_SPECS_ALLOW_FOCUS=1` for that run.
 
 ## ItParallel
 
