@@ -8,6 +8,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- Finalized report files are now published with mode `0644` (via an explicit chmod, independent of umask) instead of `os.CreateTemp`'s `0600`, and are durable: the temp file is `fsync`ed before the rename and the containing directory is synced after it (skipped on Windows and where unsupported). Multiple targets are published individually, each atomically; a failure part-way leaves earlier targets published and the error names the failing target. The mode is exported as `coordination.ReportFileMode` (#319).
 - A malformed `config-error.json` now makes `coordination.Finalize` return a `*ConfigError` (reason `malformed-config-error`, message naming the file and the parse failure), so `go-specs-report finalize` exits 78 instead of 1, renders nothing and keeps the shards (#311).
 - `coordination.Finalize` (and `go-specs-report finalize`) now rejects, before rendering or deleting anything, `Cleanup` with no output target and any output target whose resolved path (relative paths made absolute, symlinks resolved) lies inside the run directory. Both are configuration failures (`*ConfigError`, exit 78) and leave every shard in place; before, `finalize -cleanup` with no output flags silently deleted all shards, and a target inside the run directory was rendered and then deleted (#309).
 

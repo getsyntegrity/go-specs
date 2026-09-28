@@ -326,6 +326,20 @@ by both).
 | | `-retention` | — | Optional, default `24h`. Must be a positive duration; `gc` refuses `0s` or negative values with exit `78`, because a zero window would treat a run still in progress as abandoned. |
 | | `-dry-run` | — | Report what would be removed without touching the filesystem — run this first when pointing `gc` at a shared directory you do not fully trust yet. |
 
+#### How `finalize` publishes reports
+
+Each output file is written to a temporary file in its own directory, set to mode `0644` (an
+explicit `chmod`, so the process umask cannot narrow it and a runner or artifact collector under a
+different user can read it), flushed to disk with `fsync`, renamed into place, and then its
+directory is `fsync`ed so the rename survives a crash (the directory sync is skipped on Windows and
+where the filesystem does not support it). A successful `finalize` therefore promises the reports
+are durable, not just visible.
+
+Multiple outputs are published one at a time, each atomically, but **not as a group**. If a later
+output fails (for example, its directory is not writable), the earlier outputs stay published, no
+shard is cleaned up, and the error names the output that failed by path and format. Re-run
+`finalize` once the cause is fixed; it overwrites the earlier outputs.
+
 #### Exit codes
 
 | Code | Meaning | What the invoker should do |
