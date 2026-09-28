@@ -331,7 +331,7 @@ by both).
 | Code | Meaning | What the invoker should do |
 |---|---|---|
 | `0` | Reporting succeeded for that verb. For `finalize`, this says nothing about whether `go test` itself passed — see below. | Nothing extra; the verb did its job. |
-| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
+| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, a `config-error.json` that exists but cannot be parsed, `-cleanup` without an output target or with one inside the run directory, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
 | `1` | A reporting failure after configuration checked out: a missing producer, a rejected shard, or a merge/render/IO error. | Read the printed summary (`missing:` / `rejected:` lines on stderr) and fix the run — a package did not publish a valid shard, or the manifest lists a package that no longer exists. |
 | `2` | CLI usage error: no verb, an unknown verb, an unknown flag, or unexpected positional arguments (the stdlib `flag` package's own convention). | Fix the command line; this never reaches the library at all. |
 

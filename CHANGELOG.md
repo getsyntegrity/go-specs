@@ -8,6 +8,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- A malformed `config-error.json` now makes `coordination.Finalize` return a `*ConfigError` (reason `malformed-config-error`, message naming the file and the parse failure), so `go-specs-report finalize` exits 78 instead of 1, renders nothing and keeps the shards (#311).
 - `coordination.Finalize` (and `go-specs-report finalize`) now rejects, before rendering or deleting anything, `Cleanup` with no output target and any output target whose resolved path (relative paths made absolute, symlinks resolved) lies inside the run directory. Both are configuration failures (`*ConfigError`, exit 78) and leave every shard in place; before, `finalize -cleanup` with no output flags silently deleted all shards, and a target inside the run directory was rendered and then deleted (#309).
 
 - Documentation now shows a `go test` shard invocation that works: `go test ./... -args -- -shard 1/2` (or `SHARD=1/2`). `-shard` is not registered with Go's `flag` package, so the previously implied `-args -shard 1/2` exits with `flag provided but not defined`. Verified through a real `go test` subprocess; invalid values still fail closed (#312).

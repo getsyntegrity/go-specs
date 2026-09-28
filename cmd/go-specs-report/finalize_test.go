@@ -190,3 +190,35 @@ func TestFinalizeCleanupWithoutTargetsExits78AndKeepsShards(t *testing.T) {
 		t.Fatalf("the run directory did not survive a rejected -cleanup: %v", err)
 	}
 }
+
+func TestFinalizeMalformedConfigErrorRecordExits78WithNoOutputAndKeepsShards(t *testing.T) {
+	base := secureTempDir(t)
+	own := initRun(t, base, "run-1", validToken)
+	writeShard(t, base, own, "run-1", validToken, producerA, passingReport())
+	recordPath := filepath.Join(base, "run-1", "config-error.json")
+	if err := os.WriteFile(recordPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := writeManifest(t, t.TempDir(), producerA)
+	out := t.TempDir()
+	jsonPath, xmlPath, txtPath, htmlPath := finalizeTargets(t, out)
+
+	_, stderr, code := runCLI(t, []string{
+		"finalize", "-run-id", "run-1", "-token", string(validToken), "-report-dir", base, "-producers", manifest,
+		"-json", jsonPath, "-xml", xmlPath, "-txt", txtPath, "-html", htmlPath, "-cleanup",
+	}, nil)
+	if code != coordination.ExitConfig {
+		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
+	}
+	if !strings.Contains(stderr, recordPath) || !strings.Contains(stderr, "invalid character") {
+		t.Fatalf("stderr must name %s and the parse failure:\n%s", recordPath, stderr)
+	}
+	for _, p := range []string{jsonPath, xmlPath, txtPath, htmlPath} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("target %s was written despite a malformed config-error.json", p)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(base, "run-1")); err != nil {
+		t.Fatalf("the run directory did not survive: %v", err)
+	}
+}
