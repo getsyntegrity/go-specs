@@ -433,14 +433,15 @@ func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	s.runSpecs(backend, counter, sel)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:          name,
-		Time:          time.Now(),
-		Duration:      time.Since(suiteStart),
-		TotalSpecs:    counter.total,
-		FailedSpecs:   counter.failed,
-		FilteredSpecs: counter.filtered,
-		SkippedSpecs:  counter.skipped,
-		PendingSpecs:  counter.pending,
+		Name:           name,
+		Time:           time.Now(),
+		Duration:       time.Since(suiteStart),
+		TotalSpecs:     counter.total,
+		FailedSpecs:    counter.failed,
+		FilteredSpecs:  counter.filtered,
+		SkippedSpecs:   counter.skipped,
+		PendingSpecs:   counter.pending,
+		UnstartedSpecs: counter.unstarted,
 	})
 }
 
@@ -578,9 +579,20 @@ type specCounter struct {
 	// #245); SuiteEndEvent.PendingSpecs existed since #208 but this engine never populated it until
 	// this field did.
 	pending int
+	// unstarted counts a spec reported Unstarted: true — a spec FailFast prevented from ever being
+	// reached (issue #274). Counted separately, never folded into total: SuiteEndEvent.TotalSpecs
+	// keeps its pre-existing meaning of "specs that entered execution, plus declared
+	// SkipIt/PendingIt that were actually processed" (report.Totals.add's doc comment states the
+	// same rule on the report side).
+	unstarted int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
+	if e.Unstarted {
+		c.unstarted++
+		c.EventReporter.SpecFinished(e)
+		return
+	}
 	c.total++
 	if e.Failed {
 		c.failed++
@@ -644,9 +656,40 @@ func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *Ex
 		}
 		failed := runExecution(backend, rep, plan, i)
 		if failFast && failed {
+			reportRemainingUnstarted(rep, plan, i+1, sel)
 			return
 		}
 	}
+}
+
+// reportRemainingUnstarted reports plan[from:] as Unstarted (issue #274): a FailFast stop means
+// none of these specs will ever run. sel restricts this to the specs this shard actually owns
+// (RunShard, issue #251): a shard reports only the unstarted specs of its own units, never a
+// sibling shard's, which sel.included already excludes exactly as it does for the normal run.
+func reportRemainingUnstarted(rep report.EventReporter, plan *ExecutionPlan, from int, sel *shardSelection) {
+	if rep == nil {
+		return
+	}
+	for i := from; i < len(plan.ProgramStart); i++ {
+		if sel.included(i) {
+			reportSpecUnstarted(rep, plan, i)
+		}
+	}
+}
+
+// reportSpecUnstarted reports plan spec i as Unstarted (issue #274): a single SpecStarted +
+// SpecFinished{Unstarted: true} pair, with no body ever run — the same identity-only shape
+// reportSpecStarted/reportSpecFinished already use for a real spec, built directly here since
+// there is no specResult for a spec whose body never ran at all.
+func reportSpecUnstarted(rep report.EventReporter, plan *ExecutionPlan, i int) {
+	if rep == nil {
+		return
+	}
+	name := specEventName(plan, i)
+	path := specEventPath(plan, i)
+	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	rep.SpecStarted(started)
+	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Unstarted: true})
 }
 
 // runExecution runs plan spec i and reports it, returning whether it failed — false for a spec

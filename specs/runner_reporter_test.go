@@ -163,8 +163,11 @@ func TestRunnerNilReporterMatchesReporterFailFastSemantics(t *testing.T) {
 		if ranSecond {
 			t.Error("expected FailFast to stop before the second spec")
 		}
-		if len(rep.specFinished) != 1 || rep.specFinished[0].Name != "first" || !rep.specFinished[0].Failed {
-			t.Fatalf("expected only 'first' to be reported, as failed, got %+v", rep.specFinished)
+		if len(rep.specFinished) != 2 || rep.specFinished[0].Name != "first" || !rep.specFinished[0].Failed {
+			t.Fatalf("expected 'first' reported as failed, got %+v", rep.specFinished)
+		}
+		if got := rep.specFinished[1]; got.Name != "second" || !got.Unstarted || got.Failed {
+			t.Fatalf("expected 'second' reported as Unstarted (issue #274), not silently dropped, got %+v", got)
 		}
 	})
 }
@@ -570,6 +573,90 @@ func TestRunShardWithReporterCountsOnlyShardSkips(t *testing.T) {
 	end3 := rep3.suiteFinished[0]
 	if end3.SkippedSpecs != 0 {
 		t.Fatalf("expected shard 1 SkippedSpecs=0, got %+v", end3)
+	}
+}
+
+// TestRunnerFailFastReportsLaterSpecInSameGroupAsUnstarted proves issue #274's core Builder/Runner
+// contract: a spec fail-fast prevented from ever running, within the same group as the failing
+// spec, is reported with report.StatusUnstarted's underlying event field (Unstarted: true) instead
+// of never appearing at all — mirroring CompiledSuite's own contract (see
+// compiled_suite_failfast_test.go).
+func TestRunnerFailFastReportsLaterSpecInSameGroupAsUnstarted(t *testing.T) {
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.It("one", func(*Context) {})
+			b.It("two", func(ctx *Context) { ctx.recordFailure() })
+			b.It("three", func(*Context) {})
+			b.It("four", func(*Context) {})
+		})
+	})
+	rep := &recordingReporter{}
+	r := NewRunnerWithReporter(prog, "Suite", rep)
+	r.FailFast = true
+	r.Run(t)
+
+	if len(rep.specFinished) != 4 {
+		t.Fatalf("expected all 4 specs reported now (one, two, three, four), got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	if got := rep.specFinished[2]; got.Name != "three" || !got.Unstarted || got.Failed {
+		t.Errorf("spec three reported wrong: %+v", got)
+	}
+	if got := rep.specFinished[3]; got.Name != "four" || !got.Unstarted || got.Failed {
+		t.Errorf("spec four reported wrong: %+v", got)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 2 || end.FailedSpecs != 1 || end.UnstartedSpecs != 2 {
+		t.Fatalf("expected TotalSpecs=2 FailedSpecs=1 UnstartedSpecs=2, got %+v", end)
+	}
+}
+
+// TestRunnerFailFastReportsLaterGroupsAsUnstartedIncludingMarks proves the second half of issue
+// #274 for this engine: when a failure in one group stops the whole run, every later GROUP is
+// never entered at all (runGroups' own boundary check, distinct from a mid-group stop) — its real
+// specs are reported Unstarted, and its compile-time SkipIt/PendingIt marks are reported Unstarted
+// too, preserving their original declaration via the Declared field (report.DeclaredSkip /
+// report.DeclaredPending) instead of being silently lost.
+func TestRunnerFailFastReportsLaterGroupsAsUnstartedIncludingMarks(t *testing.T) {
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("A", func() {
+			b.It("a1", func(ctx *Context) { ctx.recordFailure() })
+		})
+		b.Describe("B", func() {
+			b.SkipIt("skipped-in-b", func(*Context) { t.Error("must never run") })
+			b.PendingIt("pending-in-b", func(*Context) { t.Error("must never run") })
+			b.It("b1", func(*Context) { t.Error("must never run") })
+		})
+	})
+	rep := &recordingReporter{}
+	r := NewRunnerWithReporter(prog, "Suite", rep)
+	r.FailFast = true
+	r.Run(t)
+
+	byName := map[string]report.SpecResultEvent{}
+	for _, e := range rep.specFinished {
+		byName[e.Name] = e
+	}
+	if len(rep.specFinished) != 4 {
+		t.Fatalf("expected 4 reported specs (a1, skipped-in-b, pending-in-b, b1), got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	if got := byName["a1"]; !got.Failed || got.Unstarted {
+		t.Errorf("a1 reported wrong: %+v", got)
+	}
+	skipped, ok := byName["skipped-in-b"]
+	if !ok || !skipped.Unstarted || skipped.Declared != report.DeclaredSkip {
+		t.Errorf("skipped-in-b reported wrong (want Unstarted with DeclaredSkip): %+v", skipped)
+	}
+	pending, ok := byName["pending-in-b"]
+	if !ok || !pending.Unstarted || pending.Declared != report.DeclaredPending {
+		t.Errorf("pending-in-b reported wrong (want Unstarted with DeclaredPending): %+v", pending)
+	}
+	b1, ok := byName["b1"]
+	if !ok || !b1.Unstarted || b1.Declared != report.DeclaredNone {
+		t.Errorf("b1 reported wrong (want plain Unstarted): %+v", b1)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 1 || end.FailedSpecs != 1 || end.UnstartedSpecs != 3 {
+		t.Fatalf("expected TotalSpecs=1 FailedSpecs=1 UnstartedSpecs=3, got %+v", end)
 	}
 }
 

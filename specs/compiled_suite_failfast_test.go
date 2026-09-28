@@ -38,8 +38,10 @@ func (failFastFakeTB) Name() string { return "failFastFakeTB" }
 
 // TestCompiledSuiteSetFailFastStopsLaterSpecsButRunsTheFailingSpecsAfterEach proves the core T1
 // contract on the flat path: a failing spec still runs its own AfterEach, and after it no further
-// spec starts — the specs that never start are not reported at all (docs/SUITE_HOOKS_CONTRACT.md
-// H9, mirroring Runner.FailFast).
+// spec starts. Its body never runs (the execution log proves that), but since issue #274 it is no
+// longer silently dropped from the report either: it is reported report.StatusUnstarted's
+// underlying event field (Unstarted: true) — see
+// TestCompiledSuiteSetFailFastReportsLaterSpecsAsUnstarted for the dedicated test of that contract.
 func TestCompiledSuiteSetFailFastStopsLaterSpecsButRunsTheFailingSpecsAfterEach(t *testing.T) {
 	var log []string
 	suite := BuildSuite(nil, "suite", func(s *Spec) {
@@ -57,15 +59,79 @@ func TestCompiledSuiteSetFailFastStopsLaterSpecsButRunsTheFailingSpecsAfterEach(
 	if got := strings.Join(log, ","); got != wantLog {
 		t.Fatalf("execution log = %q, want %q (spec three must never run)", got, wantLog)
 	}
-	if len(rep.specFinished) != 2 {
-		t.Fatalf("expected exactly 2 reported specs (one, two), spec three never started so it must not "+
-			"be reported at all: got %d: %+v", len(rep.specFinished), rep.specFinished)
+	if len(rep.specFinished) != 3 {
+		t.Fatalf("expected 3 reported specs (one, two, and three as Unstarted), got %d: %+v", len(rep.specFinished), rep.specFinished)
 	}
 	if got := rep.specFinished[0]; got.Name != "one" || got.Failed {
 		t.Errorf("spec one reported wrong: %+v", got)
 	}
 	if got := rep.specFinished[1]; got.Name != "two" || !got.Failed {
 		t.Errorf("spec two reported wrong: %+v", got)
+	}
+	if got := rep.specFinished[2]; got.Name != "three" || !got.Unstarted || got.Failed {
+		t.Errorf("spec three reported wrong (want Unstarted, not Failed): %+v", got)
+	}
+}
+
+// TestCompiledSuiteSetFailFastReportsLaterSpecsAsUnstarted proves issue #274's flat-path contract:
+// every spec runPlanSpecsInOrder never reaches because a failure already stopped the run is
+// reported report.StatusUnstarted's underlying event field (Unstarted: true), never silently
+// dropped, and never counted toward SuiteEndEvent.TotalSpecs.
+func TestCompiledSuiteSetFailFastReportsLaterSpecsAsUnstarted(t *testing.T) {
+	suite := BuildSuite(nil, "suite", func(s *Spec) {
+		s.It("one", func(*Context) {})
+		s.It("two", func(ctx *Context) { EqualTo(ctx, 1, 2) })
+		s.It("three", func(*Context) {})
+		s.It("four", func(*Context) {})
+	})
+	rep := &recordingReporter{}
+	suite.Reporter = rep
+	suite.SetFailFast(true)
+	suite.Run(failFastFakeTB{})
+
+	if len(rep.specFinished) != 4 {
+		t.Fatalf("expected all 4 specs reported now, got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	if got := rep.specFinished[2]; got.Name != "three" || !got.Unstarted || got.Failed {
+		t.Errorf("spec three reported wrong: %+v", got)
+	}
+	if got := rep.specFinished[3]; got.Name != "four" || !got.Unstarted || got.Failed {
+		t.Errorf("spec four reported wrong: %+v", got)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 2 || end.FailedSpecs != 1 || end.UnstartedSpecs != 2 {
+		t.Fatalf("expected TotalSpecs=2 FailedSpecs=1 UnstartedSpecs=2, got %+v", end)
+	}
+}
+
+// TestCompiledSuiteRunShardReportsOnlyItsOwnUnstartedSpecs proves the RunShard-specific flagged
+// assumption in docs/REPORTING.md: fail-fast is shard-local, so a shard whose own unit fails
+// reports only ITS OWN remaining units as Unstarted, never a sibling shard's units (which this
+// process never even selected).
+func TestCompiledSuiteRunShardReportsOnlyItsOwnUnstartedSpecs(t *testing.T) {
+	suite := BuildSuite(nil, "suite", func(s *Spec) {
+		s.It("one", func(ctx *Context) { EqualTo(ctx, 1, 2) }) // shard 0
+		s.It("two", func(*Context) {})                         // shard 1
+		s.It("three", func(*Context) {})                       // shard 0
+		s.It("four", func(*Context) {})                        // shard 1
+	})
+	rep := &recordingReporter{}
+	suite.Reporter = rep
+	suite.SetFailFast(true)
+	suite.RunShard(failFastFakeTB{}, 0, 2)
+
+	if len(rep.specFinished) != 2 {
+		t.Fatalf("expected shard 0 to report only its own 2 units (one, three), got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	if got := rep.specFinished[0]; got.Name != "one" || !got.Failed {
+		t.Errorf("spec one reported wrong: %+v", got)
+	}
+	if got := rep.specFinished[1]; got.Name != "three" || !got.Unstarted {
+		t.Errorf("spec three reported wrong: %+v", got)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 1 || end.FailedSpecs != 1 || end.UnstartedSpecs != 1 {
+		t.Fatalf("expected TotalSpecs=1 FailedSpecs=1 UnstartedSpecs=1 (shard 0's own units only), got %+v", end)
 	}
 }
 

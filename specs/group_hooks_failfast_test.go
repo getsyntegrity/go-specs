@@ -115,6 +115,57 @@ func TestGroupPathWithoutSetFailFastRunsEveryGroupAndSpec(t *testing.T) {
 	}
 }
 
+// TestGroupPathSetFailFastReportsLaterGroupAsUnstartedWithAfterAllStillRunning proves issue #274 on
+// the nested-hook-group path: group B (declared after A, never entered because A's spec failed) is
+// reported Unstarted — its own real spec, not silently dropped — while group A's already-entered
+// AfterAll still runs and is not itself Unstarted. Combines this file's core H9 claim (see
+// TestGroupPathSetFailFastCutsLaterGroupsAndSpecsButRunsEnteredAfterAll above) with the new
+// reporting contract, using a *recordingReporter* instead of a bare execution log.
+func TestGroupPathSetFailFastReportsLaterGroupAsUnstartedWithAfterAllStillRunning(t *testing.T) {
+	var log []string
+	suite := BuildSuite(nil, "suite", func(s *Spec) {
+		s.When("A", func(w *Spec) {
+			w.BeforeAll(func(*Context) { log = append(log, "A.BeforeAll") })
+			w.AfterAll(func(*Context) { log = append(log, "A.AfterAll") })
+			w.It("a1", func(ctx *Context) { log = append(log, "A.a1"); EqualTo(ctx, 1, 2) })
+			w.It("a2", func(*Context) { log = append(log, "A.a2") })
+		})
+		s.When("B", func(w *Spec) {
+			w.BeforeAll(func(*Context) { log = append(log, "B.BeforeAll") })
+			w.AfterAll(func(*Context) { log = append(log, "B.AfterAll") })
+			w.It("b1", func(*Context) { log = append(log, "B.b1") })
+		})
+	})
+	rep := &recordingReporter{}
+	suite.Reporter = rep
+	suite.SetFailFast(true)
+	suite.Run(failFastFakeTB{})
+
+	if want := "A.BeforeAll,A.a1,A.AfterAll"; strings.Join(log, ",") != want {
+		t.Fatalf("execution log = %q, want %q", strings.Join(log, ","), want)
+	}
+
+	byName := map[string]bool{}
+	var unstartedNames []string
+	for _, e := range rep.specFinished {
+		byName[e.Name] = true
+		if e.Unstarted {
+			unstartedNames = append(unstartedNames, e.Name)
+		}
+	}
+	if !byName["a1"] {
+		t.Fatalf("a1 must still be reported (it actually ran and failed): %+v", rep.specFinished)
+	}
+	if got := strings.Join(unstartedNames, ","); got != "a2,b1" {
+		t.Fatalf("unstarted specs = %q, want \"a2,b1\" (a2 is A's own later sibling spec, "+
+			"b1 is group B's spec — B was never entered at all): got %+v", got, rep.specFinished)
+	}
+	end := rep.suiteFinished[0]
+	if end.FailedSpecs != 1 || end.UnstartedSpecs != 2 {
+		t.Fatalf("expected FailedSpecs=1 UnstartedSpecs=2, got %+v", end)
+	}
+}
+
 // TestGroupPathSetFailFastAllowsItParallelBatchToFinishBeforeStoppingRealProcess proves the
 // ItParallel half of H9: an already-launched batch runs every sibling to completion — a real
 // concurrent claim, so it needs a real *testing.T and its own goroutines, unlike the tests above —
@@ -152,5 +203,43 @@ func TestGroupPathSetFailFastAllowsItParallelBatchToFinishBeforeStoppingRealProc
 	}
 	if !strings.Contains(string(output), "suite finished total=2 failed=1") {
 		t.Fatalf("expected SuiteFinished total=2 failed=1 (only the two parallel specs ran), got: %s", output)
+	}
+}
+
+// TestGroupPathSetFailFastReportsSpecAfterItParallelBatchAsUnstarted proves issue #274 at exactly
+// the batch boundary H9 defines, on the non-real (fake backend) path: without a real *testing.T
+// there is no concurrency to wait out, so runParallelGroup runs the range sequentially and FailFast
+// stops it early, exactly like an ordinary sequential spec (see runParallelGroup's own doc comment)
+// — unlike the real, concurrent path, which always finishes the whole batch first (pinned by
+// TestGroupPathSetFailFastAllowsItParallelBatchToFinishBeforeStoppingRealProcess above, which needs
+// a subprocess for that real concurrent claim). p1 fails, so p2 (its own sibling, never started
+// here) and "after" (the next sequential spec) are both reported Unstarted rather than silently
+// dropped.
+func TestGroupPathSetFailFastReportsSpecAfterItParallelBatchAsUnstarted(t *testing.T) {
+	suite := BuildSuite(nil, "suite", func(s *Spec) {
+		s.ItParallel("p1", func(ctx *Context) { EqualTo(ctx, 1, 2) })
+		s.ItParallel("p2", func(*Context) { t.Error("must never run (non-real path stops immediately)") })
+		s.It("after", func(*Context) { t.Error("must never run") })
+	})
+	rep := &recordingReporter{}
+	suite.Reporter = rep
+	suite.SetFailFast(true)
+	suite.Run(failFastFakeTB{})
+
+	if len(rep.specFinished) != 3 {
+		t.Fatalf("expected 3 reported specs (p1, p2, after), got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	if got := rep.specFinished[0]; got.Name != "p1" || !got.Failed {
+		t.Errorf("p1 reported wrong: %+v", got)
+	}
+	if got := rep.specFinished[1]; got.Name != "p2" || !got.Unstarted || got.Failed {
+		t.Errorf("p2 reported wrong (want Unstarted, not run at all on the non-real path): %+v", got)
+	}
+	if got := rep.specFinished[2]; got.Name != "after" || !got.Unstarted || got.Failed {
+		t.Errorf("\"after\" reported wrong (want Unstarted, not run at all): %+v", got)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 1 || end.FailedSpecs != 1 || end.UnstartedSpecs != 2 {
+		t.Fatalf("expected TotalSpecs=1 FailedSpecs=1 UnstartedSpecs=2, got %+v", end)
 	}
 }

@@ -530,6 +530,7 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 	k := 0
 	for i := lo; i <= hi; {
 		if r.failFastStopped {
+			r.reportRangeUnstarted(i, hi)
 			return
 		}
 		if k < len(children) && r.pg.groups[children[k]].Start == i {
@@ -556,6 +557,24 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 			r.stopIfStopped(t)
 		}
 		i++
+	}
+}
+
+// reportRangeUnstarted reports every plan index in [lo,hi] this shard owns (r.sel, RunShard, issue
+// #251) as Unstarted (issue #274): r.failFastStopped means none of them will ever run. It does not
+// need to distinguish a hook group's own range, an ItParallel batch, or a plain spec: every plan
+// index in this window is a real spec regardless of which of those three shapes contains it (a
+// BeforeAll/AfterAll hook occupies no plan index of its own — see hookGroup's doc comment), so a
+// flat scan over the window reports exactly the identities runRange itself would have visited, in
+// the same order.
+func (r *groupRun) reportRangeUnstarted(lo, hi int) {
+	if r.rep == nil {
+		return
+	}
+	for i := lo; i <= hi; i++ {
+		if r.sel.included(i) {
+			reportSpecUnstarted(r.rep, r.plan, i)
+		}
 	}
 }
 
@@ -873,7 +892,11 @@ func (r *groupRun) runParallelGroup(t *testing.T, prefix string, pi int) {
 		// runRange's plain-spec case, rather than running the rest of the range regardless.
 		for i := rng.Start; i <= rng.End; i++ {
 			r.runSpec(t, prefix, i)
-			if r.stopped.Load() || r.failFastStopped {
+			if r.failFastStopped {
+				r.reportRangeUnstarted(i+1, rng.End)
+				return
+			}
+			if r.stopped.Load() {
 				return
 			}
 		}
