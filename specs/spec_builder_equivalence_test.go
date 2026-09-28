@@ -26,6 +26,8 @@ func classifyOutcome(e report.SpecResultEvent) string {
 		return "skipped"
 	case e.Pending:
 		return "pending"
+	case e.Failed && e.Output != "":
+		return "error" // a recovered panic's stack trace, as report.classifyStatus reads it
 	case e.Failed:
 		return "failed"
 	case e.Filtered:

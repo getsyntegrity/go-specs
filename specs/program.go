@@ -6,6 +6,7 @@
 package specs
 
 import (
+	"runtime/debug"
 	"sync"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -264,7 +265,8 @@ func runAll(steps []step) step {
 // execObserver (i.e. Runner.Run has a Reporter), each goroutine reports its own spec directly —
 // SpecStarted right before running it, SpecFinished once results[i] is known (after classifying
 // nil/parallelAbort{}/a real panic) — instead of the group being reported as a single opaque unit.
-// Failed is that spec's own result, not the group's aggregate failure record. Events from different
+// Failed is that spec's own result, not the group's aggregate failure record; a recovered panic also
+// carries its stack trace in Output, so it is classified as an error, not a failure (#314). Events from different
 // goroutines may interleave in any order; only started-before-finished is guaranteed per spec.
 // obs is read once from ctx before any goroutine starts, then only read (never mutated) by them,
 // so no synchronization is needed for the pointer itself; obs's own methods serialize the actual
@@ -280,6 +282,7 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		}
 		obs := ctx.execObserver
 		results := make([]failureRecord, len(steps))
+		outputs := make([]string, len(steps)) // a recovered panic's stack trace, by spec index
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
@@ -303,9 +306,16 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 				defer func() {
 					// Recording rule shared with the worker-pool engines — see panic_report.go. Only
 					// the reporting and release below are specific to this path.
+					alreadyFailed := results[i].Failed
 					recoverParallelSpecFailure(recover(), &results, i)
+					if !alreadyFailed && results[i].Failed {
+						// Only a real panic can flip Failed inside this defer. Its stack trace in
+						// Output is what report classifies as Error rather than Failed (#314), like
+						// the sequential engines' recoverSpecFailure.
+						outputs[i] = string(debug.Stack())
+					}
 					if obs != nil {
-						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message})
+						obs.specFinished(started, specResult{Failed: results[i].Failed, Message: results[i].Message, Output: outputs[i]})
 					}
 					releaseContext(child)
 				}()
