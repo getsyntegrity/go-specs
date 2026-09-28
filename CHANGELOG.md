@@ -6,6 +6,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.
+
 ### Added
 
 - **Breaking (report schema `"2"` → `"3"`).** A spec `CompiledSuite.SetFailFast(true)` or
