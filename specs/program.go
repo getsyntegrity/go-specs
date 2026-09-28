@@ -152,6 +152,12 @@ func specName(names []string, i int) string {
 // (#254). It is distinct from the suite's compile-time SkipIt/Skip marks, which never reach this
 // struct at all: they carry no before/body/after and are reported directly (specSkipped/reportMarks)
 // without ever running, so there is no specResult to build for them.
+//
+// A spec FailFast prevented from ever being reached (issue #274) never reaches this struct either,
+// for the same reason: nothing ran to classify. Both engines report it directly —
+// specExecutionObserver.specUnstarted (Builder/Runner) and reportSpecUnstarted (CompiledSuite,
+// execution_plan.go) — bypassing specResult/specFinished entirely, exactly as
+// specSkipped/specPending/reportMarks already do for a compile-time mark.
 type specResult struct {
 	Failed   bool
 	Filtered bool
@@ -180,6 +186,15 @@ type specExecutionObserver interface {
 	// specSkipped, but distinct from it (see runner.go's reportPending). Only Runner.Run's
 	// sequential group execution calls this, same as specSkipped.
 	specPending(name string, path []string)
+	// specUnstarted reports one spec fail-fast prevented from ever running (issue #274): a single
+	// SpecStarted + SpecFinished{Unstarted: true} pair, with no body ever run — mirroring
+	// specSkipped/specPending, but distinct from both: Skipped/Pending are the suite's own
+	// deliberate compile-time decisions, Unstarted means FailFast stopped the run before this spec
+	// (or its enclosing group) was ever reached. declared preserves the spec's original
+	// SkipIt/PendingIt declaration (report.DeclaredSkip/report.DeclaredPending) when the unreached
+	// spec was itself a compile-time mark, or report.DeclaredNone for an ordinary spec. Only
+	// runner.go's reportGroupsUnstarted/reportSpecsUnstartedFrom call this.
+	specUnstarted(name string, path []string, declared report.DeclaredKind)
 }
 
 // Program is a compiled execution program. Groups run in order; within a group, every spec runs its

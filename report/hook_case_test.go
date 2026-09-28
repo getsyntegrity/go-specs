@@ -39,6 +39,44 @@ func TestSpecResultEventSizeUnchanged(t *testing.T) {
 	}
 }
 
+// TestSpecResultEventCarriesUnstartedAndDeclaredWithNoSizeGrowth proves issue #274's Unstarted bool
+// and Declared DeclaredKind fields reuse the same struct padding HookKind already claimed (see
+// TestSpecResultEventSizeUnchanged above, still pinned at 112 bytes): adding two more single-byte
+// fields must not grow SpecResultEvent, since it is copied by value once per spec on every engine.
+func TestSpecResultEventCarriesUnstartedAndDeclaredWithNoSizeGrowth(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("size assertion is only meaningful on a 64-bit platform")
+	}
+	const want = 112
+	if got := unsafe.Sizeof(SpecResultEvent{}); got != want {
+		t.Fatalf("unsafe.Sizeof(SpecResultEvent{}) = %d, want %d bytes (issue #274 adds Unstarted/Declared "+
+			"into existing padding, exactly like HookKind did for #207 H10)", got, want)
+	}
+	e := SpecResultEvent{Unstarted: true, Declared: DeclaredSkip}
+	if !e.Unstarted || e.Declared != DeclaredSkip {
+		t.Fatalf("SpecResultEvent did not round-trip Unstarted/Declared: %+v", e)
+	}
+}
+
+// TestDeclaredKindString proves DeclaredKind renders the same plain "skip"/"pending" text a
+// report.Case.Declared field carries, and "" for DeclaredNone — the same convention HookKind.String
+// already established for Hook.
+func TestDeclaredKindString(t *testing.T) {
+	cases := []struct {
+		k    DeclaredKind
+		want string
+	}{
+		{DeclaredNone, ""},
+		{DeclaredSkip, "skip"},
+		{DeclaredPending, "pending"},
+	}
+	for _, tc := range cases {
+		if got := tc.k.String(); got != tc.want {
+			t.Fatalf("DeclaredKind(%d).String() = %q, want %q", tc.k, got, tc.want)
+		}
+	}
+}
+
 // TestSpecResultEventCarriesHook proves SpecResultEvent carries its own Hook, independent of the
 // embedded SpecStartEvent (which does not have a Hook field at all — see events.go's HookKind
 // doc): the marker lives only on the result event.

@@ -17,6 +17,8 @@ func TestClassifyStatus(t *testing.T) {
 		{"skipped", SpecResultEvent{Skipped: true}, StatusSkipped},
 		{"filtered", SpecResultEvent{Filtered: true}, StatusFiltered},
 		{"pending", SpecResultEvent{Pending: true}, StatusPending},
+		{"unstarted", SpecResultEvent{Unstarted: true}, StatusUnstarted},
+		{"unstarted with a declared skip", SpecResultEvent{Unstarted: true, Declared: DeclaredSkip}, StatusUnstarted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,6 +53,61 @@ func TestCollectorDeterministicOrderingAndTotals(t *testing.T) {
 	}
 	if r.Duration != 7*time.Millisecond {
 		t.Fatalf("report duration = %v, want sum of suite durations (7ms)", r.Duration)
+	}
+}
+
+// TestCollectorCopiesDeclaredOntoCase proves the Collector copies SpecResultEvent.Declared onto
+// the Case it builds, as a plain "skip"/"pending" string, exactly like it already does for Hook
+// (issue #274: a spec fail-fast prevented from running keeps its original SkipIt/PendingIt
+// declaration as metadata).
+func TestCollectorCopiesDeclaredOntoCase(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared DeclaredKind
+		want     string
+	}{
+		{"no declaration", DeclaredNone, ""},
+		{"declared skip", DeclaredSkip, "skip"},
+		{"declared pending", DeclaredPending, "pending"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewCollector()
+			c.SuiteStarted(SuiteStartEvent{Name: "S"})
+			c.SpecFinished(SpecResultEvent{
+				SpecStartEvent: SpecStartEvent{Name: "never reached"},
+				Unstarted:      true,
+				Declared:       tc.declared,
+			})
+			c.SuiteFinished(SuiteEndEvent{Name: "S"})
+			r := c.Report()
+			if got := r.Suites[0].Cases[0].Declared; got != tc.want {
+				t.Fatalf("Case.Declared = %q, want %q", got, tc.want)
+			}
+			if got := r.Suites[0].Cases[0].Status; got != StatusUnstarted {
+				t.Fatalf("Case.Status = %q, want %q", got, StatusUnstarted)
+			}
+		})
+	}
+}
+
+// TestCollectorUnstartedNeverCountsTowardTotals proves an Unstarted case is counted in the new
+// Unstarted bucket only, never in Total, at both suite and report level.
+func TestCollectorUnstartedNeverCountsTowardTotals(t *testing.T) {
+	c := NewCollector()
+	c.SuiteStarted(SuiteStartEvent{Name: "S"})
+	finishCase(c, "a1", nil, time.Millisecond, false, false, false, "", "")
+	c.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "a2"}, Unstarted: true})
+	c.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "a3"}, Unstarted: true})
+	c.SuiteFinished(SuiteEndEvent{Name: "S", TotalSpecs: 1, UnstartedSpecs: 2})
+	r := c.Report()
+
+	want := Totals{Total: 1, Passed: 1, Unstarted: 2}
+	if r.Suites[0].Totals != want {
+		t.Fatalf("suite totals = %+v, want %+v", r.Suites[0].Totals, want)
+	}
+	if r.Execution != want {
+		t.Fatalf("execution totals = %+v, want %+v", r.Execution, want)
 	}
 }
 

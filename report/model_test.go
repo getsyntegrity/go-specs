@@ -58,3 +58,20 @@ func TestTotalsAdd(t *testing.T) {
 		t.Fatalf("Totals = %+v, want %+v", tot, want)
 	}
 }
+
+// TestTotalsAddUnstartedNeverCountsTowardTotal proves the maintainer decision for issue #274:
+// Total keeps its pre-existing meaning (specs that entered execution, plus declared
+// SkipIt/PendingIt that were actually processed) and a fail-fast-prevented Unstarted spec never
+// adds to it, even though every other status does.
+func TestTotalsAddUnstartedNeverCountsTowardTotal(t *testing.T) {
+	var tot Totals
+	tot.add(StatusPassed)
+	tot.add(StatusFailed)
+	tot.add(StatusUnstarted)
+	tot.add(StatusUnstarted)
+
+	want := Totals{Total: 2, Passed: 1, Failed: 1, Unstarted: 2}
+	if tot != want {
+		t.Fatalf("Totals = %+v, want %+v (Unstarted must not add to Total)", tot, want)
+	}
+}

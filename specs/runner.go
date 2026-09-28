@@ -51,13 +51,14 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // share one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
 // passed+failed+skipped+filtered+pending.
 type reporterObserver struct {
-	mu       sync.Mutex
-	rep      report.EventReporter
-	total    int
-	failed   int
-	skipped  int
-	filtered int
-	pending  int
+	mu        sync.Mutex
+	rep       report.EventReporter
+	total     int
+	failed    int
+	skipped   int
+	filtered  int
+	pending   int
+	unstarted int
 }
 
 func (o *reporterObserver) specStarted(name string, path []string) report.SpecStartEvent {
@@ -120,6 +121,22 @@ func (o *reporterObserver) specPending(name string, path []string) {
 	o.total++
 	o.pending++
 	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Pending: true})
+}
+
+// specUnstarted reports one spec fail-fast prevented from ever running (issue #274): SpecStarted
+// immediately followed by SpecFinished{Unstarted: true, Declared: declared}, reusing the exact same
+// SpecStartEvent for both, mirroring specSkipped/specPending exactly — Duration is left at its zero
+// value, since no body ever ran, and Failed is always false. Counted in a separate unstarted
+// bucket, never in total: SuiteEndEvent.TotalSpecs keeps its pre-existing meaning of "specs that
+// entered execution, plus declared SkipIt/PendingIt that were actually processed" (see
+// report.Totals.add's doc comment for the same rule on the report side).
+func (o *reporterObserver) specUnstarted(name string, path []string, declared report.DeclaredKind) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	o.unstarted++
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Unstarted: true, Declared: declared})
 }
 
 var _ specExecutionObserver = (*reporterObserver)(nil)
@@ -200,14 +217,15 @@ func (r *Runner) Run(tb testing.TB) {
 	reportFocusExcluded(ctx, r.program.FocusExcluded)
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:          name,
-		Time:          time.Now(),
-		Duration:      time.Since(suiteStart),
-		TotalSpecs:    obs.total,
-		FailedSpecs:   obs.failed,
-		SkippedSpecs:  obs.skipped,
-		FilteredSpecs: obs.filtered,
-		PendingSpecs:  obs.pending,
+		Name:           name,
+		Time:           time.Now(),
+		Duration:       time.Since(suiteStart),
+		TotalSpecs:     obs.total,
+		FailedSpecs:    obs.failed,
+		SkippedSpecs:   obs.skipped,
+		FilteredSpecs:  obs.filtered,
+		PendingSpecs:   obs.pending,
+		UnstartedSpecs: obs.unstarted,
 	})
 }
 
@@ -219,12 +237,57 @@ func runGroups(ctx *Context, groups []group) {
 	n := len(groups)
 	for gi := 0; gi < n; gi++ {
 		if ctx.failFast && ctx.hasFailed() {
+			reportGroupsUnstarted(ctx, groups[gi:])
 			break
 		}
 		runGroup(ctx, &groups[gi])
 		if ctx.failFast && ctx.hasFailed() {
+			reportGroupsUnstarted(ctx, groups[gi+1:])
 			break
 		}
+	}
+}
+
+// reportGroupsUnstarted reports every spec of groups[:] as Unstarted (issue #274): FailFast stopped
+// the run before any of these groups was ever entered at all — distinct from
+// reportSpecsUnstartedFrom, which covers a stop partway through one already-entered group's own
+// specs. Each group's compile-time SkipIt/PendingIt marks are reported first, exactly mirroring
+// reportSkipped/reportPending's own ordering for a group that *was* reached, preserving their
+// original declaration via the Declared field instead of silently losing them (the gap issue #274
+// itself reports). A parallelStep group (g.names == nil, a whole ItParallel batch compiled as one
+// opaque step — see program.go's group.names doc comment) has no per-spec identity available at
+// this level without running it, so its specs are left unreported here, exactly as an unreached
+// group already was before this feature: a pre-existing limitation of this engine's ItParallel
+// shape (unlike CompiledSuite/Describe's ItParallel, which has full per-spec plan identity), not a
+// regression this change introduces.
+func reportGroupsUnstarted(ctx *Context, groups []group) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for gi := range groups {
+		g := &groups[gi]
+		for i, name := range g.skipped {
+			obs.specUnstarted(name, g.skippedPath(i), report.DeclaredSkip)
+		}
+		for i, name := range g.pendingSpecs {
+			obs.specUnstarted(name, g.pendingPath(i), report.DeclaredPending)
+		}
+		reportSpecsUnstartedFrom(ctx, g, 0)
+	}
+}
+
+// reportSpecsUnstartedFrom reports g.specs[from:] as Unstarted (issue #274): FailFast stopped the
+// run partway through this already-entered group's own specs. An index at or beyond g.names' bound
+// is a parallelStep group entry (see reportGroupsUnstarted's doc comment on why that shape cannot
+// be reported here) and is skipped, not reported.
+func reportSpecsUnstartedFrom(ctx *Context, g *group, from int) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for i := from; i < len(g.specs) && i < len(g.names); i++ {
+		obs.specUnstarted(g.names[i], g.specPath(i), report.DeclaredNone)
 	}
 }
 
@@ -303,6 +366,7 @@ func runSpecsRecovered(ctx *Context, g *group) {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 		}
 		if ctx.failFast && failed {
+			reportSpecsUnstartedFrom(ctx, g, i+1)
 			return
 		}
 	}

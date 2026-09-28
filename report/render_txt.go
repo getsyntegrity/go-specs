@@ -18,9 +18,9 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	bw := &errWriter{w: w}
 
 	bw.printf("go-specs report\n")
-	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d  Pending: %d\n",
+	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d  Pending: %d  Unstarted: %d\n",
 		r.Execution.Total, r.Execution.Passed, r.Execution.Failed, r.Execution.Error,
-		r.Execution.Skipped, r.Execution.Filtered, r.Execution.Pending)
+		r.Execution.Skipped, r.Execution.Filtered, r.Execution.Pending, r.Execution.Unstarted)
 	bw.printf("Duration: %ss\n", formatSeconds(r.Duration))
 
 	for _, s := range r.Suites {
@@ -28,9 +28,9 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 		for _, c := range s.Cases {
 			renderTXTCase(bw, c)
 		}
-		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d pending=%d\n",
+		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d pending=%d unstarted=%d\n",
 			s.Totals.Total, s.Totals.Passed, s.Totals.Failed, s.Totals.Error,
-			s.Totals.Skipped, s.Totals.Filtered, s.Totals.Pending)
+			s.Totals.Skipped, s.Totals.Filtered, s.Totals.Pending, s.Totals.Unstarted)
 	}
 
 	if len(r.Coverage.Packages) > 0 {

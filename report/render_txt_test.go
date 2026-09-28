@@ -70,6 +70,35 @@ func TestRenderTXTIncludesPendingInTotals(t *testing.T) {
 	}
 }
 
+// TestRenderTXTIncludesUnstartedInTotals proves a fail-fast-prevented spec (issue #274) surfaces
+// in the totals lines (overall and per-suite), same as pending/skipped/filtered — no per-case
+// detail line, since it never ran and has no diagnostics to show.
+func TestRenderTXTIncludesUnstartedInTotals(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 0, Unstarted: 1},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 0, Unstarted: 1},
+			Cases:  []Case{{Name: "never reached", Status: StatusUnstarted}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderTXT(&buf, r); err != nil {
+		t.Fatalf("RenderTXT: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Unstarted: 1") {
+		t.Fatalf("expected overall totals line to include \"Unstarted: 1\", got:\n%s", out)
+	}
+	if !strings.Contains(out, "unstarted=1") {
+		t.Fatalf("expected suite totals line to include \"unstarted=1\", got:\n%s", out)
+	}
+	if strings.Contains(out, "never reached") {
+		t.Fatalf("expected no per-case detail line for an unstarted spec, got:\n%s", out)
+	}
+}
+
 func TestRenderTXTDeterministic(t *testing.T) {
 	r := sampleReport()
 	var a, b bytes.Buffer
