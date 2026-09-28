@@ -321,7 +321,7 @@ by both).
 | | `-producers` | — | Required: a path to the manifest file described below. There is no default and no `go list` fallback. |
 | | `-coverprofile` | — | Optional: the one combined file `go test -coverprofile=...` wrote. Omit it if the run collected no coverage. |
 | | `-json`, `-xml`, `-txt`, `-html` | — | Optional, one per format you want written; omit a flag to skip that format. At least one is normally set, or finalize does the ownership/producer bookkeeping and writes nothing. |
-| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. |
+| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. `-cleanup` requires at least one output flag, and no output path may resolve inside the run directory (relative paths and symlinks are resolved first); either mistake exits `78` before anything is rendered or deleted, and the shards stay in place. |
 | `gc` | `-report-dir` | `GO_SPECS_REPORT_DIR` | Optional, default `.go-specs/runs`, and — like `finalize` — must already be absolute. |
 | | `-retention` | — | Optional, default `24h`. Must be a positive duration; `gc` refuses `0s` or negative values with exit `78`, because a zero window would treat a run still in progress as abandoned. |
 | | `-dry-run` | — | Report what would be removed without touching the filesystem — run this first when pointing `gc` at a shared directory you do not fully trust yet. |

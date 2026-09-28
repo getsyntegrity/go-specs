@@ -173,3 +173,20 @@ func TestFinalizeConfigErrorRecordExits78(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
 	}
 }
+
+func TestFinalizeCleanupWithoutTargetsExits78AndKeepsShards(t *testing.T) {
+	base := secureTempDir(t)
+	own := initRun(t, base, "run-1", validToken)
+	writeShard(t, base, own, "run-1", validToken, producerA, passingReport())
+	manifest := writeManifest(t, t.TempDir(), producerA)
+
+	_, stderr, code := runCLI(t, []string{
+		"finalize", "-run-id", "run-1", "-token", string(validToken), "-report-dir", base, "-producers", manifest, "-cleanup",
+	}, nil)
+	if code != coordination.ExitConfig {
+		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(base, "run-1")); err != nil {
+		t.Fatalf("the run directory did not survive a rejected -cleanup: %v", err)
+	}
+}

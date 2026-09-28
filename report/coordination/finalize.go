@@ -59,7 +59,10 @@ type FinalizeResult struct {
 //
 // It runs, in order, honouring ctx cancellation between each step:
 //
-//  1. VerifyRunOwnership against run.json — fail-closed on any mismatch.
+//  1. VerifyRunOwnership against run.json — fail-closed on any mismatch. Then the options are
+//     validated before anything is read, rendered or deleted: Cleanup without any Target, or a
+//     Target whose resolved path (relative paths made absolute, symlinks resolved) lies inside
+//     the run directory, is a *ConfigError (exit 78) and every shard stays available.
 //  2. A config-error.json check. If present, it returns immediately with FinalizeResult.ConfigError
 //     set and nothing merged or rendered, so the caller can exit 78 (§8).
 //  3. Shard discovery and verification (discoverShards): every final shard is checked against
@@ -86,6 +89,12 @@ func Finalize(ctx context.Context, opts FinalizeOptions) (FinalizeResult, error)
 		return FinalizeResult{}, err
 	}
 	base := ownership.BaseDir
+
+	// Reject option combinations that could destroy the only report output before anything is
+	// read, rendered or deleted (issue #309).
+	if err := validateFinalizeTargets(opts, base); err != nil {
+		return FinalizeResult{}, err
+	}
 
 	if err := ctx.Err(); err != nil {
 		return FinalizeResult{}, err

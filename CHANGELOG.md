@@ -8,6 +8,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Fixed
 
+- `coordination.Finalize` (and `go-specs-report finalize`) now rejects, before rendering or deleting anything, `Cleanup` with no output target and any output target whose resolved path (relative paths made absolute, symlinks resolved) lies inside the run directory. Both are configuration failures (`*ConfigError`, exit 78) and leave every shard in place; before, `finalize -cleanup` with no output flags silently deleted all shards, and a target inside the run directory was rendered and then deleted (#309).
+
 - Documentation now shows a `go test` shard invocation that works: `go test ./... -args -- -shard 1/2` (or `SHARD=1/2`). `-shard` is not registered with Go's `flag` package, so the previously implied `-args -shard 1/2` exits with `flag provided but not defined`. Verified through a real `go test` subprocess; invalid values still fail closed (#312).
 - Registering on a `*Spec` after its `Describe`/`When` scope closed (a captured handle used after `Describe` returned, or from inside an executing `It`) now panics with an actionable `specs: Spec.<Method> called after its Describe/When scope closed` message instead of a nil dereference or a write into a reused compiler (#317). The zero-value `Spec` diagnostic is unchanged.
 - **Breaking.** `BeforeEach`/`AfterEach` registered after an `It` (or other spec) or a nested `Describe`/`When` in the same scope now panic at build time on `Spec` (compiler and `Analyze` paths) and `Builder`, instead of silently applying only to later specs (#307). Declare per-spec hooks before the first spec or nested scope of their scope; suites that relied on the old behavior must reorder them. See `docs/DSL.md`.
