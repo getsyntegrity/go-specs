@@ -3,13 +3,13 @@
 # `go build`), `unit` (`go test ./...`), `race` (`go test -race ./...`),
 # `bench-smoke` (execute + race-check benchmark code paths), `report-cli`
 # (the documented go-specs-report CI flow, run for real), `lint`,
-# `govulncheck`, and `goreleaser` (check + dry-run release). Each concern is its
-# own check in the PR's status list instead of one line item that could fail
-# for any of eight different reasons. The test jobs used to wait for `verify`
-# (`needs:`); that put ~30s on every run's critical path for no correctness
-# gain, since `verify` fails the run on its own either way. Every Go job
-# restores its own flavour of the Go build cache (see
-# .github/actions/setup-go/action.yml).
+# `govulncheck`, `goreleaser` (check + dry-run release), and `dependency-review`
+# (PR-only, see its own comment). Each concern is its own check in the PR's
+# status list instead of one line item that could fail for any of nine
+# different reasons. The test jobs used to wait for `verify` (`needs:`); that
+# put ~30s on every run's critical path for no correctness gain, since
+# `verify` fails the run on its own either way. Every Go job restores its own
+# flavour of the Go build cache (see .github/actions/setup-go/action.yml).
 #
 # Runs once, on the toolchain pinned in .go-version and ubuntu-latest only --
 # no version/OS matrix. A matrix earning its cost needs a reason for each leg
@@ -22,43 +22,66 @@
 # container-based workflow tool being available.
 #
 # The `goreleaser` job runs `goreleaser check` and a `--snapshot` release on
-# every push/PR to develop/main, the same branches release.yml tags and
-# publishes from on every push to main. `goreleaser check` only validates
-# the config's schema; it does not resolve `main:` build paths, so it would
-# not have caught .goreleaser.yaml pointing `builds` at a `tools/specs-cli`
-# entrypoint that never existed on develop -- the bug fixed in #130. Only a
-# real `--snapshot` release attempt does, and it does so on every PR instead
-# of on the first push to main, where release.yml would otherwise discover
-# it while creating a real tag.
+# every PR targeting develop/main and every entry into the merge queue, the
+# same branches release.yml tags and publishes from on a develop -> main or
+# hotfix/* -> main merge. `goreleaser check` only validates the config's
+# schema; it does not resolve `main:` build paths, so it would not have
+# caught .goreleaser.yaml pointing `builds` at a `tools/specs-cli` entrypoint
+# that never existed on develop -- the bug fixed in #130. Only a real
+# `--snapshot` release attempt does, and it does so on every PR instead of on
+# the first release, where release.yml would otherwise discover it while
+# creating a real tag.
+#
+# `ci-ok` is the single stable required-check name (docs/CI.md): it needs
+# every other job in this file, succeeds only when each of them succeeded or
+# was skipped, and runs in seconds. A branch ruleset names `ci-ok` as its one
+# required status check instead of naming every job individually, so adding,
+# renaming, or removing a job here never requires a ruleset edit to keep
+# merges unblocked -- docs/investigations/odd-tasks/pr-gated-pipeline.md's
+# Decision 2 has the full reasoning.
+#
+# No `push` trigger (docs/investigations/odd-tasks/pr-gated-pipeline.md,
+# Decision 1): code reaches `develop` or `main` through a pull request or a
+# merge-queue entry, both already covered below, so a `push` trigger here
+# would only re-run a commit `pull_request` already ran. The one exception is
+# release-prep.yml's `chore(release): prepare` commit, which the release App
+# pushes straight onto `develop`: release-prep.yml refuses that push unless
+# the commit changes only CHANGELOG.md, and the release PR's
+# `pull_request: synchronize` run validates it before it can reach `main`
+# (Decision 5).
 name: CI
 
 on:
-  push:
-    branches: [develop, main]
   pull_request:
     branches: [develop, main]
+  merge_group:
+  workflow_dispatch:
 
 # Least-privilege default: every job below only reads the checked-out repository. `lint`,
-# `govulncheck`, `verify`, `unit`, `race`, `bench-smoke`, and `goreleaser` never write to the
-# repo, open a PR, or use a secret, so `contents: read` covers all of them and none needs a
-# job-level override here.
+# `govulncheck`, `verify`, `unit`, `race`, `bench-smoke`, `goreleaser`, and `dependency-review`
+# never write to the repo or use a secret, so `contents: read` covers all of them and none needs
+# a job-level override here beyond dependency-review's own job-scoped `pull-requests: write`.
 permissions:
   contents: read
 
-# Cancel a PR's superseded runs (a new push on the same PR obsoletes the one in flight),
-# but never cancel a push run on develop/main: those are the record of what actually ran
-# against that commit, and GitHub Actions can't tell "superseded" from "a second commit
-# landed a second later" on a push trigger the way it can for a PR's head ref.
+# Cancel a PR's superseded runs (a new push on the same PR obsoletes the one in flight); never
+# cancel a merge-queue or manual-dispatch run, since those are the record of what actually ran
+# against that exact merge-group entry or dispatch, and GitHub Actions can't retarget "superseded"
+# onto them the way it can a PR's head ref. Keyed on the PR number rather than `github.ref` so
+# every push to the same PR branch shares one concurrency group regardless of how the ref itself
+# is spelled; falls back to `github.ref` for the non-PR triggers (merge_group, workflow_dispatch),
+# which have no PR number.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Timeout policy: every job below gets an explicit timeout-minutes so a hang runs for minutes
-# instead of GitHub's 6-hour default. Static/fast jobs (verify, unit, bench-smoke, govulncheck)
-# get 10; jobs with more to compile or check (report-cli, lint) get 15; race gets 20, since
-# race-instrumented compilation is the slowest step in this file (see
+# instead of GitHub's 6-hour default. Static/fast jobs (verify, unit, bench-smoke, govulncheck,
+# dependency-review) get 10; jobs with more to compile or check (report-cli, lint) get 15; race
+# gets 20, since race-instrumented compilation is the slowest step in this file (see
 # .github/actions/setup-go/action.yml's own comment); goreleaser gets 25, matching a real build
-# plus a --snapshot release across every configured target.
+# plus a --snapshot release across every configured target; ci-ok gets 5, since it only reads its
+# own needs' results.
 #
 # Checkout policy: every checkout below sets persist-credentials: false. No job in this file
 # pushes a commit, a tag or a branch, so nothing needs the credential actions/checkout would
@@ -465,3 +488,74 @@ jobs:
 
       - name: Dry-run release
         run: goreleaser release --snapshot --clean
+
+  # Moved here from the now-deleted dependency-review.yml (Decision 1 of
+  # docs/investigations/odd-tasks/pr-gated-pipeline.md): this workflow no longer has a `push`
+  # trigger, so a job that only ever ran on `pull_request` belongs alongside the rest of this
+  # file's PR-only checks rather than in a workflow of its own. `if:` keeps it a genuine no-op
+  # (skipped, not failed) on the two non-PR triggers this file also has (merge_group,
+  # workflow_dispatch): there is no PR diff to review on either of those, and `ci-ok` below treats
+  # a skip here as fine specifically because this is the one job in the file that is expected to
+  # skip sometimes.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # 10 minutes: a manifest diff against the advisory database, nothing that compiles or builds.
+    timeout-minutes: 10
+    # Job-scoped, not covered by the workflow-level contents: read default above: pull-requests:
+    # write lets comment-summary-in-pr below post the failure summary as a PR comment.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Required by actions/dependency-review-action per its own docs: it diffs the base and head
+      # manifests (go.mod/go.sum here), and needs the checked-out working tree to read them from.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # moderate and above fails the check; low-severity advisories (often not exploitable in
+          # this module's actual usage) do not block a PR on their own.
+          fail-on-severity: moderate
+          # Only comments when there's something to flag -- a clean PR gets no extra noise.
+          comment-summary-in-pr: on-failure
+
+  # The single stable required-check name (docs/CI.md, docs/investigations/odd-tasks/
+  # pr-gated-pipeline.md's Decision 2): a branch ruleset names only `ci-ok`, never any job above by
+  # name, so renaming a job, adding a new one, or making govulncheck's Go version pin its own
+  # separate job next year never means also editing the ruleset to keep merges unblocked -- the
+  # ruleset's one required check is this job, and this job's own `needs:` is the thing that grows.
+  #
+  # `if: always()` is what lets it run (and therefore report a real pass/fail) even when a needed
+  # job failed; without it, GitHub Actions would skip `ci-ok` itself the moment any dependency
+  # failed, and a skipped required check blocks a merge exactly like a failed one but with a far
+  # less useful status line.
+  #
+  # The check below is deliberately generic (fail on `failure` or `cancelled`, not an allow-list of
+  # job names) rather than special-casing dependency-review's expected skip: a `skipped` result is
+  # fine for *any* need, because the only job in this file with an `if:` that can produce one is
+  # dependency-review on a non-PR event (see its own comment) -- there is nothing else here that
+  # skips, so no job-specific branch is needed to get that behaviour, and a future job gains the
+  # same skip-tolerant treatment automatically if it ever needs a similar `if:`.
+  # No `name:` on purpose: the check GitHub reports is then the job id, `ci-ok`, the exact string
+  # the rulesets require -- a display name would be a second spelling to keep in sync.
+  ci-ok:
+    needs: [verify, unit, race, bench-smoke, report-cli, lint, govulncheck, goreleaser, dependency-review]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded or was skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          BAD="$(echo "$NEEDS_JSON" | jq -c '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | {job: .key, result: .value.result}]')"
+          if [ "$(echo "$BAD" | jq 'length')" -gt 0 ]; then
+            echo "::error::one or more required jobs did not succeed: $BAD" >&2
+            exit 1
+          fi
+          echo "every required job succeeded or was skipped"

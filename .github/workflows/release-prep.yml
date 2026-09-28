@@ -203,6 +203,18 @@ jobs:
             git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
             git add CHANGELOG.md
             git commit -m "chore(release): prepare ${{ steps.version.outputs.next_version }}"
+            # On an ordinary release HEAD_REF is develop, so this push lands on develop through the
+            # App's ruleset bypass, and ci.yml has no push trigger: the commit reaches develop
+            # before any CI run sees it (the release PR's pull_request: synchronize run follows).
+            # That is acceptable only because the commit changes CHANGELOG.md and nothing else --
+            # its parent is a develop tip a pull request already validated, and no build, test,
+            # lint, or GoReleaser step reads CHANGELOG.md. Refuse to push if that ever stops being
+            # true: Decision 5 of docs/investigations/odd-tasks/pr-gated-pipeline.md.
+            CHANGED="$(git diff --name-only HEAD^ HEAD)"
+            if [ "$CHANGED" != "CHANGELOG.md" ]; then
+              echo "::error::The prepare commit must change only CHANGELOG.md, but it changes: ${CHANGED//$'\n'/, }. Refusing to push it past the CI gate." >&2
+              exit 1
+            fi
             git push origin "HEAD:${HEAD_REF}"
           fi
 

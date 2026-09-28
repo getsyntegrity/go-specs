@@ -1,10 +1,19 @@
 # CodeQL: static analysis for security and quality problems.
 #
-# Runs on every pull request and push to develop/main so a vulnerable or low-quality pattern is
-# caught before it lands, plus a weekly scheduled scan so a newly published CodeQL query (a query
-# pack update, not a code change here) still gets applied to code that hasn't changed recently --
-# without the weekly run, a query added after the last push to a stable file would never fire on
-# it. workflow_dispatch is for a manual re-run, e.g. right after bumping the query pack.
+# Runs on every pull request targeting develop/main, on every merge-queue entry, and on every push
+# to develop -- but never on a push to main (docs/investigations/odd-tasks/pr-gated-pipeline.md,
+# Decision 1): a develop -> main or hotfix/* -> main merge already ran this exact tree's `analyze`
+# job once, either as the PR's own `pull_request` run or, if the ruleset requires it, as the
+# `merge_group` run right before merge -- a `push` run on main afterward would just repeat that
+# same analysis against the same already-scanned code. `push: [develop]` stays, though, because
+# GitHub's code scanning needs a baseline analysis committed on the repository's default branch to
+# diff a pull request's *new* alerts against; without it, every alert on every PR would show up as
+# "new" forever, since there would be nothing to compare against.
+#
+# Plus a weekly scheduled scan so a newly published CodeQL query (a query pack update, not a code
+# change here) still gets applied to code that hasn't changed recently -- without the weekly run, a
+# query added after the last push to a stable file would never fire on it. workflow_dispatch is for
+# a manual re-run, e.g. right after bumping the query pack.
 #
 # The Go build is manual (`go build ./...`) rather than CodeQL's `autobuild` action: go-specs pins
 # its toolchain in .go-version and GOTOOLCHAIN=local like every other workflow in this repo, and
@@ -26,8 +35,9 @@ name: CodeQL
 on:
   pull_request:
     branches: [develop, main]
+  merge_group:
   push:
-    branches: [develop, main]
+    branches: [develop]
   schedule:
     # Mondays at 03:17 UTC -- an off-the-hour time deliberately, so this doesn't compete with
     # every other repository's queued "top of the hour" scheduled workflow for runner capacity.
