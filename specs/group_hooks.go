@@ -984,6 +984,12 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	})
 	failed := ctx.hasFailed() || subTFailed
 	skipped := subTSkipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272). This
+	// is the one ItParallel model that runs against a real *testing.T subtest at all (see
+	// spec_body_parallel.go); Builder.ItParallel's parallelBackend already records its own Message.
+	message = ctx.assertionMessage(message, failed)
 	duration := time.Since(startTime)
 	if parked {
 		// Leaked deliberately, same rule as releaseContext/failUnsupportedSpecBodyParallel: the

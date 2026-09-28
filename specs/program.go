@@ -126,16 +126,21 @@ func specName(names []string, i int) string {
 	return names[i]
 }
 
-// specResult is the outcome of one spec's execution, threaded from the two places that can
-// classify it (runSpecsRecovered's runStepRecovered call and parallelStep's per-goroutine recover)
-// through to specExecutionObserver.specFinished. Message/Output are populated only where a real,
-// distinct source exists today — a recovered panic (Message: the panic value, Output: its stack
-// trace) or an ItParallel/parallelBackend failure (Message: the recorded string, Output: left
-// empty — parallelBackend has no separable output source). An ordinary Fatalf-based sequential
-// assertion failure does still reach specFinished — Failed is true, since recordFailure() runs
-// before the Fatalf call that triggers runtime.Goexit, and Goexit only unwinds the spec's own
-// subtest goroutine — but Message/Output stay empty for it: Goexit unwinds past the point where
-// this struct would otherwise be filled in; see runStepRecovered.
+// specResult is the outcome of one spec's execution, threaded from the places that can classify it
+// (runSpecsRecovered's runStepRecovered call, parallelStep's per-goroutine recover, and the
+// Describe/ExecutionPlan and Spec.ItParallel real-subtest paths in execution_plan.go/group_hooks.go)
+// through to specExecutionObserver.specFinished. Output is populated only where a real, distinct
+// source exists today — a recovered panic (its stack trace) — and stays empty otherwise, including
+// for an ItParallel/parallelBackend failure, which has no separable output source.
+//
+// Message is populated for a recovered panic (the panic value), an ItParallel/parallelBackend
+// failure (the recorded string), and, since issue #272, an ordinary built-in ctx.Expect/Context.Snapshot
+// assertion failure too: Context.failf (failure.go) records its formatted text on the Context before
+// calling backend.Fatalf, so a real *testing.T's Fatalf ending the goroutine with runtime.Goexit no
+// longer loses it — the caller falls back to that recorded text (Context.assertionMessage) exactly
+// when nothing was recovered. Message legitimately stays empty for a spec that failed only through
+// ctx.T directly (Error, Fatal, Fail, FailNow, or a Cleanup, #253): failf is never on that path, so
+// nothing was ever recorded to fall back to; see report/events.go's SpecResultEvent.Message doc.
 //
 // Filtered is true when external test selection (e.g. `go test -run` pattern) discarded the spec's
 // subtest before its body ran, threaded from runSpecIsolated/runSpecProgramIsolated — see their doc

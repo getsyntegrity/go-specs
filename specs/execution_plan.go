@@ -710,13 +710,15 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
@@ -754,6 +756,10 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 	// fails and then calls SkipNow must be reported Failed, not Skipped (#254), whichever of the
 	// subtest or the Context recorded that failure.
 	skipped = skipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272).
+	message = ctx.assertionMessage(message, failed)
 	if ran {
 		putTestBackend(ctx.backend)
 	}
