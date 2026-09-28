@@ -30,10 +30,13 @@ type failureRecord struct {
 	// file comment for why that inference loses real failures.
 	Failed bool
 	// Message is the failure text as the backend received it. "" is a valid value for a failed
-	// record. The sequential path leaves it empty: its text goes straight to the backend, and the
-	// reporter payload it would feed (SpecResultEvent.Message) is documented as empty for a
-	// Fatalf-based assertion failure in report/events.go — changing that is a reporter-payload
-	// change, not this one.
+	// record: an assertion that never touches failf (a direct ctx.T.Error/Fatal/FailNow, #253)
+	// leaves it empty, and the caller reports that unchanged (documented in report/events.go). The
+	// sequential path itself is populated by failf before it calls backend.Fatalf (issue #272): on a
+	// real *testing.T, Fatalf ends in runtime.Goexit and never returns, so recording the text here
+	// first is the only way a caller can still read it back once the subtest's goroutine has
+	// unwound — see runSpecProgramIsolated/runSpecIsolated/runParallelSpec, which fall back to this
+	// field exactly when the panic-recovery path they also check found nothing to report.
 	Message string
 	// File and Line are the user's assertion call site. Only the parallel path captures them (see
 	// parallelCallerLocation): there is no live testing.TB on a worker goroutine to mark as a helper,
@@ -86,11 +89,17 @@ func (c *Context) resetFailure() {
 
 // failf is the single failure path every built-in assertion entry point funnels through — EqualTo,
 // ExpectT.ToEqual, ExpectT.To, Expectation.To, Expectation.ToEqual and Context.Snapshot. It records
-// the authoritative failure, marks its own frame as a test helper, and reports the formatted
-// message to the backend, in that order.
+// the authoritative failure and its formatted message, marks its own frame as a test helper, and
+// reports that same message to the backend, in that order.
 //
 // The order is the whole point: on a real *testing.T, backend.Fatalf ends in runtime.Goexit and
-// never returns, so a call site that recorded after reporting would record nothing at all (#115).
+// never returns, so a call site that recorded after reporting would record nothing at all (#115) —
+// and, since #272, so would a call site that only formatted the message for the backend and never
+// kept a copy: nothing downstream of the Goexit could read it back either. Recording c.failure.Message
+// here, before the call that may never return, is what lets runSpecProgramIsolated/runSpecIsolated/
+// runParallelSpec still report the built-in assertion text after their subtest's goroutine has
+// already unwound.
+//
 // Because no assertion can reach the backend except through here, that ordering is no longer
 // something each call site has to remember.
 //
@@ -101,8 +110,9 @@ func (c *Context) resetFailure() {
 //
 // It is marked noinline for the same reason reportMatcherFailure was: the assertion fast paths
 // carry only the failure branch, never this tail and its variadic Fatalf setup. The message is
-// formatted once here and passed through as "%s", so a backend sees exactly the same text it used
-// to; the boxing that costs is on the failure path, where the spec is ending anyway.
+// formatted once here — into both c.failure.Message and the "%s" argument the backend receives, so
+// the two can never drift apart — which is also where the boxing this costs lands; the passing fast
+// path never reaches this function at all.
 //
 // c and c.backend are guaranteed non-nil by the caller: every assertion entry point returns early
 // without a backend, because a failure nobody can report must not be recorded either (a FailFast
@@ -111,8 +121,33 @@ func (c *Context) resetFailure() {
 //go:noinline
 func (c *Context) failf(format string, args ...any) {
 	c.failure.Failed = true
+	msg := fmt.Sprintf(format, args...)
+	c.failure.Message = msg
 	if c.tb != nil {
 		c.tb.Helper()
 	}
-	c.backend.Fatalf("%s", fmt.Sprintf(format, args...))
+	c.backend.Fatalf("%s", msg)
+}
+
+// assertionMessage resolves the message a caller should report for one spec, once it already knows
+// whether the spec failed: message unchanged when it is already non-empty, or c's built-in-assertion
+// text (c.failure.Message, set by failf above) when the spec failed and nothing else produced one.
+//
+// message wins whenever it is non-empty because every caller builds it from a recovered panic
+// (recoverSpecFailure) — and a panic during or after a built-in assertion failure describes a more
+// specific, later event than the assertion text that preceded it, so it keeps priority (issue #272).
+// That panic can only exist on a backend whose Fatalf does not itself end the goroutine (a fake
+// backend in a test, or parallelBackend, which panics with its own sentinel a caller never passes in
+// here as message); a real *testing.T's Fatalf ends in runtime.Goexit, so message is always "" there
+// and c.failure.Message is the only text left to report.
+//
+// c.failure.Message legitimately stays "" too, for a spec that failed only through ctx.T directly
+// (Error, Fatal, Fail, FailNow, or a Cleanup) — failf is never on that path, so c.failure never saw
+// it; see report/events.go's SpecResultEvent.Message doc for why that case is documented separately
+// rather than fixed here.
+func (c *Context) assertionMessage(message string, failed bool) string {
+	if message != "" || !failed || c == nil {
+		return message
+	}
+	return c.failure.Message
 }

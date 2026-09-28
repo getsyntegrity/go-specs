@@ -300,12 +300,14 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -346,6 +348,10 @@ func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []st
 	// agrees with the Failed value this function reports: a body that fails and then calls SkipNow
 	// must be reported failed, not skipped (#254) — see spec_body_parallel.go's doc comment.
 	skipped = skipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272).
+	message = ctx.assertionMessage(message, failed)
 	if ran {
 		putTestBackend(ctx.backend)
 		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB

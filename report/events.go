@@ -108,14 +108,15 @@ type SpecResultEvent struct {
 	// Filtered or Pending, and for a compile-time Skipped spec, since none of those ever ran a body.
 	// A runtime-Skipped spec (ctx.T.Skip/Skipf/SkipNow, issue #254) is the one Skipped case where
 	// Duration may be non-zero: its body did start running before it skipped.
-	Message string // short failure summary; empty when not Failed, and also empty for an
-	// ordinary Fatalf-based assertion failure even when Failed is true: runtime.Goexit unwinds the
-	// goroutine right there, before the message this event would carry is ever built (see
-	// specs.runStepRecovered). This event is still emitted for that spec — Failed reflects it — as
-	// long as the spec ran in its own subtest, which every spec does by default; only a Fatalf outside
-	// any subtest isolation (e.g. a fake backend that doesn't call Goexit at all) would behave
-	// differently. Message is populated today for a recovered panic (the panic value) and for an
-	// ItParallel/parallelBackend failure (the recorded failure string).
+	Message string // short failure summary; empty when not Failed. Populated for a recovered panic
+	// (the panic value), an ItParallel/parallelBackend failure (the recorded failure string), and,
+	// since issue #272, an ordinary built-in ctx.Expect/Context.Snapshot assertion failure too: the
+	// engine records the formatted assertion text before calling the backend, so a real *testing.T's
+	// Fatalf ending the goroutine with runtime.Goexit right there no longer discards it. Message stays
+	// empty only for a spec that failed exclusively through ctx.T directly — Error, Fatal, Fail,
+	// FailNow, or a Cleanup (#253) — since none of those go through the built-in assertion path that
+	// records it; a plain `go test` run still shows that failure (`--- FAIL`), just with no structured
+	// text for a report.EventReporter to carry.
 	Output string // full output/stack trace, if any; only a recovered panic produces one today (its
 	// stack trace) — left empty everywhere else, including ItParallel, which has no separable output
 	// source to draw from.
