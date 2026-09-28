@@ -202,6 +202,24 @@ type specExecutionObserver interface {
 // Runner.
 type Program struct {
 	Groups []group
+	// FocusedNames holds the full Describe breadcrumb of every focused (FIt/Focus) spec this
+	// program's Builder kept (issue #273): empty unless the suite has at least one. Used by
+	// Runner.Run's fail-on-focus check (reportFocusPolicy) for its diagnostic; RunShard propagates
+	// it to every shard's own Program unchanged, so each shard's own enclosing test still fails when
+	// focus is active, even one that draws none of the focused group's specs.
+	FocusedNames []string
+	// FocusExcludedCount is the total number of specs this program's Builder dropped because of an
+	// active focus (issue #273) — every non-focus It/SkipIt/PendingIt/ItParallel item in the same
+	// Builder.Describe/top-level call. Kept apart from len(FocusExcluded) because RunShard only
+	// propagates the detailed marks (below) to shard 0, but every shard's diagnostic still needs the
+	// suite-wide total.
+	FocusExcludedCount int
+	// FocusExcluded holds the identity of each spec FocusExcludedCount counts, for Filtered
+	// reporting. Reported exactly once — by Run, or by RunShard's shard 0 (see scheduler.go's
+	// shardProgram) — never nil'd out for a later shard's Program, only left empty: an excluded spec
+	// never became part of any group to begin with (see builder.go's finalize), so there is nothing
+	// shard-specific about it to select.
+	FocusExcluded []specMark
 }
 
 // runAll returns a single step that runs the given steps in order. Used to wrap one spec's

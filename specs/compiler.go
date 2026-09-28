@@ -354,6 +354,12 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 	if len(c.focusIndices) == 0 {
 		return
 	}
+	// Allocated unconditionally, even if nothing below ends up excluded (every registered spec
+	// happened to be an FIt): focusedCount must be set so the fail-on-focus check (issue #273) still
+	// fires — that check is about focus being active at all, not about anything being excluded.
+	if c.groups == nil {
+		c.groups = &planGroups{}
+	}
 	plan := c.plan
 	n := len(plan.Names)
 	oldToNew := make([]int, n)
@@ -379,16 +385,44 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 		pathScopeStart = append(pathScopeStart, plan.PathScopeStart[oldIdx])
 		pathScopeLen = append(pathScopeLen, plan.PathScopeLen[oldIdx])
 	}
+	// Every dropped index — a plain It, or a spec belonging to a dropped ItParallel run: this
+	// compiler never emits ItParallel any differently from It (see EmitItParallel), so both look
+	// identical here — is recorded before plan.Names/FullNames are overwritten below, so it can
+	// still be reported, as Filtered, instead of vanishing without a trace (issue #273).
+	for oldIdx := 0; oldIdx < n; oldIdx++ {
+		if oldToNew[oldIdx] == -1 {
+			registerFocusExcludedMark(&c.groups, plan.Names[oldIdx], scopesFromPlan(plan, oldIdx))
+		}
+	}
+	c.groups.focusedCount = len(fullNames)
+	c.groups.focusedNames = append([]string(nil), fullNames...)
+
 	plan.Names, plan.FullNames = names, fullNames
 	plan.ProgramStart, plan.ProgramLen = programStart, programLen
 	plan.PathScopeStart, plan.PathScopeLen = pathScopeStart, pathScopeLen
 
-	if c.groups != nil {
-		// Every unfocused SkipIt/PendingIt is dropped too, the same as every unfocused It.
-		c.groups.skipped = nil
-		c.groups.pending = nil
-		c.groups = remapHookGroups(c.groups, oldToNew)
+	// Every unfocused SkipIt/PendingIt mark is excluded too, the same as every unfocused It (issue
+	// #245) — but, since issue #273, moved into focusExcluded rather than dropped, so it is still
+	// reported, as Filtered rather than Skipped/Pending.
+	c.groups.focusExcluded = append(c.groups.focusExcluded, c.groups.skipped...)
+	c.groups.focusExcluded = append(c.groups.focusExcluded, c.groups.pending...)
+	c.groups.skipped = nil
+	c.groups.pending = nil
+	c.groups = remapHookGroups(c.groups, oldToNew)
+}
+
+// scopesFromPlan returns plan spec i's enclosing declared scopes (its PathScopes window), a fresh
+// copy — matching specMark.path's "enclosing scopes, own name not included" convention (see
+// markScopes, the arena path's equivalent).
+func scopesFromPlan(plan *ExecutionPlan, i int) []string {
+	if i < 0 || i >= len(plan.PathScopeStart) || i >= len(plan.PathScopeLen) {
+		return nil
 	}
+	start, length := plan.PathScopeStart[i], plan.PathScopeLen[i]
+	if start < 0 || length < 0 || start+length > len(plan.PathScopes) {
+		return nil
+	}
+	return append([]string(nil), plan.PathScopes[start:start+length]...)
 }
 
 // Plan returns the built ExecutionPlan. Caller owns it after TakePlan; compiler is reset.

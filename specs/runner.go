@@ -141,6 +141,39 @@ func (o *reporterObserver) specUnstarted(name string, path []string, declared re
 
 var _ specExecutionObserver = (*reporterObserver)(nil)
 
+// reportFocusPolicy fails tb via Errorf when program registered at least one focused (FIt/Focus)
+// spec and GO_SPECS_ALLOW_FOCUS=1 does not opt out (issue #273): a forgotten debugging focus must
+// not let a partial suite report green. Errorf, not Fatalf/FailNow: the focused specs still run and
+// report their own results below — this only marks the enclosing test failed, it never stops or
+// skips the run. See execution_plan.go's CompiledSuite.reportFocusPolicy for the Describe/
+// ExecutionPlan engine's mirror of this exact same policy.
+func reportFocusPolicy(tb testing.TB, program *Program) {
+	if program == nil || len(program.FocusedNames) == 0 || focusAllowed() {
+		return
+	}
+	tb.Helper()
+	tb.Errorf("%s", focusPolicyMessage(len(program.FocusedNames), program.FocusExcludedCount, program.FocusedNames))
+}
+
+// reportFocusExcluded reports every mark in marks as Filtered (issue #273): a spec this program's
+// Builder dropped because of an active focus elsewhere in the same Builder.Describe/top-level call.
+// Unlike reportSkipped/reportPending (runGroup), this runs once for the whole program, not per
+// group — an excluded spec never became part of any group at all (see builder.go's finalize), so
+// there is no group to attach it to. A nil ctx.execObserver (no Reporter attached) means nothing
+// happens, the same "nothing to report without one" rule every other compile-time-only report in
+// this package already follows.
+func reportFocusExcluded(ctx *Context, marks []specMark) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for _, m := range marks {
+		path := append(append([]string(nil), m.path...), m.name)
+		started := obs.specStarted(m.name, path)
+		obs.specFinished(started, specResult{Filtered: true})
+	}
+}
+
 // Run executes all groups in order. Within each group, every spec runs its own before hooks, body,
 // and after hooks (reverse order) as one unit — see runSpecWithHooks. Zero allocations in the loop
 // when Reporter is nil; deterministic.
@@ -149,7 +182,15 @@ var _ specExecutionObserver = (*reporterObserver)(nil)
 // testing.T.Fatal/Fatalf/FailNow in before or the spec (runtime.Goexit) still guarantees after runs,
 // via a defer registered before before/body ever start — see runSpecWithHooks for the exact contract.
 func (r *Runner) Run(tb testing.TB) {
-	if r == nil || r.program == nil || tb == nil || len(r.program.Groups) == 0 {
+	if r == nil || r.program == nil || tb == nil {
+		return
+	}
+	// Checked unconditionally, before the empty-program early return below: RunShard (scheduler.go)
+	// propagates FocusedNames to every shard's own Program regardless of what that shard draws, so
+	// every shard's enclosing test fails on its own when focus is active (issue #273's "ALWAYS" —
+	// each shard is ordinarily its own CI job).
+	reportFocusPolicy(tb, r.program)
+	if len(r.program.Groups) == 0 && len(r.program.FocusExcluded) == 0 {
 		return
 	}
 	backend := asTestBackend(tb)
@@ -173,6 +214,7 @@ func (r *Runner) Run(tb testing.TB) {
 	ctx.execObserver = obs
 	suiteStart := time.Now()
 	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
+	reportFocusExcluded(ctx, r.program.FocusExcluded)
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:           name,
