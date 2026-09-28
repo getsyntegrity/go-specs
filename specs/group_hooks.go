@@ -89,6 +89,63 @@ type planGroups struct {
 	// than as a new CompiledSuite/ExecutionPlan field, for the same H10 reason as every other field
 	// of this struct.
 	failFast bool
+	// focusedCount and focusedNames describe this suite's active focus, if any (issue #273):
+	// focusedCount is the number of FIt specs kept (0 means no focus is active at all, the common
+	// case, costing nothing beyond this already-lazily-allocated struct); focusedNames names each
+	// one, for the fail-on-focus diagnostic (see focusPolicyMessage) — a bare breadcrumb from the
+	// bytecode-compiler path, or "breadcrumb (file:line)" from the Analyze/registry arena path,
+	// which already has the location on the node at zero extra cost (see registerFocusedSpec).
+	focusedCount int
+	focusedNames []string
+	// focusExcluded holds the identity of every spec (real It, and now also a SkipIt/PendingIt mark
+	// or an ItParallel spec that would otherwise vanish without a trace) this suite's active focus
+	// dropped (issue #273) — reported as Filtered exactly once per Run, or per RunShard's shard 0
+	// (see shardSelection.reportsMarks, which already gates skipped/pending the same way).
+	focusExcluded []specMark
+}
+
+// registerFocusedSpec records one focused (FIt) spec's identity for the fail-on-focus diagnostic
+// (issue #273), allocating *pg on first use — the same lazy-allocation rule every other field of
+// planGroups already follows (H10). location is the spec's full Describe/It breadcrumb, optionally
+// followed by " (file:line)" when the caller already has that cheaply: the Analyze/registry arena
+// path does, straight off the ArenaNode it is already visiting (see buildExecutionPlanFromArenaRec);
+// the bytecode-compiler path passes just the breadcrumb, since capturing a caller location for
+// every FIt there would need new bookkeeping on an otherwise allocation-pinned compiler.
+func registerFocusedSpec(pg **planGroups, location string) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).focusedCount++
+	(*pg).focusedNames = append((*pg).focusedNames, location)
+}
+
+// registerFocusExcludedMark buffers one spec's identity into *pg.focusExcluded (issue #273):
+// exactly registerSkipMark/registerPendingMark's lazy-allocation shape, reused here for a spec (or
+// skip/pending mark, or ItParallel spec) an active focus dropped, so it can still be reported —
+// Filtered, not silently gone.
+func registerFocusExcludedMark(pg **planGroups, name string, scopes []string) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).focusExcluded = append((*pg).focusExcluded, specMark{name: name, path: append([]string(nil), scopes...)})
+}
+
+// reportFilteredMarks emits SpecStarted immediately followed by SpecFinished{Filtered: true} for
+// every mark — mirroring reportMarks (Skipped/Pending) exactly, but for a spec an active focus
+// excluded (issue #273): it never ran, and is reported as excluded-by-selection (Filtered), the
+// same status a `go test -run` pattern already produces for a discarded spec, not as
+// Skipped/Pending, since those describe a deliberate compile-time mark, not a focus doing the
+// dropping.
+func reportFilteredMarks(rep report.EventReporter, marks []specMark) {
+	if rep == nil {
+		return
+	}
+	for _, m := range marks {
+		path := append(append([]string(nil), m.path...), m.name)
+		started := report.SpecStartEvent{Name: m.name, Path: path, Time: time.Now()}
+		rep.SpecStarted(started)
+		rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Filtered: true})
+	}
 }
 
 // parallelRange is one ItParallel group (issue #245): a maximal run of consecutive ItParallel specs,
@@ -253,7 +310,8 @@ func remapHookGroups(pg *planGroups, oldToNew []int) *planGroups {
 		keptParallel = append(keptParallel, parallelRange{Start: newStart, End: newEnd})
 	}
 	pg.parallel = keptParallel
-	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 && len(pg.parallel) == 0 {
+	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 && len(pg.parallel) == 0 &&
+		pg.focusedCount == 0 && len(pg.focusExcluded) == 0 {
 		return nil
 	}
 	return pg

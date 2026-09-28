@@ -146,14 +146,22 @@ func TestFocusSkipPendingEquivalence_FlatMix(t *testing.T) {
 	})
 }
 
-// TestFocusSkipPendingEquivalence_Focused declares a mix with one FIt: only the focused spec
-// should appear in outcomes at all (unfocused It/SkipIt/PendingIt are dropped, not merely skipped),
-// on both *Spec build paths and Builder.
+// TestFocusSkipPendingEquivalence_Focused declares a mix with one FIt: only the focused spec runs,
+// and every other It/SkipIt/PendingIt is reported Filtered rather than run or reported under its
+// own kind (issue #273) — but every one is still reported, on both *Spec build paths and Builder.
+// Each subtest opts out of the fail-on-committed-focus policy (issue #273) with
+// GO_SPECS_ALLOW_FOCUS=1: this test is about the filter/report outcome, not that policy.
 func TestFocusSkipPendingEquivalence_Focused(t *testing.T) {
-	want := map[string]string{"suite/focused": "passed"}
+	want := map[string]string{
+		"suite/focused": "passed",
+		"suite/a":       "filtered",
+		"suite/b":       "filtered",
+		"suite/c":       "filtered",
+	}
 	wantRan := map[string]bool{"focused": true}
 
 	t.Run("compiler path", func(t *testing.T) {
+		t.Setenv(allowFocusEnvVar, "1")
 		ran := map[string]bool{}
 		rep := &recordingReporter{}
 		suite := BuildSuite(nil, "suite", func(s *Spec) {
@@ -171,6 +179,7 @@ func TestFocusSkipPendingEquivalence_Focused(t *testing.T) {
 	})
 
 	t.Run("registry path", func(t *testing.T) {
+		t.Setenv(allowFocusEnvVar, "1")
 		ran := map[string]bool{}
 		rep := &recordingReporter{}
 		var suite *CompiledSuite
@@ -191,6 +200,7 @@ func TestFocusSkipPendingEquivalence_Focused(t *testing.T) {
 	})
 
 	t.Run("Builder", func(t *testing.T) {
+		t.Setenv(allowFocusEnvVar, "1")
 		ran := map[string]bool{}
 		rep := &recordingReporter{}
 		b := NewBuilder()

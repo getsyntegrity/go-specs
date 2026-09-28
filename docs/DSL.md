@@ -284,10 +284,13 @@ how many were excluded, e.g.:
 go-specs: 1 focused spec(s) (FIt) are active, 2 spec(s) excluded; remove FIt or set GO_SPECS_ALLOW_FOCUS=1
 ```
 
-and, for the `Analyze`/registry build path, the focused spec's own file:line, since that path
-already records it on every node; the bytecode-compiler and `Builder` paths name the spec's full
-`Describe`/`It` breadcrumb instead — file:line is not cheaply available there without adding new
-capture machinery to an allocation-sensitive path.
+and, for the `Analyze`/registry build path, the focused spec's own file:line too, whenever caller-
+location capture is enabled (`specs.SetCaptureCallerLocation(true)`, off by default for unrelated
+allocation reasons — see its own doc comment): that path already records it on every node in that
+case, at zero extra cost. The bytecode-compiler and `Builder` paths name the spec's full
+`Describe`/`It` breadcrumb only, never a file:line — that path never records a caller location for
+any node, and adding it just for this diagnostic was not judged worth the new capture machinery on
+an allocation-pinned compiler.
 
 `GO_SPECS_ALLOW_FOCUS=1` is the only opt-out, and it disables *only* this failure — not the focus
 filtering itself, which still applies exactly as documented above. Set it as a real environment

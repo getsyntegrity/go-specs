@@ -279,8 +279,9 @@ func (s *Spec) It(name string, fn func(*Context)) {
 // SkipIt registers a spec that is skipped at compile time (issue #245): fn is never compiled or
 // run — it may be nil — but name is kept so the suite still reports it, as StatusSkipped
 // (report/model.go), the same way Builder.SkipIt already does (specs/builder.go). If this
-// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is dropped
-// entirely instead, exactly like an unfocused It (see FIt).
+// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is reported as
+// StatusFiltered instead — exactly like an unfocused It — not run, and not reported Skipped
+// (issue #273; see FIt).
 func (s *Spec) SkipIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
@@ -300,8 +301,8 @@ func (s *Spec) SkipIt(name string, fn func(*Context)) {
 // PendingIt registers a spec that is pending at compile time (issue #245): the specification
 // exists but fn — which may be nil, and is never compiled or run either way — does not, or is not
 // wired up yet. name is kept so the suite still reports it, as StatusPending (report/model.go),
-// distinct from Skipped, the same way Builder.PendingIt already does. Dropped entirely by a
-// suite-wide FIt, exactly like SkipIt.
+// distinct from Skipped, the same way Builder.PendingIt already does. Reported StatusFiltered
+// instead by a suite-wide FIt, exactly like SkipIt (issue #273).
 func (s *Spec) PendingIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
@@ -320,11 +321,18 @@ func (s *Spec) PendingIt(name string, fn func(*Context)) {
 
 // FIt registers a focused spec (issue #245): a nil fn is a no-op, exactly like Builder.FIt. If this
 // Describe/BuildSuite call registers at least one FIt anywhere in its tree, only focused specs
-// compile — every other It, SkipIt and PendingIt in the same call is dropped, never reported, the
-// same way Builder.finalize's focus filter already works. Hooks (BeforeEach/AfterEach,
+// compile — every other It, SkipIt and PendingIt in the same call is excluded from execution, the
+// same way Builder.finalize's focus filter already works, but (issue #273) is still reported, as
+// StatusFiltered, rather than vanishing without a trace. Hooks (BeforeEach/AfterEach,
 // BeforeAll/AfterAll) around a focused spec still run; a BeforeAll/AfterAll group left with zero
 // runnable specs after focus filtering is never entered, the same H3 rule that already applies to
 // a group declaring no It at all (docs/SUITE_HOOKS_CONTRACT.md).
+//
+// Since issue #273, an active focus is also a policy decision, not just a filter: unless
+// GO_SPECS_ALLOW_FOCUS=1 opts out, it fails the enclosing test (via tb.Errorf, so this focused spec
+// still runs and reports its own result) — a forgotten debugging FIt must not silently turn a
+// partial suite green. See reportFocusPolicy (runner.go, execution_plan.go) and docs/DSL.md's
+// "Committed focus fails the enclosing test".
 func (s *Spec) FIt(name string, fn func(*Context)) {
 	if s == nil || fn == nil {
 		return

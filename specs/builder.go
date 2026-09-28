@@ -306,13 +306,30 @@ func (b *Builder) hookKey() string {
 func (b *Builder) finalize() {
 	items := b.pending
 	if b.hasFocus {
+		var focusedNames []string
+		var excluded []specMark
 		filtered := items[:0]
 		for i := range items {
 			if items[i].kind == kindFocus {
 				filtered = append(filtered, items[i])
+				focusedNames = append(focusedNames, items[i].fullName)
+			} else {
+				// A dropped It/SkipIt/PendingIt/ItParallel item, recorded before it is discarded so
+				// Runner.Run can still report it — Filtered, not silently gone (issue #273). Reading
+				// items[i] here, in the same iteration that would otherwise overwrite it via the
+				// append above, is safe: that append only ever writes to index len(filtered), which
+				// by induction is <= i, and this branch (kindFocus false) never calls it this
+				// iteration, so items[i] is untouched until after this read.
+				excluded = append(excluded, specMark{name: items[i].name, path: items[i].scopeNames})
 			}
 		}
 		items = filtered
+		// Set even when excluded is empty (every registered spec happened to be an FIt): the
+		// fail-on-focus check (issue #273) is about focus being active at all, not about anything
+		// having been excluded.
+		b.program.FocusedNames = focusedNames
+		b.program.FocusExcluded = excluded
+		b.program.FocusExcludedCount = len(excluded)
 	}
 	var groups []group
 	curIdx := -1

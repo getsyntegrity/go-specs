@@ -326,8 +326,26 @@ func shardProgram(program *Program, shardIndex, shardCount int) (prog *Program, 
 			sharded = append(sharded, groups[gi])
 		}
 	}
-	if len(sharded) == 0 {
+	// marks is this shard's copy of program.FocusExcluded (issue #273): only shard 0 reports the
+	// detailed marks, the same deterministic rule CompiledSuite.RunShard already uses for compile-
+	// time SkipIt/PendingIt marks (shardSelection.reportsMarks) — the union across every shard must
+	// report each excluded spec exactly once.
+	var marks []specMark
+	if shardIndex == 0 {
+		marks = program.FocusExcluded
+	}
+	// A shard that draws no groups and has no marks to report still needs its own Program when
+	// focus is active suite-wide (FocusedNames non-empty): Runner.Run's fail-on-focus check must run
+	// for every shard, even one that draws none of the focused group's specs (issue #273's "ALWAYS"
+	// — each shard is ordinarily its own CI job). Without any of the three, this is the pre-existing
+	// "a valid shard may legitimately draw nothing" case (issue #174), unaffected.
+	if len(sharded) == 0 && len(marks) == 0 && len(program.FocusedNames) == 0 {
 		return nil, false
 	}
-	return &Program{Groups: sharded}, true
+	return &Program{
+		Groups:             sharded,
+		FocusedNames:       program.FocusedNames,
+		FocusExcludedCount: program.FocusExcludedCount,
+		FocusExcluded:      marks,
+	}, true
 }
