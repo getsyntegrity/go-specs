@@ -390,10 +390,10 @@ func TestRenderTXTAndHTMLDoNotCollapseHookCaseIdentity(t *testing.T) {
 	}
 }
 
-func TestHookCaseDisplayNameLeavesOrdinarySpecsUnchanged(t *testing.T) {
+func TestHookCaseDisplayNameUsesFullPathForOrdinarySpecs(t *testing.T) {
 	spec := Case{Name: "charges the card", Path: []string{"Checkout", "when cart has items", "charges the card"}}
-	if got := caseDisplayName(spec); got != "charges the card" {
-		t.Fatalf("ordinary spec display name = %q, want %q", got, "charges the card")
+	if got := caseDisplayName(spec); got != "Checkout/when cart has items/charges the card" {
+		t.Fatalf("ordinary spec display name = %q, want %q", got, "Checkout/when cart has items/charges the card")
 	}
 	rootHook := Case{Name: "[AfterAll]", Hook: "AfterAll"}
 	if got := caseDisplayName(rootHook); got != "[AfterAll]" {

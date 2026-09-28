@@ -16,6 +16,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 - Coverage profile parsing (`report.ParseCoverageProfile`, `report.ParseCoverageProfileMerged`, and so `go-specs report` finalization) now rejects a `mode:` other than `set`/`count`/`atomic`, negative execution or statement counts, and a repeated file/span with conflicting statement counts, instead of returning inflated or corrupt totals (#310).
 
+- TXT and HTML reports now print each ordinary case as its full scope path (`Checkout/when the cart is empty/fails`) instead of the bare leaf name, so two failing specs with the same name under different `When` blocks are distinguishable and the disambiguated paths from #275 are actually visible in those formats. Group hook cases keep their `<group path> [BeforeAll]` label (#313).
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.

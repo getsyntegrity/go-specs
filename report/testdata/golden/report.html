@@ -56,19 +56,19 @@
 
 <tr>
   <td><span class="status status-passed">passed</span></td>
-  <td>Checkout pays with a valid card</td>
+  <td>Checkout/Checkout pays with a valid card</td>
   <td>0.005s</td>
 </tr>
 
 <tr>
   <td><span class="status status-failed">failed</span></td>
-  <td>Checkout rejects an expired card<div class="diagnostics">expected status 402, got 200</div></td>
+  <td>Checkout/Checkout rejects an expired card<div class="diagnostics">expected status 402, got 200</div></td>
   <td>0.003s</td>
 </tr>
 
 <tr>
   <td><span class="status status-error">error</span></td>
-  <td>Checkout crashes on a nil cart<div class="diagnostics">recovered panic: nil pointer dereference</div><div class="diagnostics">goroutine 1 [running]:
+  <td>Checkout/Checkout crashes on a nil cart<div class="diagnostics">recovered panic: nil pointer dereference</div><div class="diagnostics">goroutine 1 [running]:
 main.crash()
 	/x/y.go:10 &#43;0x1a</div></td>
   <td>0.002s</td>
@@ -76,7 +76,7 @@ main.crash()
 
 <tr>
   <td><span class="status status-skipped">skipped</span></td>
-  <td>Checkout skips legacy flow</td>
+  <td>Checkout/Checkout skips legacy flow</td>
   <td>0.000s</td>
 </tr>
 
@@ -101,13 +101,13 @@ main.crash()
 
 <tr>
   <td><span class="status status-passed">passed</span></td>
-  <td>Cart totals items</td>
+  <td>Cart/Cart totals items</td>
   <td>0.004s</td>
 </tr>
 
 <tr>
   <td><span class="status status-filtered">filtered</span></td>
-  <td>Cart applies a coupon</td>
+  <td>Cart/Cart applies a coupon</td>
   <td>0.000s</td>
 </tr>
 
