@@ -86,6 +86,31 @@ type Context struct {
 	// goroutine while the offending body is parked, so a plain bool needs no synchronisation; the
 	// parked body never reads it. See spec_body_parallel.go for the full rationale.
 	poisoned bool
+
+	// isoRun, isoProgram, isoMessage, isoOutput, isoStarted, isoDone and isoSub back
+	// runSpecProgramIsolated's cached subtest closure (execution_plan.go, #244).
+	//
+	// isoRun is built once, the first time this *Context is used on the sequential *testing.T
+	// isolation path, and reused for every later spec — including specs from a completely different
+	// suite — that runs against this same pooled Context. It is safe to reuse across suites because
+	// it closes only over the Context pointer itself, never over a spec's program or names: those
+	// live in the fields below and are set fresh, immediately before every t.Run call, by
+	// runSpecProgramIsolated. Nothing else reads or writes these fields, and Reset intentionally
+	// leaves isoRun alone — clearing it here would throw away the very allocation this exists to
+	// avoid repeating.
+	//
+	// Before this cache, every spec on this path paid five allocations testing.T.Run itself does not
+	// charge: one each for the message/output pair (named returns captured by the old per-spec
+	// closure), one for that closure's own funcval, one for spec_body_parallel.go's bookkeeping
+	// struct, and one for its wrapping closure. Moving that state onto the Context — which is already
+	// pooled and, on the sequential path, reused spec to spec via contextPool — lets the same closure
+	// value serve every subsequent spec, so the cost is paid once per pooled Context rather than once
+	// per spec.
+	isoRun                func(*testing.T)
+	isoProgram            []Instruction
+	isoMessage, isoOutput string
+	isoStarted, isoDone   atomic.Bool
+	isoSub                *testing.T
 }
 
 // poison marks c as unsafe to reset or return to contextPool. It is deliberately one-way: Reset
