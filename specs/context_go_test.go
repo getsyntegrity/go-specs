@@ -171,7 +171,7 @@ func TestCtxGoSpecWaitsForTasksStillRunningWhenTheBodyReturns(t *testing.T) {
 			t.Errorf("b outcome = %q, want passed", o)
 		}
 		taskEnd, firstAfter, bBody := ev.index("task-end"), ev.index("after"), ev.index("b-body")
-		if taskEnd < 0 || !(taskEnd < firstAfter) || !(taskEnd < bBody) {
+		if taskEnd < 0 || taskEnd >= firstAfter || taskEnd >= bBody {
 			t.Errorf("events = %v: want task-end before AfterEach and before the next spec starts", ev.list)
 		}
 	})

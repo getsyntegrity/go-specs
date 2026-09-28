@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -34,10 +33,6 @@ func TestShardInvocationHelper(t *testing.T) {
 
 func goToolForShardInvocation(t *testing.T) string {
 	t.Helper()
-	p := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if st, err := os.Stat(p); err == nil && !st.IsDir() {
-		return p
-	}
 	p, err := exec.LookPath("go")
 	if err != nil {
 		t.Skipf("go tool not found: %v", err)
