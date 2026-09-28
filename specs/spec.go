@@ -40,17 +40,25 @@ type Spec struct {
 	suite       *CompiledSuite
 }
 
-// Describe starts a top-level describe block. May be called inside Analyze(fn) or directly.
-// After the callback returns, the spec tree is executed automatically (if tb is non-nil).
-// When top-level (no active registry), uses bytecode compiler: no NodeArena, plan built directly.
-// tb may be *testing.T or *testing.B (e.g. for scaling benchmarks).
-func Describe(tb testing.TB, name string, fn func(*Spec)) {
+// describeTopLevel is the shared implementation behind Describe, DescribeWithReporter, DescribeFlat
+// and DescribeFlatWithReporter (issue #276): all four start a top-level describe block the same way,
+// differing only in the reporter (nil for Describe and DescribeFlat). Extracted so a future fix to
+// the registry path only needs to change one body instead of four identical copies.
+//
+// callerLocation is called with skip=3 here, one more than a call made directly from a top-level
+// entry point would use, because this shared function adds one stack frame between the public entry
+// point and callerLocation: skip walks past describeTopLevel itself, past the entry point that called
+// it (Describe/DescribeWithReporter/DescribeFlat/DescribeFlatWithReporter), and lands on the user's
+// own call site. TestDescribeEntryPointsPinCallerLocationUnderRegistry
+// (specs/describe_entrypoint_location_test.go) pins this for all four entry points against the
+// Analyze/registry path, so a wrapper-attribution regression here fails loudly instead of drifting.
+func describeTopLevel(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn)
+		describeWithCompiler(tb, name, rep, fn)
 		return
 	}
 	defer ensureRegistry()()
-	file, line := callerLocation(2)
+	file, line := callerLocation(3)
 	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
 	if rootID < 0 {
 		return
@@ -60,7 +68,7 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -68,6 +76,14 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 		s.Compile()
 		s.Run()
 	}
+}
+
+// Describe starts a top-level describe block. May be called inside Analyze(fn) or directly.
+// After the callback returns, the spec tree is executed automatically (if tb is non-nil).
+// When top-level (no active registry), uses bytecode compiler: no NodeArena, plan built directly.
+// tb may be *testing.T or *testing.B (e.g. for scaling benchmarks).
+func Describe(tb testing.TB, name string, fn func(*Spec)) {
+	describeTopLevel(tb, name, nil, fn)
 }
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
@@ -127,29 +143,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 
 // DescribeWithReporter starts a top-level describe block with a reporter.
 func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, rep, fn)
 }
 
 // DescribeFlat is an alias for Describe, kept for compatibility (#110). Its name refers to the
@@ -160,57 +154,13 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 //
 // Prefer Describe.
 func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, nil, fn)
 }
 
 // DescribeFlatWithReporter is like DescribeFlat with a reporter: rep receives
 // SuiteStarted/SuiteFinished and SpecStarted/SpecFinished events for the run.
 func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, rep, fn)
 }
 
 // DescribeFast is an alias for DescribeFlat, and therefore for Describe (#110). It does not skip
