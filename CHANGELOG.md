@@ -12,6 +12,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 - Registering on a `*Spec` after its `Describe`/`When` scope closed (a captured handle used after `Describe` returned, or from inside an executing `It`) now panics with an actionable `specs: Spec.<Method> called after its Describe/When scope closed` message instead of a nil dereference or a write into a reused compiler (#317). The zero-value `Spec` diagnostic is unchanged.
 - **Breaking.** `BeforeEach`/`AfterEach` registered after an `It` (or other spec) or a nested `Describe`/`When` in the same scope now panic at build time on `Spec` (compiler and `Analyze` paths) and `Builder`, instead of silently applying only to later specs (#307). Declare per-spec hooks before the first spec or nested scope of their scope; suites that relied on the old behavior must reorder them. See `docs/DSL.md`.
 
+- JUnit XML no longer emits an empty `<properties></properties>` element when no coverage is attached; the container appears only when it holds coverage `<property>` entries, as some JUnit validators require (#316).
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.

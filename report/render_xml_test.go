@@ -58,7 +58,10 @@ func TestRenderXMLIsValidJUnit(t *testing.T) {
 
 	// Coverage properties are present and carry the aggregate arithmetic, not per-package averages.
 	found := map[string]string{}
-	for _, p := range checkout.Properties {
+	if checkout.Properties == nil {
+		t.Fatalf("coverage properties container missing")
+	}
+	for _, p := range checkout.Properties.Property {
 		found[p.Name] = p.Value
 	}
 	if found["go-specs.coverage.aggregate.covered"] != "790" || found["go-specs.coverage.aggregate.total"] != "900" {
@@ -190,6 +193,33 @@ func TestRenderXMLUnstartedRendersAsSkippedWithFailFastMessage(t *testing.T) {
 		if tc.Skipped.Message != "not run: fail-fast" {
 			t.Fatalf("skipped message = %q, want %q", tc.Skipped.Message, "not run: fail-fast")
 		}
+	}
+}
+
+// TestRenderXMLPropertiesContainerOnlyWithCoverage proves the <properties> container is absent
+// entirely when no coverage is attached (a JUnit validator may require at least one <property>
+// child) and populated in every suite when coverage exists (issue #316).
+func TestRenderXMLPropertiesContainerOnlyWithCoverage(t *testing.T) {
+	noCov := sampleReport()
+	noCov.Coverage = Coverage{}
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, noCov); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	if strings.Contains(buf.String(), "properties") {
+		t.Fatalf("report without coverage rendered a properties element:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	if err := RenderXML(&buf, sampleReport()); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	out := buf.String()
+	if got, want := strings.Count(out, "<properties>"), 2; got != want {
+		t.Fatalf("<properties> count = %d, want %d", got, want)
+	}
+	if strings.Contains(out, "<properties></properties>") || strings.Contains(out, "<properties/>") {
+		t.Fatalf("empty properties element rendered:\n%s", out)
 	}
 }
 

@@ -21,15 +21,21 @@ type junitTestSuites struct {
 }
 
 type junitTestSuite struct {
-	XMLName    xml.Name        `xml:"testsuite"`
-	Name       string          `xml:"name,attr"`
-	Tests      int             `xml:"tests,attr"`
-	Failures   int             `xml:"failures,attr"`
-	Errors     int             `xml:"errors,attr"`
-	Skipped    int             `xml:"skipped,attr"`
-	Time       string          `xml:"time,attr"`
-	Properties []junitProperty `xml:"properties>property"`
-	TestCases  []junitTestCase `xml:"testcase"`
+	XMLName    xml.Name         `xml:"testsuite"`
+	Name       string           `xml:"name,attr"`
+	Tests      int              `xml:"tests,attr"`
+	Failures   int              `xml:"failures,attr"`
+	Errors     int              `xml:"errors,attr"`
+	Skipped    int              `xml:"skipped,attr"`
+	Time       string           `xml:"time,attr"`
+	Properties *junitProperties `xml:"properties,omitempty"`
+	TestCases  []junitTestCase  `xml:"testcase"`
+}
+
+// junitProperties is a pointer-held container so an absent value omits <properties> entirely; a
+// slice tagged "properties>property" renders an empty container (issue #316).
+type junitProperties struct {
+	Property []junitProperty `xml:"property"`
 }
 
 type junitProperty struct {
@@ -84,7 +90,10 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 		Skipped:  r.Execution.Skipped + r.Execution.Filtered + r.Execution.Pending + r.Execution.Unstarted,
 		Time:     formatSeconds(r.Duration),
 	}
-	props := coverageProperties(r.Coverage)
+	var props *junitProperties
+	if list := coverageProperties(r.Coverage); len(list) > 0 {
+		props = &junitProperties{Property: list}
+	}
 	for _, s := range r.Suites {
 		js := junitTestSuite{
 			Name:       s.Name,
