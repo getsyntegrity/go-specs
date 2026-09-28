@@ -760,8 +760,13 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 	}
 	ctx.isoProgram = program
 	// runProgram may end through runtime.Goexit before assigning the cached results.
-	// A filtered subtest never runs the closure at all. In either case, the next
-	// spec must not inherit a previous spec's panic text or stack trace.
+	// A filtered subtest never runs the closure at all: t.Run reports shouldRun=false and returns
+	// without ever invoking ctx.isoRun, so ctx.Reset (inside the closure) never runs either. In either
+	// case, the next spec must not inherit a previous spec's panic text, stack trace or failure bit —
+	// resetFailure covers ctx.failure the same way the isoMessage/isoOutput/isoStarted/isoDone resets
+	// below cover their own fields, so this function's isolation holds on its own and does not depend
+	// on a caller (such as runExecution's acquireContext) having reset ctx first.
+	ctx.resetFailure()
 	ctx.isoMessage, ctx.isoOutput = "", ""
 	ctx.isoStarted.Store(false)
 	ctx.isoDone.Store(false)
