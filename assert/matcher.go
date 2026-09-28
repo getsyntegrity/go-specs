@@ -191,7 +191,13 @@ func (m *beFalseMatcher) Description() string {
 	return "false"
 }
 
-// Contain returns a matcher that expects actual (string or slice) to contain expected.
+// Contain returns a matcher that expects actual (a string, or a slice/array via the []int, []string
+// and []float64 fast paths or the reflect fallback) to contain expected. Two failure modes are not
+// "does not contain": an actual Contain cannot support at all (a scalar, a map, nil, a struct, ...)
+// and an expected value whose type could never match the actual's element type (a non-string needle
+// against a string, or an element type mismatch against a slice/array). FailureMessage names both
+// explicitly instead of reporting them as an indistinguishable missing element (issue #277). Map-key
+// containment is not supported; an unsupported-actual diagnosis is what a map actual gets today.
 func Contain(expected any) Matcher {
 	return &containExpectedMatcher{expected: expected}
 }
@@ -201,59 +207,118 @@ type containExpectedMatcher struct {
 }
 
 func (m *containExpectedMatcher) Match(actual any) bool {
+	matched, _ := m.diagnose(actual, false)
+	return matched
+}
+
+func (m *containExpectedMatcher) FailureMessage(actual any) string {
+	_, reason := m.diagnose(actual, true)
+	if reason == "" {
+		return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
+	}
+	return fmt.Sprintf("expected %v to contain %v — %s", actual, m.expected, reason)
+}
+
+// diagnose decides the match and, only when explain is true, also classifies a failure: reason
+// stays empty for a match or for a genuine missing element (the container is one Contain supports
+// and the expected value has a type that could match it, it just is not present), and is set to an
+// actionable explanation for an unsupported actual type or an expected value whose type rules out
+// any match. explain is false from Match, which does not need the string, so the fast, allocation-
+// free comparisons stay the only cost on that hot path; FailureMessage passes true and pays for the
+// message only on the failure path that already builds one.
+func (m *containExpectedMatcher) diagnose(actual any, explain bool) (matched bool, reason string) {
 	switch a := actual.(type) {
 	case string:
 		needle, ok := m.expected.(string)
 		if !ok {
-			return false
+			if explain {
+				reason = incompatibleExpectedReason("string", "string", m.expected)
+			}
+			return false, reason
 		}
-		return strings.Contains(a, needle)
+		return strings.Contains(a, needle), ""
 	case []int:
-		if e, ok := m.expected.(int); ok {
-			for _, v := range a {
-				if v == e {
-					return true
-				}
-			}
-			return false
-		}
+		return containTypedSlice(a, "int", m.expected, explain)
 	case []string:
-		if e, ok := m.expected.(string); ok {
-			for _, v := range a {
-				if v == e {
-					return true
-				}
-			}
-			return false
-		}
+		return containTypedSlice(a, "string", m.expected, explain)
 	case []float64:
-		if e, ok := m.expected.(float64); ok {
-			for _, v := range a {
-				if v == e {
-					return true
-				}
-			}
-			return false
-		}
+		return containTypedSlice(a, "float64", m.expected, explain)
 	}
+
 	rv := reflect.ValueOf(actual)
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
+		elemType := rv.Type().Elem()
+		if elemType.Kind() != reflect.Interface {
+			expectedType := reflect.TypeOf(m.expected)
+			if expectedType == nil || !expectedType.AssignableTo(elemType) {
+				if explain {
+					reason = incompatibleExpectedReason(rv.Type().String(), elemType.String(), m.expected)
+				}
+				return false, reason
+			}
+		}
 		for i := 0; i < rv.Len(); i++ {
 			// The element is the actual and m.expected is the expected, so they go in that order.
 			// This read reversed while everything compared structurally, because reflect.DeepEqual
 			// is symmetric and hid it; ValuesEqual's error semantics are oriented and would not.
 			if ValuesEqual(m.expected, rv.Index(i).Interface()) {
-				return true
+				return true, ""
 			}
 		}
-		return false
+		return false, ""
+	default:
+		if explain {
+			reason = unsupportedActualReason(actual)
+		}
+		return false, reason
 	}
-	return false
 }
 
-func (m *containExpectedMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
+// containTypedSlice backs Contain's []int/[]string/[]float64 fast paths: same lookup either way, so
+// the diagnosis for a wrong-typed needle is written once instead of three times.
+func containTypedSlice[T comparable](a []T, elemTypeName string, expected any, explain bool) (matched bool, reason string) {
+	e, ok := expected.(T)
+	if !ok {
+		if explain {
+			reason = incompatibleExpectedReason(fmt.Sprintf("%T", a), elemTypeName, expected)
+		}
+		return false, reason
+	}
+	for _, v := range a {
+		if v == e {
+			return true, ""
+		}
+	}
+	return false, ""
+}
+
+// incompatibleExpectedReason explains that expected's type can never match actualTypeDesc's
+// elements (or its own characters, for a string actual), so a miss should not be read as "not
+// present" but as "type mismatch".
+func incompatibleExpectedReason(actualTypeDesc, elemTypeName string, expected any) string {
+	return fmt.Sprintf("%s actual needs %s %s expected value, got %T", actualTypeDesc, article(elemTypeName), elemTypeName, expected)
+}
+
+// unsupportedActualReason explains that Contain has no matching strategy for actual's type at all —
+// distinct from incompatibleExpectedReason, where a strategy exists but expected's type rules it out.
+func unsupportedActualReason(actual any) string {
+	return fmt.Sprintf("%T is not a supported Contain actual (want string, slice, or array)", actual)
+}
+
+// article picks "a" or "an" for the type name that follows it in a diagnosis (e.g. "a string",
+// "an int64"). It is a plain vowel-letter check, not a pronunciation rule, which is the same
+// simplification English style guides make for this kind of generated text.
+func article(typeName string) string {
+	if typeName == "" {
+		return "a"
+	}
+	switch typeName[0] {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return "an"
+	default:
+		return "a"
+	}
 }
 
 // Description implements Describer; see equalMatcher.Description.
