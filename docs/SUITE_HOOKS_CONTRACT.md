@@ -298,14 +298,23 @@ engine implements it via `CompiledSuite.SetFailFast`
 - `AfterAll` starts only after every spec of the group — including every parallel one — has
   finished (i.e., after the group's parallel batch has been waited on).
 - `FailFast` stops only at the next spec/group boundary, never mid-flight: a sequential spec that
-  fails still runs its own `AfterEach`, and the run stops before the *next* spec or group starts —
-  a spec that never starts is never reported at all. An already-launched `ItParallel` batch is never
+  fails still runs its own `AfterEach`, and the run stops before the *next* spec or group starts. A
+  spec that never starts is not silently dropped: since
+  [#274](https://github.com/getsyntegrity/go-specs/issues/274) it is reported
+  `report.StatusUnstarted`, distinct from every other status — it never counts toward
+  `Totals.Total`/`SuiteEndEvent.TotalSpecs`, which keep their pre-existing meaning of "specs that
+  entered execution, plus declared `SkipIt`/`PendingIt` that were actually processed". A compile-time
+  `SkipIt`/`PendingIt` mark belonging to a group that never starts is Unstarted too, keeping its
+  original declaration as `report.Case.Declared` (`"skip"`/`"pending"`) instead of being lost — see
+  `docs/REPORTING.md`'s "Unstarted semantics and assumptions" for the full contract, including two
+  flagged assumptions it does not itself settle. An already-launched `ItParallel` batch is never
   cancelled partway through; every one of its siblings runs to completion, and only then does the
-  stop apply, before whatever comes after the batch. `FailFast` never skips the `AfterAll` of a
-  group that was already entered — that group finishes normally, including its own `AfterAll` — it
-  only keeps a *later* group, sibling to the one containing the failure or nested nowhere near it,
-  from ever starting. A hook failure (`BeforeAll` or `AfterAll`) counts as a failure for `FailFast`,
-  exactly like a spec failure.
+  stop apply, before whatever comes after the batch — reported Unstarted exactly like a plain spec.
+  `FailFast` never skips the `AfterAll` of a group that was already entered — that group finishes
+  normally, including its own `AfterAll` — it only keeps a *later* group, sibling to the one
+  containing the failure or nested nowhere near it, from ever starting (and now reports it, and its
+  own marks, Unstarted). A hook failure (`BeforeAll` or `AfterAll`) counts as a failure for
+  `FailFast`, exactly like a spec failure.
 
 ### Sharding — `CompiledSuite.RunShard`
 
@@ -327,8 +336,11 @@ what those rules require to stay whole:
 Units are numbered `u = 0..U-1` in declaration order and assigned to shard `u % shardCount`, the same
 round-robin rule `ShardSpecs`, `ShardBCProgram` and the package-level `RunShard` already use, so the
 same declared tree always yields the same assignment. `SetFailFast` (H9) applies within the running
-shard only. See `specs/compiled_suite_shard_test.go` and `specs/group_hooks_shard_test.go` for the
-full contract this pins.
+shard only, so the Unstarted specs it reports ([#274](https://github.com/getsyntegrity/go-specs/issues/274))
+are only this shard's own remaining units, never a sibling shard's — a shard never even sees another
+shard's units to report them. See `specs/compiled_suite_shard_test.go`,
+`specs/group_hooks_shard_test.go` and `TestCompiledSuiteRunShardReportsOnlyItsOwnUnstartedSpecs` for
+the full contract this pins.
 
 Known limit: `report/coordination`'s own "shard" is one `go test` package process's result file, an
 unrelated meaning from the spec partition above; merging several `RunShard` jobs' per-job results

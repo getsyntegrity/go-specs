@@ -9,7 +9,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 ### Added
 
 - **Breaking (report schema `"2"` → `"3"`).** A spec `CompiledSuite.SetFailFast(true)` or
-  `Runner.FailFast` prevents from ever running — because an earlier spec in the same run already
+  `Runner.FailFast` prevented from ever running — because an earlier spec in the same run already
   failed — is now reported as a new status, `report.StatusUnstarted` (`"unstarted"`), instead of
   simply never appearing in the report. `report.Totals` gains an `Unstarted` field and
   `report.Case` gains a `Declared` field (`"skip"`/`"pending"`/empty) that preserves a
