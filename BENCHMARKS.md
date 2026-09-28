@@ -43,7 +43,7 @@ See [benchmarks/README.md](benchmarks/README.md) for categories and scripts.
 # Running Benchmarks
 
 ```
-go test ./benchmarks -run='^$' -bench=. -benchmem
+go test ./benchmarks -run='^$' -bench=. -benchmem -count=5
 ```
 
 For real numbers, use `make bench-report` (10 iterations) or read the charts that
@@ -222,12 +222,17 @@ inside the *same* run, which cancels machine speed out instead of assuming it aw
 
 # Expected Performance
 
-Observational, not contractual — see above. Typical figures:
+Observational, not contractual — see above. These are ranges over the machines measured so far, flat
+`*testing.B` path (no per-spec subtest). The dated, per-benchmark tables with CPU and toolchain are in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md#hardware-and-environment); the README carries the end-to-end `*testing.T`
+numbers.
 
-| Operation        | ns/op     |
-| ---------------- | --------- |
-| Assertion        | 80–150    |
-| Runner           | 10–40 µs  |
+| Operation                                   | Typical           |
+| ------------------------------------------- | ----------------- |
+| go-specs typed assertion (`EqualTo`)        | ~1–2 ns           |
+| go-specs `ctx.Expect(...).ToEqual(...)`     | ~9–13 ns          |
+| Testify / Gomega single assertion           | ~135–195 / ~420–510 ns |
+| go-specs runner, 1000 specs                 | ~15–25 µs         |
 
 ---
 
