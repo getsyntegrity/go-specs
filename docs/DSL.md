@@ -500,8 +500,11 @@ Edge cases:
 - In an `ItParallel` spec, tasks belong to that one spec, on both `Spec.ItParallel` and
   `Builder.ItParallel`.
 - Calling `ctx.Go` after its spec has finished panics with a `specs:` message that says how to fix
-  it (a released or already-finished `ctx`). A `ctx` the next spec is already using cannot be told
-  apart from that spec's own, which is exactly why a raw goroutine cannot be protected.
+  it, **but only until that pooled `Context` is reused by a later spec.** After reuse, a stale `ctx`
+  cannot be told apart from the new spec's own: the call does not panic, and its task may be
+  attributed to whichever spec currently owns the `Context`. Retaining a spec's `ctx` past the end of
+  its spec (including in a raw `go` goroutine) is unsupported. A task's own `*Context` is never
+  pooled, so `ctx.Go` on it after its task ended always panics.
 - Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
   path. `ctx.Go` itself allocates (a task context and a goroutine).
 

@@ -104,11 +104,16 @@ type goTaskInfo struct{ done atomic.Bool }
 //     for its running tasks, so a task that blocks forever blocks the spec. FailFast reacts once the
 //     spec has finished, not while its tasks are still running. In an ItParallel spec, tasks belong
 //     to that spec alone.
-//   - Calling ctx.Go after the spec has finished panics with a specs: message.
+//   - Calling ctx.Go after the spec has finished panics with a specs: message, but only until that
+//     pooled Context is reused by a later spec. Once reused, a stale handle is indistinguishable from
+//     the new spec's own, so a ctx.Go issued through it does not panic and its task is attributed to
+//     whichever spec owns the Context at that moment. A task's own *Context is never pooled: ctx.Go
+//     on it after its task ended always panics.
 //
-// This is the only supported way to run concurrent assertions. A ctx used by a goroutine launched
-// directly with a `go` statement must not outlive the spec: contexts are reused by later specs, and
-// go-specs does not — and cannot — protect that pattern. Start such work with ctx.Go instead.
+// This is the only supported way to run concurrent assertions. Retaining a spec's ctx past the end of
+// that spec, including in a goroutine launched directly with a `go` statement, is unsupported:
+// contexts are reused by later specs, and go-specs does not — and cannot — protect that pattern.
+// Start such work with ctx.Go instead.
 //
 // ctx.Go allocates (the task context, a goroutine and its closure). Specs that never call it pay
 // nothing.

@@ -400,3 +400,78 @@ func TestCtxGoRealT_Builder(t *testing.T) {
 	}
 	runCtxGoRealT(t, "TestCtxGoRealT_Builder", "builder")
 }
+
+// TestCtxGoStaleSpecContextBindsToTheSpecThatOwnsItNow_DocumentedLimitation pins a documented
+// LIMITATION, not desired behavior. A spec's *Context is pooled, so once a later spec has reused it the
+// framework cannot tell a stale handle (kept by a raw `go` goroutine) from that spec's own. A ctx.Go
+// issued through such a handle therefore neither panics nor stays with the spec that leaked it: the task
+// is attributed to whichever spec owns the Context at that moment. The panic on ctx.Go after a spec
+// finished is only guaranteed until the Context is reused; retaining ctx past its spec is unsupported.
+func TestCtxGoStaleSpecContextBindsToTheSpecThatOwnsItNow_DocumentedLimitation(t *testing.T) {
+	forEachGoEngine(t, func(t *testing.T, run goRunFn) {
+		var leaked *Context
+		var reused atomic.Bool
+		gate := make(chan struct{})   // closed by b once it is running
+		called := make(chan struct{}) // closed by the stale goroutine after its ctx.Go returned
+		var panicked atomic.Value
+		rep := run(t, false, nil,
+			goDeclSpec{"a", func(ctx *Context) {
+				leaked = ctx
+				go func() {
+					<-gate
+					defer close(called)
+					defer func() {
+						if r := recover(); r != nil {
+							panicked.Store(fmt.Sprint(r))
+						}
+					}()
+					leaked.Go(func(c *Context) { c.Expect(1).ToEqual(2) })
+				}()
+			}},
+			goDeclSpec{"b", func(ctx *Context) {
+				reused.Store(ctx == leaked)
+				close(gate)
+				<-called
+			}},
+		)
+		if !reused.Load() {
+			t.Skip("the engine did not reuse the Context between specs, so there is no stale handle to observe")
+		}
+		if p := panicked.Load(); p != nil {
+			t.Fatalf("ctx.Go through a stale handle panicked (%v); after reuse the Context is indistinguishable from b's own, so the documented limitation is that it does not", p)
+		}
+		got := finishedByName(t, rep)
+		if o := classifyOutcome(got["a"]); o != "passed" {
+			t.Errorf("a outcome = %q, want passed: the stale task must not be charged to the spec that leaked ctx", o)
+		}
+		if o := classifyOutcome(got["b"]); o != "failed" {
+			t.Errorf("b outcome = %q, want failed: the stale task is attributed to the spec that owns the Context now", o)
+		}
+	})
+}
+
+// TestCtxGoTaskContextIsNeverReusedSoItKeepsTheStrongGuarantee pins that, unlike a spec's pooled
+// Context, a task Context is created per ctx.Go call and never recycled: after its task ended, ctx.Go
+// on it panics even once the spec's own Context has been reused by later specs.
+func TestCtxGoTaskContextIsNeverReusedSoItKeepsTheStrongGuarantee(t *testing.T) {
+	forEachGoEngine(t, func(t *testing.T, run goRunFn) {
+		var leakedTask *Context
+		var later atomic.Int32
+		run(t, false, nil,
+			goDeclSpec{"a", func(ctx *Context) { ctx.Go(func(c *Context) { leakedTask = c }) }},
+			goDeclSpec{"b", func(ctx *Context) { later.Add(1) }},
+			goDeclSpec{"c", func(ctx *Context) { later.Add(1) }},
+		)
+		if later.Load() != 2 {
+			t.Fatalf("later specs ran %d times, want 2", later.Load())
+		}
+		defer func() {
+			msg := fmt.Sprint(recover())
+			if !strings.HasPrefix(msg, "specs: ") || !strings.Contains(msg, "ctx.Go") {
+				t.Errorf("ctx.Go on an ended task context panicked with %q, want an actionable specs: message", msg)
+			}
+		}()
+		leakedTask.Go(func(*Context) {})
+		t.Error("ctx.Go on an ended task context returned, want a panic")
+	})
+}
