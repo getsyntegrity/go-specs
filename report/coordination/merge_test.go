@@ -43,6 +43,33 @@ func threeEnvelopes() []ShardEnvelope {
 	}
 }
 
+// TestMergeReportsPreservesPackageProvenance proves two packages that declare a suite and a case
+// with identical names stay distinguishable after the merge: each suite carries its shard's
+// PackagePath, and each keeps its own outcome (issue #308).
+func TestMergeReportsPreservesPackageProvenance(t *testing.T) {
+	same := func(status report.Status) report.Suite {
+		return report.Suite{Name: "Checkout", Cases: []report.Case{{Name: "works", Path: []string{"Checkout", "works"}, Status: status}}}
+	}
+	merged := mergeReports([]ShardEnvelope{
+		envelopeFor("example.com/m/beta", same(report.StatusFailed), report.Totals{Total: 1, Failed: 1}, time.Millisecond),
+		envelopeFor("example.com/m/alpha", same(report.StatusPassed), report.Totals{Total: 1, Passed: 1}, time.Millisecond),
+	})
+	if len(merged.Suites) != 2 {
+		t.Fatalf("got %d suites, want 2", len(merged.Suites))
+	}
+	got := []struct{ pkg, status string }{
+		{merged.Suites[0].Package, string(merged.Suites[0].Cases[0].Status)},
+		{merged.Suites[1].Package, string(merged.Suites[1].Cases[0].Status)},
+	}
+	want := []struct{ pkg, status string }{
+		{"example.com/m/alpha", "passed"},
+		{"example.com/m/beta", "failed"},
+	}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("suites = %+v, want %+v", got, want)
+	}
+}
+
 func TestMergeReportsSumsExecutionTotalsAndDuration(t *testing.T) {
 	merged := mergeReports(threeEnvelopes())
 	want := report.Totals{Total: 4, Passed: 2, Failed: 1, Skipped: 1}

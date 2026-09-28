@@ -18,6 +18,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 - TXT and HTML reports now print each ordinary case as its full scope path (`Checkout/when the cart is empty/fails`) instead of the bare leaf name, so two failing specs with the same name under different `When` blocks are distinguishable and the disambiguated paths from #275 are actually visible in those formats. Group hook cases keep their `<group path> [BeforeAll]` label (#313).
 
+- Module-wide merged reports now record which package each suite came from. `report.Suite` gains a `Package` field, filled from each shard's `PackagePath` and rendered as `package` in JSON, a `package` attribute plus a package-prefixed `classname` in JUnit, `Suite: <name> (package <path>)` in TXT, and a label beside the suite heading in HTML. Two packages with identical suite and spec names are no longer ambiguous. Single-package reports are unchanged (empty package omitted everywhere); the JSON `schemaVersion` stays `"3"` because a new field alone never bumps it (#308).
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.

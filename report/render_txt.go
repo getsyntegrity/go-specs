@@ -24,7 +24,11 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	bw.printf("Duration: %ss\n", formatSeconds(r.Duration))
 
 	for _, s := range r.Suites {
-		bw.printf("\nSuite: %s\n", s.Name)
+		if s.Package != "" {
+			bw.printf("\nSuite: %s (package %s)\n", s.Name, s.Package)
+		} else {
+			bw.printf("\nSuite: %s\n", s.Name)
+		}
 		for _, c := range s.Cases {
 			renderTXTCase(bw, c)
 		}

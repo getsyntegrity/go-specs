@@ -120,8 +120,14 @@ func (t *Totals) add(s Status) {
 }
 
 // Suite is one top-level Describe/DescribeFlat run, in SuiteStarted order.
+//
+// Package is the Go import path of the package that produced the suite, filled in by the
+// module-wide merge from each shard's PackagePath (issue #308) so two packages declaring the same
+// suite and spec names stay distinguishable. It is empty for a single-package (non-merged) report
+// and omitted from every rendered format then. Additive: it does not bump SchemaVersion.
 type Suite struct {
 	Name     string
+	Package  string
 	Cases    []Case
 	Duration time.Duration
 	Totals   Totals

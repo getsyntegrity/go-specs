@@ -23,6 +23,7 @@ type junitTestSuites struct {
 type junitTestSuite struct {
 	XMLName    xml.Name         `xml:"testsuite"`
 	Name       string           `xml:"name,attr"`
+	Package    string           `xml:"package,attr,omitempty"`
 	Tests      int              `xml:"tests,attr"`
 	Failures   int              `xml:"failures,attr"`
 	Errors     int              `xml:"errors,attr"`
@@ -97,6 +98,7 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 	for _, s := range r.Suites {
 		js := junitTestSuite{
 			Name:       s.Name,
+			Package:    s.Package,
 			Tests:      s.Totals.Total + s.Totals.Unstarted,
 			Failures:   s.Totals.Failed,
 			Errors:     s.Totals.Error,
@@ -105,7 +107,7 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 			Properties: props,
 		}
 		for _, c := range s.Cases {
-			js.TestCases = append(js.TestCases, renderJUnitCase(s.Name, c))
+			js.TestCases = append(js.TestCases, renderJUnitCase(s.Name, s.Package, c))
 		}
 		doc.Suites = append(doc.Suites, js)
 	}
@@ -122,8 +124,14 @@ func RenderXML(w io.Writer, r NormalizedReport) error {
 	return err
 }
 
-func renderJUnitCase(suiteName string, c Case) junitTestCase {
-	tc := junitTestCase{Name: c.Name, ClassName: junitClassName(suiteName, c.Path, c.Hook != ""), Time: formatSeconds(c.Duration), Hook: c.Hook}
+func renderJUnitCase(suiteName, pkg string, c Case) junitTestCase {
+	className := junitClassName(suiteName, c.Path, c.Hook != "")
+	if pkg != "" {
+		// A merged report can hold the same suite and spec names from two packages; prefixing the
+		// package keeps (classname, name) unique for consumers that ignore the package attribute (#308).
+		className = pkg + "/" + className
+	}
+	tc := junitTestCase{Name: c.Name, ClassName: className, Time: formatSeconds(c.Duration), Hook: c.Hook}
 	switch c.Status {
 	case StatusFailed:
 		tc.Failure = &junitFailure{Message: c.Message, Body: c.Output}
