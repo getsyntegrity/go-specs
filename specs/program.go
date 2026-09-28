@@ -323,6 +323,11 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 						// the sequential engines' recoverSpecFailure.
 						outputs[i] = string(debug.Stack())
 					}
+					// ctx.Go tasks are awaited before the spec is reported or its Context released; a
+					// task panic fails the spec only if nothing failed first (#318).
+					if out := settleParallelTasks(child, &results, i); out != "" {
+						outputs[i] = out
+					}
 					if obs != nil {
 						timings[i] = parallelTiming{start: startTime, duration: time.Since(startTime)}
 					}

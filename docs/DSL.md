@@ -459,6 +459,52 @@ reports the same diagnostic and stops the run — every enclosing `BeforeAll`/`A
 runs its `AfterAll`s while the stop unwinds (`docs/SUITE_HOOKS_CONTRACT.md` H5), same as any other
 stopped run.
 
+## `ctx.Go`: concurrent assertions inside one spec
+
+A `*specs.Context` belongs to the spec that is running. It is pooled and handed to the next spec as
+soon as the current one finishes, so **a `ctx` used by a goroutine launched directly with a `go`
+statement must not outlive the spec.** If it does, the goroutine asserts through whichever spec owns
+that pointer next: the first spec passes, and the next one fails with the first one's message and
+source line. go-specs does not protect that pattern and cannot do so transparently (the pointer is
+the same, and a goroutine carries no identity an assertion could check for free). Semantics of raw
+`go` goroutines are unchanged.
+
+`ctx.Go` is the supported way to run concurrent assertions:
+
+```go
+s.It("both replicas agree", func(ctx *specs.Context) {
+    ctx.Go(func(ctx *specs.Context) { ctx.Expect(primary.Get("k")).ToEqual("v") })
+    ctx.Go(func(ctx *specs.Context) { ctx.Expect(replica.Get("k")).ToEqual("v") })
+})
+```
+
+The contract:
+
+- **The spec waits.** It is not finished until every task started with `ctx.Go` has finished: the
+  wait happens before `AfterEach` hooks, before the spec is reported, and before its `Context` is
+  reused. This holds even if the body fails, calls `FailNow`, or panics.
+- **Failures are charged to the spec that started the task**, with the task's own message and source
+  line. A failed assertion or a `ctx.T` failure inside a task fails that spec. A panic inside a task
+  is recovered and reported like a panic in the body: an *error* with its stack, not a failure.
+  A fatal assertion (or `ctx.T.FailNow`) ends only that task; the body and the other tasks keep going.
+- **`AfterEach` runs after all tasks have finished**, so it can safely read what they wrote.
+- **The task gets its own `*Context`.** Use the parameter, not the outer `ctx`, inside the task.
+
+Edge cases:
+
+- A task may call `ctx.Go` itself; the spec waits for those tasks too. `BeforeEach` and `AfterEach`
+  hooks may call it as well (tasks started by an `AfterEach` are awaited before the spec is finished).
+- Tasks are never cancelled. A task that blocks forever blocks its spec, so keep tasks finite.
+- `FailFast` reacts when the spec has finished, not while its tasks are still running: a task's
+  failure is folded into the spec at the end of the body, so the specs after it are what get skipped.
+- In an `ItParallel` spec, tasks belong to that one spec, on both `Spec.ItParallel` and
+  `Builder.ItParallel`.
+- Calling `ctx.Go` after its spec has finished panics with a `specs:` message that says how to fix
+  it (a released or already-finished `ctx`). A `ctx` the next spec is already using cannot be told
+  apart from that spec's own, which is exactly why a raw goroutine cannot be protected.
+- Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
+  path. `ctx.Go` itself allocates (a task context and a goroutine).
+
 ## Builder.It, Skip and Focus
 
 `Builder.It` is the Builder-API counterpart of `Spec.It`: `func (b *Builder) It(name string, fn func(*Context))`. Use it directly for a plain spec body:

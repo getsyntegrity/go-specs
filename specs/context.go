@@ -59,6 +59,10 @@ const expectationReusedMessage = "go-specs: assertion handle reused. " +
 type Fixture func(*Context)
 
 // Context is the execution context passed to It and hooks.
+//
+// A Context belongs to the spec that is running and is reused by later specs. A ctx used by a
+// goroutine launched directly with a `go` statement must not outlive the spec; go-specs does not
+// protect that pattern. To assert concurrently, start the work with ctx.Go, which binds it to the spec.
 type Context struct {
 	backend testBackend
 	T       *testing.T
@@ -114,6 +118,13 @@ type Context struct {
 	isoMessage, isoOutput string
 	isoStarted, isoDone   atomic.Bool
 	isoSub                *testing.T
+
+	// gs is the ctx.Go bookkeeping (context_go.go). nil until the first ctx.Go on this Context, then
+	// kept across Reset like isoRun so a pooled Context pays the allocation once; Reset clears its
+	// contents. A task's own Context shares its spec's gs.
+	gs *goState
+	// goTask is non-nil only on a task Context created by ctx.Go, and says when its task ended.
+	goTask *goTaskInfo
 }
 
 // poison marks c as unsafe to reset or return to contextPool. It is deliberately one-way: Reset

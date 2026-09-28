@@ -138,9 +138,14 @@ func (b *Builder) emitAfter() []step {
 func (b *Builder) emitSpecSteps(fn func(*Context)) []step {
 	before := b.emitBefore()
 	after := b.emitAfter()
-	steps := make([]step, 0, len(before)+1+len(after))
+	steps := make([]step, 0, len(before)+2+len(after))
 	steps = append(steps, before...)
 	steps = append(steps, step(fn))
+	if len(after) > 0 {
+		// The parallel engine has no per-spec defer to wait in, so the wait for ctx.Go tasks is a
+		// step of its own, placed so AfterEach hooks run after every task has finished (#318).
+		steps = append(steps, awaitTasksStep)
+	}
 	steps = append(steps, after...)
 	return steps
 }

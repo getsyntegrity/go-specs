@@ -53,7 +53,11 @@ func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
 // this spec instead of crashing the process. isExpectedAbort sentinels (a controlled backend's
 // FailNow) are already recorded by the backend and must not be reported a second time.
 func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
-	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
+	defer func() {
+		recoverSpecFailure(ctx, recover(), "panic")
+		ctx.settleTasks(false) // wait for ctx.Go tasks (#318)
+		ctx.recycleTasks()     // this engine reuses ctx for the next spec
+	}()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
@@ -132,7 +136,10 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 // recovered panic into results[idx] via recoverParallelSpecFailure — the same rule scheduler.go's
 // runWorkerSpec applies, now shared rather than mirrored (see panic_report.go).
 func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]failureRecord, idx int) {
-	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
+	defer func() {
+		recoverParallelSpecFailure(recover(), results, idx)
+		settleParallelTasks(ctx, results, idx) // wait for ctx.Go tasks (#318)
+	}()
 	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)

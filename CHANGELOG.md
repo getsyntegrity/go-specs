@@ -26,6 +26,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Added
 
+- `ctx.Go(func(*Context))` runs a task that is bound to its spec, the supported way to make concurrent assertions (#318). The spec waits for every task before its `AfterEach` hooks run and before it is reported or its `Context` is reused; assertion failures, `ctx.T` failures and panics inside a task are charged to the spec that started it (a panic is reported as an error), and tasks may start further tasks. Calling `ctx.Go` after its spec finished panics with an actionable `specs:` message. A `ctx` used by a goroutine launched directly with `go` must still not outlive the spec: that pattern is unchanged and unprotected, because a pooled `Context` cannot tell a stale goroutine from the next spec. Specs that never call `ctx.Go` allocate nothing extra. See `docs/DSL.md`.
 - **Breaking (report schema `"2"` → `"3"`).** A spec `CompiledSuite.SetFailFast(true)` or
   `Runner.FailFast` prevented from ever running — because an earlier spec in the same run already
   failed — is now reported as a new status, `report.StatusUnstarted` (`"unstarted"`), instead of

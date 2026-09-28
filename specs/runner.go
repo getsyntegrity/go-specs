@@ -552,21 +552,35 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 		}
 		if afterIdx < 0 {
 			message, output = recoverSpecFailure(ctx, recovered, "panic")
+			// ctx.Go tasks finish before the after hooks run (#318).
+			if m, o := ctx.settleTasks(false); message == "" {
+				message, output = m, o
+			}
 			afterMessage, afterOutput := runAfterRecovered(ctx, after)
 			if message == "" {
 				message, output = afterMessage, afterOutput
+			}
+			if m, o := ctx.settleTasks(true); message == "" {
+				message, output = m, o
 			}
 			return
 		}
 		if recovered == nil {
 			// A real Fatal/FailNow/Skip inside after[afterIdx] called runtime.Goexit: it never returns
 			// control to the loop below, so the remaining after hooks do not run, same as before #235.
+			// Tasks already started are still awaited: the Context must not be released under them.
+			if m, o := ctx.settleTasks(true); message == "" {
+				message, output = m, o
+			}
 			return
 		}
 		message, output = recoverSpecFailure(ctx, recovered, "panic in after hook")
 		remMessage, remOutput := runAfterRecoveredFrom(ctx, after, afterIdx-1)
 		if message == "" {
 			message, output = remMessage, remOutput
+		}
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
 		}
 	}()
 
@@ -581,9 +595,16 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 	if !skipBody {
 		s(ctx)
 	}
+	// Wait for the ctx.Go tasks before any after hook runs (#318); a task panic is this spec's panic.
+	if m, o := ctx.settleTasks(false); m != "" {
+		message, output = m, o
+	}
 	for i := len(after) - 1; i >= 0; i-- {
 		afterIdx = i
 		after[i](ctx)
+	}
+	if m, o := ctx.settleTasks(true); message == "" {
+		message, output = m, o
 	}
 	completed = true
 	return

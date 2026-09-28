@@ -96,7 +96,11 @@ func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 // of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
 // recorded by the backend and must not be reported a second time.
 func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
-	defer func() { recoverSpecFailure(ctx, recover(), "panic") }()
+	defer func() {
+		recoverSpecFailure(ctx, recover(), "panic")
+		ctx.settleTasks(false) // wait for ctx.Go tasks (#318)
+		ctx.recycleTasks()     // this engine reuses ctx for the next spec
+	}()
 	fn(ctx)
 }
 

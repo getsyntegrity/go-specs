@@ -1191,7 +1191,13 @@ func (r *groupRun) emitParallelOutcome(i int, o parallelSpecOutcome) {
 // message/output empty here (recover() sees nothing to recover); the caller reads the failure from
 // ctx.hasFailed() or the group subtest instead.
 func runGroupHookOnce(ctx *Context, fn func(*Context)) (message, output string) {
-	defer func() { message, output = recoverSpecFailure(ctx, recover(), "panic in group hook") }()
+	defer func() {
+		message, output = recoverSpecFailure(ctx, recover(), "panic in group hook")
+		// ctx.Go tasks a hook started finish before the hook is considered done (#318).
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
+		}
+	}()
 	fn(ctx)
 	return
 }
