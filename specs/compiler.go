@@ -463,7 +463,14 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 	// still be reported, as Filtered, instead of vanishing without a trace (issue #273).
 	for oldIdx := 0; oldIdx < n; oldIdx++ {
 		if oldToNew[oldIdx] == -1 {
-			registerFocusExcludedMark(&c.groups, plan.Names[oldIdx], scopesFromPlan(plan, oldIdx))
+			// scopesFromPlan cannot be used here: plan.PathScopes/PathScopeStart/PathScopeLen are not
+			// populated yet (finalizeReportPaths, called after applyFocusFilter returns, builds them) —
+			// reading them now would silently capture an empty path. scopeIDWindow instead captures
+			// oldIdx's still-unresolved scope-id window from the compiler's own bookkeeping, exactly as
+			// EmitSkip/EmitPending already do for a skip/pending mark, so finalizeReportPaths can resolve
+			// it later, once every sibling scope is known (issue #275 regression).
+			ids := scopeIDWindow(c.pathScopeIDs, c.pathScopeIDStart[oldIdx], c.pathScopeIDLen[oldIdx])
+			registerFocusExcludedMark(&c.groups, plan.Names[oldIdx], nil, ids)
 		}
 	}
 	c.groups.focusedCount = len(fullNames)
@@ -483,18 +490,16 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 	c.groups = remapHookGroups(c.groups, oldToNew)
 }
 
-// scopesFromPlan returns plan spec i's enclosing declared scopes (its PathScopes window), a fresh
-// copy — matching specMark.path's "enclosing scopes, own name not included" convention (see
-// markScopes, the arena path's equivalent).
-func scopesFromPlan(plan *ExecutionPlan, i int) []string {
-	if i < 0 || i >= len(plan.PathScopeStart) || i >= len(plan.PathScopeLen) {
+// scopeIDWindow returns the scope-record id window [start, start+length) of ids, a fresh copy — the
+// still-unresolved counterpart of appendSpecPath/scopesFromPlan's resolved-string window, used by
+// applyFocusFilter to capture a focus-excluded spec's enclosing scopes before finalizeReportPaths has
+// populated plan.PathScopes (issue #275 regression): the ids are captured now, labels are resolved
+// from them later, once every sibling scope is known (see resolveGroupReportPaths).
+func scopeIDWindow(ids []int, start, length int) []int {
+	if start < 0 || length < 0 || start+length > len(ids) {
 		return nil
 	}
-	start, length := plan.PathScopeStart[i], plan.PathScopeLen[i]
-	if start < 0 || length < 0 || start+length > len(plan.PathScopes) {
-		return nil
-	}
-	return append([]string(nil), plan.PathScopes[start:start+length]...)
+	return append([]int(nil), ids[start:start+length]...)
 }
 
 // Plan returns the built ExecutionPlan. Caller owns it after TakePlan; compiler is reset.

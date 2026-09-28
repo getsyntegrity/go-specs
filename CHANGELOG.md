@@ -50,6 +50,16 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
     debugging) must set `GO_SPECS_ALLOW_FOCUS=1` in that environment, or `t.Setenv("GO_SPECS_ALLOW_FOCUS",
     "1")` in the test itself, or remove the `FIt`. ([#273](https://github.com/getsyntegrity/go-specs/issues/273))
 
+- Two sibling `Describe`/`When` groups sharing a literal name now get distinct reported `Path`s:
+  the first keeps its declared name, and each later sibling gets `name#k` for the smallest `k>=2`
+  that never collides with a literal sibling name or an already-assigned label (see docs/DSL.md's
+  "Duplicate sibling group names"). This changes report `Path`s — JSON, JUnit XML, TXT, HTML, and a
+  hooked group's synthetic `[BeforeAll]`/`[AfterAll]` case — **only** for a suite that declares such
+  a duplicate; every other suite's `Path`s are byte-identical to before. Go subtest identity and
+  `-run` selection are untouched: #102's accepted `#01` ambiguity for a normalized collision still
+  applies exactly as documented there.
+  ([#275](https://github.com/getsyntegrity/go-specs/issues/275))
+
 ### Fixed
 
 - `Contain`'s `FailureMessage` reported a genuinely missing element, an actual type it has no
@@ -61,18 +71,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `expected X to contain Y` wording is kept as-is for a genuine miss. Map-key containment remains
   unsupported and is diagnosed the same as any other unsupported actual type; whether to add it is
   a separate decision. ([#277](https://github.com/getsyntegrity/go-specs/issues/277))
-
-### Changed
-
-- Two sibling `Describe`/`When` groups sharing a literal name now get distinct reported `Path`s:
-  the first keeps its declared name, and each later sibling gets `name#k` for the smallest `k>=2`
-  that never collides with a literal sibling name or an already-assigned label (see docs/DSL.md's
-  "Duplicate sibling group names"). This changes report `Path`s — JSON, JUnit XML, TXT, HTML, and a
-  hooked group's synthetic `[BeforeAll]`/`[AfterAll]` case — **only** for a suite that declares such
-  a duplicate; every other suite's `Path`s are byte-identical to before. Go subtest identity and
-  `-run` selection are untouched: #102's accepted `#01` ambiguity for a normalized collision still
-  applies exactly as documented there.
-  ([#275](https://github.com/getsyntegrity/go-specs/issues/275))
 
 ## [v0.2.0] - 2026-09-27
 

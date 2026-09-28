@@ -122,12 +122,23 @@ func registerFocusedSpec(pg **planGroups, location string) {
 // registerFocusExcludedMark buffers one spec's identity into *pg.focusExcluded (issue #273):
 // exactly registerSkipMark/registerPendingMark's lazy-allocation shape, reused here for a spec (or
 // skip/pending mark, or ItParallel spec) an active focus dropped, so it can still be reported —
-// Filtered, not silently gone.
-func registerFocusExcludedMark(pg **planGroups, name string, scopes []string) {
+// Filtered, not silently gone. scopeIDs is scopes' scope-record identity chain (issue #275), the
+// same deferred-resolution convention registerSkipMark/registerPendingMark already use: nil when
+// the caller (the arena/registry build path) already resolved scopes to their final disambiguated
+// segments; non-nil when the caller (the bytecode-compiler build path) cannot resolve them until
+// every sibling of the enclosing scopes is known (see resolveGroupReportPaths,
+// bytecodeCompiler.finalizeReportPaths) — at applyFocusFilter time, before finalizeReportPaths
+// runs, scopes itself cannot be resolved yet, so the compiler passes nil there and relies entirely
+// on scopeIDs.
+func registerFocusExcludedMark(pg **planGroups, name string, scopes []string, scopeIDs []int) {
 	if *pg == nil {
 		*pg = &planGroups{}
 	}
-	(*pg).focusExcluded = append((*pg).focusExcluded, specMark{name: name, path: append([]string(nil), scopes...)})
+	(*pg).focusExcluded = append((*pg).focusExcluded, specMark{
+		name:     name,
+		path:     append([]string(nil), scopes...),
+		scopeIDs: append([]int(nil), scopeIDs...),
+	})
 }
 
 // reportFilteredMarks emits SpecStarted immediately followed by SpecFinished{Filtered: true} for
@@ -289,10 +300,15 @@ func registerHookGroup(pg **planGroups, path []string, name string, reportPath [
 }
 
 // resolveGroupReportPaths fills in pg's deferred report-Path fields (ReportPath on every hookGroup,
-// path on every skipped/pending specMark) from their captured ScopeIDs/scopeIDs, once every sibling
-// group's disambiguation label is known (issue #275) — see bytecodeCompiler.finalizeReportPaths, the
-// only caller: the arena/registry build path resolves these directly while it walks (see
-// buildExecutionPlanFromArenaRec) and never populates ScopeIDs/scopeIDs, so it never needs this.
+// path on every skipped/pending/focusExcluded specMark) from their captured ScopeIDs/scopeIDs, once
+// every sibling group's disambiguation label is known (issue #275) — see
+// bytecodeCompiler.finalizeReportPaths, the only caller: the arena/registry build path resolves
+// these directly while it walks (see buildExecutionPlanFromArenaRec) and never populates
+// ScopeIDs/scopeIDs, so it never needs this. focusExcluded needs this exactly like skipped/pending:
+// a plain It an active focus dropped is registered mid-applyFocusFilter, before finalizeReportPaths
+// has resolved any label, so its path is only ever fillable here; a SkipIt/PendingIt mark an active
+// focus later moved into focusExcluded already carries the scopeIDs it captured at registration
+// (EmitSkip/EmitPending), unaffected by that move.
 func resolveGroupReportPaths(pg *planGroups, labels []string) {
 	if pg == nil {
 		return
@@ -305,6 +321,9 @@ func resolveGroupReportPaths(pg *planGroups, labels []string) {
 	}
 	for i := range pg.pending {
 		pg.pending[i].path = resolveScopeIDs(pg.pending[i].scopeIDs, labels)
+	}
+	for i := range pg.focusExcluded {
+		pg.focusExcluded[i].path = resolveScopeIDs(pg.focusExcluded[i].scopeIDs, labels)
 	}
 }
 

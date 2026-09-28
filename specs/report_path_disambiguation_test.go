@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -644,6 +645,140 @@ func TestHookGroupReportPathDisambiguatesUnhookedSibling(t *testing.T) {
 	if !stringSlicesEqual(hookPath, wantHookPath) {
 		t.Fatalf("[BeforeAll] hook case Path = %q, want %q", hookPath, wantHookPath)
 	}
+}
+
+// focusExcludedPaths returns every Filtered SpecResultEvent's exact Path (report.SpecStartEvent.Path,
+// a []string), keyed by Name. Unlike specPaths (which joins Path with "/" for a quick string
+// comparison), this keeps the raw slice so a caller can assert on it element-for-element — the
+// regression below is specifically about that slice, not merely the joined name.
+func focusExcludedPaths(rep *recordingReporter) map[string][]string {
+	rep.mu.Lock()
+	defer rep.mu.Unlock()
+	out := make(map[string][]string, len(rep.specFinished))
+	for _, e := range rep.specFinished {
+		if e.Filtered {
+			out[e.Name] = append([]string(nil), e.Path...)
+		}
+	}
+	return out
+}
+
+// assertFocusExcludedPaths fails t unless got holds exactly want's entries, each with an identical
+// Path slice (slices.Equal, not a joined-string comparison — issue #275's regression is specifically
+// that a focus-excluded spec's Path lost its enclosing scope segments, not merely its rendered name).
+func assertFocusExcludedPaths(t *testing.T, label string, got, want map[string][]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: Filtered events = %v, want exactly %v", label, got, want)
+	}
+	for name, wantPath := range want {
+		gotPath, ok := got[name]
+		if !ok {
+			t.Fatalf("%s: no Filtered event for %q; got %v", label, name, got)
+		}
+		if !slices.Equal(gotPath, wantPath) {
+			t.Fatalf("%s: %q Path = %q, want %q", label, name, gotPath, wantPath)
+		}
+	}
+}
+
+// TestFocusExcludedSpecKeepsDisambiguatedReportPath_CompilerPath is a regression test for issue #275
+// combined with issue #273 (FIt's fail-on-focus/report-Filtered policy): a focus-excluded spec (a
+// plain It, a SkipIt mark and a PendingIt mark) declared inside the *second* of two sibling
+// Describe("D") groups must keep its disambiguated report Path ("D#2", not "D") in its Filtered
+// SpecResultEvent, exactly like any other event under that group. Before the fix, applyFocusFilter
+// captured this Path from plan.PathScopes before finalizeReportPaths had populated it, so every
+// focus-excluded mark's Path silently lost its enclosing scopes (see compiler.go's
+// applyFocusFilter/scopesFromPlan) — this is also what made TestFocusSkipPendingEquivalence_Focused
+// fail after rebasing onto #273: that test has no duplicate siblings, so the missing segment was the
+// suite's own top-level scope rather than a "D#2" label, but the root cause is the same.
+func TestFocusExcludedSpecKeepsDisambiguatedReportPath_CompilerPath(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
+	rep := &recordingReporter{}
+	suite := BuildSuite(nil, "suite", func(s *Spec) {
+		s.Describe("D", func(s *Spec) {
+			s.FIt("focused", func(*Context) {})
+		})
+		s.Describe("D", func(s *Spec) {
+			s.It("dropped", func(*Context) {})
+			s.SkipIt("skipped", func(*Context) {})
+			s.PendingIt("pending", func(*Context) {})
+		})
+	})
+	suite.Reporter = rep
+	suite.Run(t)
+
+	want := map[string][]string{
+		"dropped": {"suite", "D#2", "dropped"},
+		"skipped": {"suite", "D#2", "skipped"},
+		"pending": {"suite", "D#2", "pending"},
+	}
+	assertFocusExcludedPaths(t, "compiler path", focusExcludedPaths(rep), want)
+}
+
+// TestFocusExcludedSpecKeepsDisambiguatedReportPath_ArenaPath is
+// TestFocusExcludedSpecKeepsDisambiguatedReportPath_CompilerPath for the arena/registry build path
+// (buildExecutionPlanFromArenaRec's focusedOut case used scratch.path, the literal undisambiguated
+// scope stack, instead of scratch.reportPath — a latent bug the equivalence test never caught because
+// it declares no duplicate sibling group, so scratch.path and scratch.reportPath agreed by coincidence
+// there).
+func TestFocusExcludedSpecKeepsDisambiguatedReportPath_ArenaPath(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
+	var suite *CompiledSuite
+	Analyze(func() {
+		suite = BuildSuite(nil, "suite", func(s *Spec) {
+			s.Describe("D", func(s *Spec) {
+				s.FIt("focused", func(*Context) {})
+			})
+			s.Describe("D", func(s *Spec) {
+				s.It("dropped", func(*Context) {})
+				s.SkipIt("skipped", func(*Context) {})
+				s.PendingIt("pending", func(*Context) {})
+			})
+		})
+	})
+	rep := &recordingReporter{}
+	suite.Reporter = rep
+	suite.Run(t)
+
+	want := map[string][]string{
+		"dropped": {"suite", "D#2", "dropped"},
+		"skipped": {"suite", "D#2", "skipped"},
+		"pending": {"suite", "D#2", "pending"},
+	}
+	assertFocusExcludedPaths(t, "arena/registry path", focusExcludedPaths(rep), want)
+}
+
+// TestFocusExcludedSpecKeepsDisambiguatedReportPath_Builder is
+// TestFocusExcludedSpecKeepsDisambiguatedReportPath_CompilerPath for the Builder/Program/Runner build
+// path: Builder.resolveReportPaths already overwrites every pending item's scopeNames (including
+// kindFocus-dropped ones) before finalize builds Program.FocusExcluded, so this engine is expected to
+// pass unmodified — kept here so all three engines are pinned by the same regression shape. Unlike the
+// *Spec paths above, the Builder/Runner engine's reported Path never carries the suite name as its own
+// segment (see runnerReportedPaths/TestBuilderReportPathDisambiguatesDuplicateSiblings).
+func TestFocusExcludedSpecKeepsDisambiguatedReportPath_Builder(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
+	rep := &recordingReporter{}
+	b := NewBuilder()
+	b.Describe("D", func() {
+		b.FIt("focused", func(*Context) {})
+	})
+	b.Describe("D", func() {
+		b.It("dropped", func(*Context) {})
+		b.SkipIt("skipped", func(*Context) {})
+		b.PendingIt("pending", func(*Context) {})
+	})
+	program := b.Build()
+	r := NewRunner(program)
+	r.Reporter = rep
+	r.Run(t)
+
+	want := map[string][]string{
+		"dropped": {"D#2", "dropped"},
+		"skipped": {"D#2", "skipped"},
+		"pending": {"D#2", "pending"},
+	}
+	assertFocusExcludedPaths(t, "Builder", focusExcludedPaths(rep), want)
 }
 
 // TestArenaHookGroupReportPathDisambiguatesUnhookedSibling is

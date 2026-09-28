@@ -197,7 +197,12 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 			// filter, unchanged), but since issue #273 it is no longer dropped without a trace
 			// either: it is recorded here so CompiledSuite.runSpecs can still report it, as
 			// Filtered, exactly once.
-			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.path, name))
+			// markScopes(scratch.reportPath, ...), not scratch.path: reportPath already carries every
+			// enclosing group's disambiguated label (issue #275) — scratch.path holds the literal,
+			// possibly-ambiguous declared names instead, which would silently drop the "suite/D#2"-style
+			// segment down to just "suite" (or worse, an empty prefix) whenever a duplicate sibling name
+			// is in scope. registerSkipMark/registerPendingMark right below already get this right.
+			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itSkip:
 			registerSkipMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itPending:
