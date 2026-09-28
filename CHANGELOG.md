@@ -6,6 +6,18 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Fixed
+
+- `Contain`'s `FailureMessage` reported a genuinely missing element, an actual type it has no
+  strategy for at all (an `int`, a `map`, `nil`, ...), and an `expected` value whose type could
+  never match the actual's elements (a non-string needle against a string, or a mismatched slice
+  element type) with the exact same wording — `expected 42 to contain 1` gave no hint that `42`
+  was the real problem, not a missing `1`. `FailureMessage` now appends an explicit reason for the
+  latter two cases (`Match`'s `bool` result, already `false` for both, is unchanged); the plain
+  `expected X to contain Y` wording is kept as-is for a genuine miss. Map-key containment remains
+  unsupported and is diagnosed the same as any other unsupported actual type; whether to add it is
+  a separate decision. ([#277](https://github.com/getsyntegrity/go-specs/issues/277))
+
 ## [v0.2.0] - 2026-09-27
 
 ### Removed

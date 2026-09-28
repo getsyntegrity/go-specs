@@ -547,6 +547,25 @@ An error whose dynamic type is not comparable — `type sliceError []string`, sa
 
 A typed nil pointer — a nil `*MyErr`, whether held as `*MyErr` or stored in an `error` — never reaches `errors.Is`, on any of these paths. `errors.Is` calls the error's own `Is` and `Unwrap` methods, and one that reads a field of a nil receiver would panic the spec instead of failing the assertion. A typed nil is compared with `==` alone: it equals itself and nothing else, and in particular it is not equal to a nil `error`.
 
+### `Contain`: supported types, and what a failure actually means
+
+`Contain(expected)` supports a string actual (substring search) and a slice or array actual (element search, via `[]int`/`[]string`/`[]float64` fast paths and a reflection fallback for anything else). Map-key containment is deliberately **not** supported — deciding whether to add it, and how, is a separate question from this matcher's diagnostics ([#277](https://github.com/getsyntegrity/go-specs/issues/277)).
+
+A failed `Contain` used to report every cause the same way — `expected 42 to contain 1` reads identically whether `42` is a genuinely searchable value that lacks `1`, or an `int` `Contain` never had a strategy for. `FailureMessage` now names the actual cause:
+
+```go
+specs.Contain(4).FailureMessage([]int{1, 2, 3})
+// "expected [1 2 3] to contain 4" — a genuine miss: 4 just isn't there.
+
+specs.Contain(1).FailureMessage(42)
+// "expected 42 to contain 1 — int is not a supported Contain actual (want string, slice, or array)"
+
+specs.Contain("x").FailureMessage([]int{1, 2, 3})
+// "expected [1 2 3] to contain x — []int actual needs an int expected value, got string"
+```
+
+`Match` itself is unchanged: it already returned `false` for an unsupported actual or an incompatible `expected`, and still does. Only `FailureMessage` gained the extra reason, appended after an em dash so the original `expected X to contain Y` wording stays intact for the genuine-miss case that was always correct.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
 `assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).

@@ -33,10 +33,19 @@ import (
 // # The supported alternative
 //
 // Concurrency is a first-class feature here, it just does not go through testing's parallel
-// subtests: ItParallel (Builder) and RunParallel/RunParallelBatched (MinimalRunner) give every spec
-// its own Context backed by a parallelBackend, which deliberately never exposes a live *testing.T
-// (see program.go's parallelStep and scheduler.go). That model owns spec identity and failure
-// attribution itself, which is precisely what testing's parallel subtests would take away.
+// subtests (t.Parallel()): Builder.ItParallel and RunParallel/RunParallelBatched (MinimalRunner)
+// give every spec its own Context backed by a parallelBackend, which deliberately never exposes a
+// live *testing.T (see program.go's parallelStep and scheduler.go). That model owns spec identity
+// and failure attribution itself, which is precisely what testing's parallel subtests would take
+// away.
+//
+// Spec.ItParallel (the *Spec/Describe/ExecutionPlan equivalent, issue #245) is different: against a
+// real *testing.T it does give each of its specs a real Go subtest and a live ctx.T, launched
+// concurrently via its own goroutine and t.Run — never t.Parallel() — so this guard's reasoning
+// still applies to a spec body calling t.Parallel() from inside one (see group_hooks.go's
+// runParallelGroup/runParallelSpec). A real Fatalf/FailNow there ends only that spec's own subtest
+// goroutine with runtime.Goexit, exactly like the sequential real-subtest paths above, which is why
+// it needs the same built-in-assertion-message fallback they do (Context.assertionMessage, #272).
 //
 // # How the guard works
 //
