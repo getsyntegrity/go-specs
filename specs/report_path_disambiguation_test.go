@@ -781,6 +781,35 @@ func TestFocusExcludedSpecKeepsDisambiguatedReportPath_Builder(t *testing.T) {
 	assertFocusExcludedPaths(t, "Builder", focusExcludedPaths(rep), want)
 }
 
+// TestFocusExcludedSpecKeepsSuiteScopeInReportPath pins the exact shape that failed in
+// TestFocusSkipPendingEquivalence_Focused after rebasing onto #273: with no duplicate siblings at all,
+// a focus-excluded top-level spec "a" must report Path ["suite", "a"] in its Filtered event, on both
+// *Spec build paths. Before the fix the compiler path reported ["a"], dropping the suite's own scope.
+func TestFocusExcludedSpecKeepsSuiteScopeInReportPath(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
+	body := func(s *Spec) {
+		s.FIt("focused", func(*Context) {})
+		s.It("a", func(*Context) {})
+	}
+	want := map[string][]string{"a": {"suite", "a"}}
+
+	t.Run("compiler path", func(t *testing.T) {
+		rep := &recordingReporter{}
+		suite := BuildSuite(nil, "suite", body)
+		suite.Reporter = rep
+		suite.Run(t)
+		assertFocusExcludedPaths(t, "compiler path", focusExcludedPaths(rep), want)
+	})
+	t.Run("arena/registry path", func(t *testing.T) {
+		var suite *CompiledSuite
+		Analyze(func() { suite = BuildSuite(nil, "suite", body) })
+		rep := &recordingReporter{}
+		suite.Reporter = rep
+		suite.Run(t)
+		assertFocusExcludedPaths(t, "arena/registry path", focusExcludedPaths(rep), want)
+	})
+}
+
 // TestArenaHookGroupReportPathDisambiguatesUnhookedSibling is
 // TestHookGroupReportPathDisambiguatesUnhookedSibling for the arena/registry build path.
 func TestArenaHookGroupReportPathDisambiguatesUnhookedSibling(t *testing.T) {
