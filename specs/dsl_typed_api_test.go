@@ -61,6 +61,9 @@ func TestItWithSkipDoesNotRunButKeepsIdentity(t *testing.T) {
 // TestItWithFocusBehavesLikeFIt mirrors TestProgram_FocusFiltering: ItWith("name", Focus(fn))
 // must filter out every non-focused spec, exactly like FIt.
 func TestItWithFocusBehavesLikeFIt(t *testing.T) {
+	// This test is about the focus filter, not the fail-on-committed-focus policy (issue #273) —
+	// opt out of the latter so Runner.Run's tb.Errorf doesn't fail this test on its own.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })

@@ -2,6 +2,7 @@
 package specs
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -163,18 +164,34 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
 	groupStart := len(plan.Names)
 	if node.Type == ItNode {
-		// A non-focused It/SkipIt/PendingIt is dropped entirely — no plan entry, no skip/pending
-		// mark — whenever this Describe call registered at least one FIt (issue #245,
-		// Builder.finalize's focus filter). A focused It runs exactly like a normal one below.
+		// A non-focused It/SkipIt/PendingIt never becomes a plan entry, and never registers its
+		// original Skip/Pending mark, whenever this Describe call registered at least one FIt (issue
+		// #245, Builder.finalize's focus filter) — but it is still recorded as focus-excluded (issue
+		// #273), not simply discarded. A focused It runs exactly like a normal one below.
 		focusedOut := scratch.hasFocus && node.Kind != itFocus
 		switch {
 		case focusedOut:
-			// Nothing emitted; scratch.path is still popped below like any other node.
+			// This node — a plain It, a SkipIt/PendingIt mark, or an ItParallel spec (there is no
+			// FItParallel, so every one is unfocused) — never becomes a plan entry (issue #245's
+			// filter, unchanged), but since issue #273 it is no longer dropped without a trace
+			// either: it is recorded here so CompiledSuite.runSpecs can still report it, as
+			// Filtered, exactly once.
+			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.path, name))
 		case node.Kind == itSkip:
 			registerSkipMark(&scratch.groups, name, markScopes(scratch.path, name))
 		case node.Kind == itPending:
 			registerPendingMark(&scratch.groups, name, markScopes(scratch.path, name))
 		default: // itNormal, or itFocus (already confirmed focused above)
+			if node.Kind == itFocus {
+				// Recorded before the program is compiled below, not after, so a focused spec that
+				// panics mid-build still leaves this suite's fail-on-focus bookkeeping intact
+				// (issue #273); registerFocusedSpec only ever appends, it never reads the program.
+				location := strings.Join(scratch.path, "/")
+				if node.File != "" {
+					location = fmt.Sprintf("%s (%s:%d)", location, node.File, node.Line)
+				}
+				registerFocusedSpec(&scratch.groups, location)
+			}
 			scratch.beforeFlat = scratch.beforeFlat[:0]
 			scratch.afterFlat = scratch.afterFlat[:0]
 			ancestorIDs := collectAncestorIDs(arena, node.Parent)
@@ -401,6 +418,12 @@ func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 	if s == nil || s.Plan == nil || tb == nil {
 		return
 	}
+	// Checked on every call — Run's and every RunShard shard's alike (issue #273's "ALWAYS": each
+	// shard is ordinarily its own CI job, so each one must fail on its own when focus is active,
+	// not only the shard that happens to draw the focused spec). s.groups is the same object across
+	// every shard call (RunShard only varies sel), so this reads one shared count/name list, not a
+	// per-shard copy.
+	s.reportFocusPolicy(tb)
 	if len(s.Plan.ProgramStart) == 0 && !s.hasMarks() {
 		return
 	}
@@ -551,11 +574,26 @@ func (s *CompiledSuite) buildShardSelection(shardIndex, shardCount int) *shardSe
 	return sel
 }
 
-// hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt (issue #245):
-// such a suite may have zero entries in Plan.ProgramStart (e.g. a suite made only of SkipIt calls)
-// yet still needs Run to report those marks instead of returning early as an empty suite.
+// hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt, or has at least
+// one focus-excluded spec to report (issue #273): such a suite may have zero entries in
+// Plan.ProgramStart (e.g. a suite made only of SkipIt calls) yet still needs Run to report those
+// marks instead of returning early as an empty suite.
 func (s *CompiledSuite) hasMarks() bool {
-	return s.groups != nil && (len(s.groups.skipped) > 0 || len(s.groups.pending) > 0)
+	return s.groups != nil && (len(s.groups.skipped) > 0 || len(s.groups.pending) > 0 || len(s.groups.focusExcluded) > 0)
+}
+
+// reportFocusPolicy fails tb via Errorf when s registered at least one focused (FIt) spec and
+// GO_SPECS_ALLOW_FOCUS=1 does not opt out (issue #273): a forgotten debugging focus must not let a
+// partial suite report green. Errorf, not Fatalf/FailNow: the focused specs still run and report
+// their own results below (or, on a real *testing.T, in their own subtest) — this only marks the
+// enclosing test failed, it never stops or skips the run. See runner.go's reportFocusPolicy for the
+// Builder/Runner engine's mirror of this exact same policy.
+func (s *CompiledSuite) reportFocusPolicy(tb testing.TB) {
+	if s.groups == nil || s.groups.focusedCount == 0 || focusAllowed() {
+		return
+	}
+	tb.Helper()
+	tb.Errorf("%s", focusPolicyMessage(s.groups.focusedCount, len(s.groups.focusExcluded), s.groups.focusedNames))
 }
 
 // suiteRunObserver, when set, sees every CompiledSuite right before it runs. It exists only so this
@@ -610,6 +648,7 @@ func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter, 
 	if s.groups != nil && sel.reportsMarks() {
 		reportMarks(rep, s.groups.skipped, false)
 		reportMarks(rep, s.groups.pending, true)
+		reportFilteredMarks(rep, s.groups.focusExcluded)
 	}
 	if s.groups == nil || (len(s.groups.groups) == 0 && len(s.groups.parallel) == 0) {
 		// failFast is read directly off s.groups rather than through a helper: s.groups may be

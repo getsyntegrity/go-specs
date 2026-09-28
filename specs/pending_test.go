@@ -73,6 +73,9 @@ func TestItWithPendingRoutesToPendingIt(t *testing.T) {
 // focused, pending specs are dropped exactly like plain and skipped specs — a suite mid-TDD with a
 // pending spec and a focused spec should not still report the pending spec.
 func TestFocusDropsPendingSpecs(t *testing.T) {
+	// This test is about the focus filter dropping the pending spec, not the fail-on-committed-focus
+	// policy (issue #273) — opt out of the latter so Runner.Run's tb.Errorf doesn't fail this test.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })

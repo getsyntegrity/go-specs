@@ -6,6 +6,29 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking.** A committed `FIt` (or `Focus`/`ItWith(specs.Focus(...))`) is no longer allowed to
+  silently turn a partial suite green: whenever at least one focused spec is active anywhere in a
+  `Describe`/`BuildSuite`/`Analyze` call, the `Builder`/`Runner` program, or `RunShard`, the run now
+  fails the enclosing test — always, locally and in CI, with no CI-only detection — via
+  `tb.Errorf("go-specs: N focused spec(s) (FIt) are active, M spec(s) excluded; remove FIt or set
+  GO_SPECS_ALLOW_FOCUS=1")`. The failure is reported through `Errorf`, not `Fatal`/`FailNow`: the
+  focused specs still run and report their own pass/fail as before.
+  - The only opt-out is the environment variable `GO_SPECS_ALLOW_FOCUS=1`, read once per suite
+    build/run (never per spec). It disables only this failure; focus still filters exactly as
+    before — only the focused specs execute.
+  - In both modes, every spec a focus filter excludes — an ordinary `It`, and now also a
+    `SkipIt`/`PendingIt` mark that focus previously dropped without a trace — is reported as
+    `Filtered` (`report.SpecResultEvent.Filtered`/`report.StatusFiltered`), exactly once, including
+    under `CompiledSuite.RunShard`/the package-level `RunShard` (deterministic shard-0 rule; see
+    `docs/DSL.md`'s focus section). No new `report.Status` value was added and the report schema
+    version is unchanged: `Filtered` already existed for `go test -run` exclusion and now also
+    covers focus exclusion.
+  - Migration: a suite that intentionally keeps a committed `FIt` (e.g. a WIP branch, or CI
+    debugging) must set `GO_SPECS_ALLOW_FOCUS=1` in that environment, or `t.Setenv("GO_SPECS_ALLOW_FOCUS",
+    "1")` in the test itself, or remove the `FIt`. ([#273](https://github.com/getsyntegrity/go-specs/issues/273))
+
 ### Fixed
 
 - `Contain`'s `FailureMessage` reported a genuinely missing element, an actual type it has no
