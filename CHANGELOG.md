@@ -14,6 +14,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 - JUnit XML no longer emits an empty `<properties></properties>` element when no coverage is attached; the container appears only when it holds coverage `<property>` entries, as some JUnit validators require (#316).
 
+- Coverage profile parsing (`report.ParseCoverageProfile`, `report.ParseCoverageProfileMerged`, and so `go-specs report` finalization) now rejects a `mode:` other than `set`/`count`/`atomic`, negative execution or statement counts, and a repeated file/span with conflicting statement counts, instead of returning inflated or corrupt totals (#310).
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.

@@ -12,7 +12,7 @@ import (
 // ParseCoverageProfile parses a Go coverage profile, exactly as `go test -coverprofile=path`
 // writes it, into per-package and aggregate statement coverage.
 //
-// The profile's mode line ("mode: set|count|atomic") does not affect the result: a statement is
+// The profile's mode line ("mode: set|count|atomic") is validated (any other value is an error) but does not affect the result: a statement is
 // covered when its block's recorded count is greater than 0, regardless of which mode produced
 // that count. Aggregate coverage is always the sum of package statement counts (see
 // AggregateCoverage), never an average of package percentages.
@@ -38,6 +38,9 @@ func ParseCoverageProfile(r io.Reader) (Coverage, error) {
 		if !sawMode {
 			if !strings.HasPrefix(line, "mode:") {
 				return Coverage{}, fmt.Errorf("coverage profile: line %d: expected mode line, got %q", lineNo, line)
+			}
+			if err := validateCoverageMode(line); err != nil {
+				return Coverage{}, fmt.Errorf("coverage profile: line %d: %w", lineNo, err)
 			}
 			sawMode = true
 			continue
@@ -98,7 +101,33 @@ func parseCoverageLine(line string) (pkg string, numStmt, count int, err error) 
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("invalid execution count in %q: %w", line, err)
 	}
+	if err := validateCoverageCounts(line, numStmt, count); err != nil {
+		return "", 0, 0, err
+	}
 	return importPathOf(file), numStmt, count, nil
+}
+
+// validateCoverageMode accepts only the three modes `go test -covermode` can write. Anything else
+// would otherwise be silently treated as count/atomic and produce plausible-looking totals.
+func validateCoverageMode(modeLine string) error {
+	mode := strings.TrimSpace(strings.TrimPrefix(modeLine, "mode:"))
+	switch mode {
+	case "set", "count", "atomic":
+		return nil
+	}
+	return fmt.Errorf("invalid coverage mode %q, want set, count or atomic", mode)
+}
+
+// validateCoverageCounts rejects values Go's coverage instrumentation never writes: a negative
+// statement count or a negative execution count would corrupt Covered/Total arithmetic.
+func validateCoverageCounts(line string, numStmt, count int) error {
+	if numStmt < 0 {
+		return fmt.Errorf("invalid statement count %d in %q: must not be negative", numStmt, line)
+	}
+	if count < 0 {
+		return fmt.Errorf("invalid execution count %d in %q: must not be negative", count, line)
+	}
+	return nil
 }
 
 // importPathOf returns the package import path for a coverage profile file entry: the file's
@@ -111,7 +140,7 @@ func importPathOf(file string) string {
 }
 
 // coverageBlock accumulates every raw profile line observed for one deduplicated block, keyed by
-// (file, startLine.startCol, endLine.endCol, numStmt) (contract v1.2.8 §9, finding F7).
+// (file, startLine.startCol, endLine.endCol); a repeat with a different numStmt is an error (contract v1.2.8 §9, finding F7).
 type coverageBlock struct {
 	pkg      string
 	numStmt  int
@@ -128,8 +157,9 @@ type coverageBlock struct {
 // uses instead. It does not change ParseCoverageProfile's documented behaviour for its existing
 // (non-overlapping) callers.
 //
-// A block is identified by (file, startLine.startCol, endLine.endCol, numStmt) — its exact
-// source-code span. Two lines sharing that key describe the same instrumented block, and their
+// A block is identified by (file, startLine.startCol, endLine.endCol) — its exact
+// source-code span. Two lines sharing that key describe the same instrumented block (a differing
+// numStmt for one span is a conflict and fails the parse), and their
 // execution is combined using OR for `mode: set` (either contributor executed it) and by
 // summation for `mode: count`/`mode: atomic` (Go's own tooling semantics, cross-checked against
 // `go tool cover -func`'s correct output). Covered/Total and every percentage are then computed
@@ -153,6 +183,9 @@ func ParseCoverageProfileMerged(r io.Reader) (Coverage, error) {
 			if !strings.HasPrefix(line, "mode:") {
 				return Coverage{}, fmt.Errorf("coverage profile: line %d: expected mode line, got %q", lineNo, line)
 			}
+			if err := validateCoverageMode(line); err != nil {
+				return Coverage{}, fmt.Errorf("coverage profile: line %d: %w", lineNo, err)
+			}
 			mode = strings.TrimSpace(strings.TrimPrefix(line, "mode:"))
 			sawMode = true
 			continue
@@ -161,8 +194,11 @@ func ParseCoverageProfileMerged(r io.Reader) (Coverage, error) {
 		if err != nil {
 			return Coverage{}, fmt.Errorf("coverage profile: line %d: %w", lineNo, err)
 		}
-		key := file + "|" + blockSpec + "|" + strconv.Itoa(numStmt)
+		key := file + "|" + blockSpec
 		b, ok := blocks[key]
+		if ok && b.numStmt != numStmt {
+			return Coverage{}, fmt.Errorf("coverage profile: line %d: conflicting statement counts %d and %d for %s:%s", lineNo, b.numStmt, numStmt, file, blockSpec)
+		}
 		if !ok {
 			b = &coverageBlock{pkg: importPathOf(file), numStmt: numStmt}
 			blocks[key] = b
@@ -234,6 +270,9 @@ func parseCoverageBlockLine(line string) (file, blockSpec string, numStmt, count
 	count, err = strconv.Atoi(fields[2])
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("invalid execution count in %q: %w", line, err)
+	}
+	if err := validateCoverageCounts(line, numStmt, count); err != nil {
+		return "", "", 0, 0, err
 	}
 	return file, blockSpec, numStmt, count, nil
 }
