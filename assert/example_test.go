@@ -59,3 +59,18 @@ func ExampleContain() {
 	// true
 	// false
 }
+
+// A failed Contain names why: a genuine missing element reads as before, but an actual Contain has
+// no strategy for at all (here, an int) or an expected value whose type could never match the
+// actual's elements (here, a string needle against []int) get their own explicit reason instead of
+// both looking like "not present" (issue #277). Map-key containment specifically is not supported —
+// a map actual gets the same "unsupported actual" diagnosis as any other unsupported type.
+func ExampleContain_failureMessage() {
+	fmt.Println(Contain(4).FailureMessage([]int{1, 2, 3}))
+	fmt.Println(Contain(1).FailureMessage(42))
+	fmt.Println(Contain("x").FailureMessage([]int{1, 2, 3}))
+	// Output:
+	// expected [1 2 3] to contain 4
+	// expected 42 to contain 1 — int is not a supported Contain actual (want string, slice, or array)
+	// expected [1 2 3] to contain x — []int actual needs an int expected value, got string
+}

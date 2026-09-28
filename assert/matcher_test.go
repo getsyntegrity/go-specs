@@ -63,7 +63,10 @@ func TestFailureMessagesHandleNilActual(t *testing.T) {
 		"be nil":    {BeNil(), "expected nil, got <nil> (<nil>)"},
 		"be true":   {BeTrue(), "expected true, got <nil> (<nil>)"},
 		"be false":  {BeFalse(), "expected false, got <nil> (<nil>)"},
-		"contain":   {Contain(1), "expected <nil> to contain 1"},
+		// A nil actual used to read identically to a genuine missing element ("expected <nil> to
+		// contain 1"); it is now diagnosed as an unsupported actual, same as int or map (see
+		// TestContainFailureMessageDiagnosesUnsupportedActualType below) — issue #277.
+		"contain": {Contain(1), "expected <nil> to contain 1 — <nil> is not a supported Contain actual (want string, slice, or array)"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -166,13 +169,15 @@ func TestContainRejectsUnsupportedOperands(t *testing.T) {
 		expected  any
 		container any
 	}{
-		"non-string needle in string": {1, "abc"},
-		"string needle in int slice":  {"1", []int{1}},
-		"int needle in string slice":  {1, []string{"1"}},
-		"int needle in float slice":   {1, []float64{1}},
-		"scalar container":            {1, 42},
-		"nil container":               {1, nil},
-		"map container":               {1, map[string]int{"a": 1}},
+		"non-string needle in string":            {1, "abc"},
+		"string needle in int slice":             {"1", []int{1}},
+		"int needle in string slice":             {1, []string{"1"}},
+		"int needle in float slice":              {1, []float64{1}},
+		"scalar container":                       {1, 42},
+		"nil container":                          {1, nil},
+		"map container":                          {1, map[string]int{"a": 1}},
+		"string needle in reflected int64 slice": {"x", []int64{1, 2}},
+		"string needle in array":                 {"x", [3]int{1, 2, 3}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -180,6 +185,93 @@ func TestContainRejectsUnsupportedOperands(t *testing.T) {
 				t.Fatalf("expected no match for %v in %v", tc.expected, tc.container)
 			}
 		})
+	}
+}
+
+// Issue #277: an actual Contain cannot support at all (a scalar, a map, nil, ...) must be reported
+// distinctly from a supported container that simply lacks the element — the two used to render
+// identically ("expected 42 to contain 1"), which made a diagnostic bug look like a genuine miss.
+func TestContainFailureMessageDiagnosesUnsupportedActualType(t *testing.T) {
+	cases := map[string]struct {
+		expected any
+		actual   any
+		want     string
+	}{
+		"scalar actual": {
+			1, 42,
+			"expected 42 to contain 1 — int is not a supported Contain actual (want string, slice, or array)",
+		},
+		"map actual": {
+			1, map[string]int{"a": 1},
+			"expected map[a:1] to contain 1 — map[string]int is not a supported Contain actual (want string, slice, or array)",
+		},
+		"nil actual": {
+			1, nil,
+			"expected <nil> to contain 1 — <nil> is not a supported Contain actual (want string, slice, or array)",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := Contain(tc.expected).FailureMessage(tc.actual); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Issue #277: an expected value whose type could never match the actual's element type (a wrong
+// needle type for a string, or a wrong element type for a slice/array) must also be reported
+// distinctly from a genuine missing element, for every container shape Contain supports: the typed
+// fast paths (string, []int, []string, []float64) and the generic reflect fallback (any other
+// slice or array).
+func TestContainFailureMessageDiagnosesIncompatibleExpectedType(t *testing.T) {
+	cases := map[string]struct {
+		expected any
+		actual   any
+		want     string
+	}{
+		"non-string needle in string": {
+			1, "abc",
+			"expected abc to contain 1 — string actual needs a string expected value, got int",
+		},
+		"string needle in int slice": {
+			"1", []int{1, 2, 3},
+			"expected [1 2 3] to contain 1 — []int actual needs an int expected value, got string",
+		},
+		"int needle in string slice": {
+			1, []string{"a", "b"},
+			"expected [a b] to contain 1 — []string actual needs a string expected value, got int",
+		},
+		"string needle in float64 slice": {
+			"x", []float64{1.5, 2.5},
+			"expected [1.5 2.5] to contain x — []float64 actual needs a float64 expected value, got string",
+		},
+		"string needle in reflected int64 slice": {
+			"x", []int64{1, 2},
+			"expected [1 2] to contain x — []int64 actual needs an int64 expected value, got string",
+		},
+		"string needle in array": {
+			"x", [3]int{1, 2, 3},
+			"expected [1 2 3] to contain x — [3]int actual needs an int expected value, got string",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := Contain(tc.expected).FailureMessage(tc.actual); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A generic reflect-fallback slice/array whose element type is itself an interface (e.g. []any)
+// cannot be statically diagnosed as incompatible — any expected type might match some element — so
+// a miss there stays a genuine "does not contain", not a manufactured type diagnosis.
+func TestContainFailureMessageKeepsPlainWordingForInterfaceElementSlices(t *testing.T) {
+	got := Contain(3).FailureMessage([]any{1, "two"})
+	want := "expected [1 two] to contain 3"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
