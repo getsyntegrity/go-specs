@@ -69,6 +69,18 @@ type planScratch struct {
 	afterFlat  []func(*Context)
 	program    []Instruction
 	path       []string
+	// reportPath mirrors path (same push/pop timing, see buildExecutionPlanFromArenaRec) but holds
+	// each node's disambiguated report-Path label from labels instead of its literal Name (issue
+	// #275, docs/DSL.md) — used everywhere path currently feeds a report Path (appendSpecPath,
+	// registerSkipMark/registerPendingMark, registerHookGroup's reportPath). path itself keeps
+	// feeding FullNames/Go subtest identity, untouched. Unlike the bytecode-compiler build path, the
+	// arena is already a complete, static tree by the time this walk starts (see
+	// buildExecutionPlanFromArenaGroups), so labels can be computed once, upfront, instead of
+	// deferred to a finalize pass.
+	reportPath []string
+	// labels is this call's computeArenaGroupLabels result (issue #275): nodeID's report-Path label
+	// for every node in rootID's subtree, indexed by node id. Cleared before the call returns.
+	labels []string
 	// hooks and groups carry the arena path's once-per-group hooks in and its compiled planGroups
 	// out for the duration of one buildExecutionPlanFromArenaGroups call (issue #207). They live on
 	// the pooled scratch rather than as extra recursion parameters or plan fields, so a suite
@@ -91,6 +103,7 @@ var planScratchPool = sync.Pool{
 			afterFlat:  make([]func(*Context), 0, 32),
 			program:    make([]Instruction, 0, 32),
 			path:       make([]string, 0, 8),
+			reportPath: make([]string, 0, 8),
 		}
 	},
 }
@@ -122,6 +135,8 @@ func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *Execu
 		return nil
 	}
 	scratch.path = scratch.path[:0]
+	scratch.reportPath = scratch.reportPath[:0]
+	scratch.labels = computeArenaGroupLabels(arena, rootID)
 	scratch.hooks = hooks
 	scratch.groups = nil
 	scratch.hasFocus = arenaHasFocus(arena, rootID)
@@ -129,6 +144,7 @@ func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *Execu
 	groups := scratch.groups
 	scratch.hooks, scratch.groups = nil, nil
 	scratch.hasFocus = false
+	scratch.labels = nil
 	return groups
 }
 
@@ -159,6 +175,11 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	name := node.Name
 	if name != "" && node.Type != SuiteNode {
 		scratch.path = append(scratch.path, name)
+		reportLabel := name
+		if nodeID >= 0 && nodeID < len(scratch.labels) {
+			reportLabel = scratch.labels[nodeID]
+		}
+		scratch.reportPath = append(scratch.reportPath, reportLabel)
 	}
 	// groupStart is this node's own once-per-group hooks' entry point (H2/H3): the index the next
 	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
@@ -176,11 +197,16 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 			// filter, unchanged), but since issue #273 it is no longer dropped without a trace
 			// either: it is recorded here so CompiledSuite.runSpecs can still report it, as
 			// Filtered, exactly once.
-			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.path, name))
+			// markScopes(scratch.reportPath, ...), not scratch.path: reportPath already carries every
+			// enclosing group's disambiguated label (issue #275) — scratch.path holds the literal,
+			// possibly-ambiguous declared names instead, which would silently drop the "suite/D#2"-style
+			// segment down to just "suite" (or worse, an empty prefix) whenever a duplicate sibling name
+			// is in scope. registerSkipMark/registerPendingMark right below already get this right.
+			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itSkip:
-			registerSkipMark(&scratch.groups, name, markScopes(scratch.path, name))
+			registerSkipMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itPending:
-			registerPendingMark(&scratch.groups, name, markScopes(scratch.path, name))
+			registerPendingMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		default: // itNormal, or itFocus (already confirmed focused above)
 			if node.Kind == itFocus {
 				// Recorded before the program is compiled below, not after, so a focused spec that
@@ -221,7 +247,7 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 			plan.ProgramLen = append(plan.ProgramLen, len(scratch.program))
 			plan.Names = append(plan.Names, name)
 			plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
-			appendSpecPath(plan, markScopes(scratch.path, name))
+			appendSpecPath(plan, markScopes(scratch.reportPath, name))
 		}
 	}
 	// openParallel tracks a currently-open run of consecutive ItParallel siblings (issue #245's
@@ -261,16 +287,22 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	if node.Type != ItNode && node.Type != SuiteNode {
 		if before, after := scratch.hooks.of(nodeID); len(before) > 0 || len(after) > 0 {
 			path := scratch.path
+			reportPath := scratch.reportPath
 			if name == "" {
 				// The registry path never pushes an empty name; record it so the rejection names the
-				// group as declared (validateHookGroups).
+				// group as declared (validateHookGroups). validateHookGroups always rejects an
+				// empty-named hook group before ReportPath is ever reported, so it need not carry the
+				// same synthetic "" element as Path.
 				path = append(slices.Clip(path), "")
 			}
-			registerHookGroup(&scratch.groups, path, name, before, after, groupStart, len(plan.Names)-1)
+			registerHookGroup(&scratch.groups, path, name, reportPath, nil, before, after, groupStart, len(plan.Names)-1)
 		}
 	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
 		scratch.path = scratch.path[:len(scratch.path)-1]
+	}
+	if name != "" && node.Type != SuiteNode && len(scratch.reportPath) > 0 {
+		scratch.reportPath = scratch.reportPath[:len(scratch.reportPath)-1]
 	}
 }
 
