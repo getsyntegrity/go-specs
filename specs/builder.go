@@ -20,6 +20,9 @@ type scope struct {
 	id         int
 	beforeEach []step
 	afterEach  []step
+	// sealed is set once the scope registered a spec or a nested Describe; a per-spec hook declared
+	// afterwards would silently miss the earlier specs, so BeforeEach/AfterEach panic (issue #307).
+	sealed bool
 }
 
 // specKind describes how a spec was registered (normal, skip, focus, parallel, pending).
@@ -154,6 +157,7 @@ func (b *Builder) Describe(name string, body func()) {
 	if body == nil {
 		return
 	}
+	b.sealScope()
 	parent := -1
 	if n := len(b.reportScopeIDStack); n > 0 {
 		parent = b.reportScopeIDStack[n-1]
@@ -190,12 +194,27 @@ func (b *Builder) ensureScope() {
 	}
 }
 
+// sealScope ensures a scope exists and marks it as having registered a spec or nested scope.
+func (b *Builder) sealScope() {
+	b.ensureScope()
+	b.scopes[len(b.scopes)-1].sealed = true
+}
+
+// requireUnsealed panics when the current scope already registered a spec or nested Describe
+// (issue #307): a per-spec hook declared now would apply only to later specs.
+func (b *Builder) requireUnsealed(method string) {
+	if b.scopes[len(b.scopes)-1].sealed {
+		panic(lateHookMessage(method))
+	}
+}
+
 // BeforeEach registers a hook to run before each It in this scope (and nested scopes). Prepended before the spec.
 func (b *Builder) BeforeEach(fn func(*Context)) {
 	if fn == nil {
 		return
 	}
 	b.ensureScope()
+	b.requireUnsealed("BeforeEach")
 	idx := len(b.scopes) - 1
 	b.scopes[idx].beforeEach = append(b.scopes[idx].beforeEach, step(fn))
 }
@@ -206,6 +225,7 @@ func (b *Builder) AfterEach(fn func(*Context)) {
 		return
 	}
 	b.ensureScope()
+	b.requireUnsealed("AfterEach")
 	idx := len(b.scopes) - 1
 	b.scopes[idx].afterEach = append(b.scopes[idx].afterEach, step(fn))
 }
@@ -217,7 +237,7 @@ func (b *Builder) It(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
+	b.sealScope()
 	b.pending = append(b.pending, specItem{
 		kind:       kindNormal,
 		name:       name,
@@ -254,7 +274,7 @@ func (b *Builder) ItWith(name string, fn SpecFn) {
 // never runs, so it doesn't need to be a valid func — see Skip), but name is preserved so the
 // compiled Program can still report the spec's identity as skipped. See finalize.
 func (b *Builder) SkipIt(name string, fn func(*Context)) {
-	b.ensureScope()
+	b.sealScope()
 	b.pending = append(b.pending, specItem{kind: kindSkip, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack)})
 }
 
@@ -263,7 +283,7 @@ func (b *Builder) SkipIt(name string, fn func(*Context)) {
 // Pending), but name is preserved so the compiled Program can still report the spec's identity as
 // pending, distinct from skipped. See finalize.
 func (b *Builder) PendingIt(name string, fn func(*Context)) {
-	b.ensureScope()
+	b.sealScope()
 	b.pending = append(b.pending, specItem{kind: kindPending, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack)})
 }
 
@@ -272,7 +292,7 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
+	b.sealScope()
 	b.hasFocus = true
 	b.pending = append(b.pending, specItem{
 		kind:       kindFocus,
@@ -296,7 +316,7 @@ func (b *Builder) ItParallel(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
+	b.sealScope()
 	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack), steps: b.emitSpecSteps(fn)})
 }
 

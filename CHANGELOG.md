@@ -6,6 +6,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Fixed
+
+- **Breaking.** `BeforeEach`/`AfterEach` registered after an `It` (or other spec) or a nested `Describe`/`When` in the same scope now panic at build time on `Spec` (compiler and `Analyze` paths) and `Builder`, instead of silently applying only to later specs (#307). Declare per-spec hooks before the first spec or nested scope of their scope; suites that relied on the old behavior must reorder them. See `docs/DSL.md`.
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.

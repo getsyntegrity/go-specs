@@ -70,6 +70,16 @@ s.BeforeEach(func(ctx *specs.Context) {
 
 Multiple `BeforeEach` calls in the same scope run in registration order (outer scope first, then inner).
 
+### Declare per-spec hooks before specs and nested scopes
+
+`BeforeEach` and `AfterEach` are captured by each spec as it is registered, so a hook must be declared
+**before the first `It` (or `SkipIt`, `PendingIt`, `FIt`, `ItParallel`) and before the first nested
+`Describe`/`When` of its scope**. Registering one afterwards would apply it only to later specs, so a
+teardown assertion written at the end of a `Describe` would silently never run for the specs above it.
+Instead of allowing that, `Spec` and `Builder` fail the build with a panic that starts with `specs:` and
+names the hook (for example `specs: AfterEach registered after a spec or nested scope in the same scope`).
+`BeforeAll`/`AfterAll` are not affected: they cover the whole scope wherever they are declared.
+
 ## AfterEach
 
 `AfterEach` registers a function that runs after every `It` in the current scope. Execution order is **LIFO**: innermost after runs first, then outer.

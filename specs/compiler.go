@@ -12,6 +12,11 @@ type bytecodeCompiler struct {
 	nameStack   []string
 	beforeStack [][]func(*Context)
 	afterStack  [][]func(*Context)
+	// sealedStack mirrors nameStack: sealedStack[i] is true once scope i has registered a spec or a
+	// nested scope. A BeforeEach/AfterEach captured by EmitIt only reaches the specs registered after
+	// it, so registering one on a sealed scope would silently skip the earlier specs (issue #307);
+	// AppendBefore/AppendAfter panic instead. Pooled, so it costs nothing per suite.
+	sealedStack []bool
 	// groupScopes holds each open scope's own once-per-group hooks (issue #207), nil until the
 	// first BeforeAll/AfterAll this pooled compiler ever sees, and kept (emptied) across reuse after
 	// that. Unlike beforeStack/afterStack these are never flattened via flattenHooks: a
@@ -95,6 +100,7 @@ func newBytecodeCompiler() *bytecodeCompiler {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
+	c.sealedStack = c.sealedStack[:0]
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
@@ -114,6 +120,7 @@ func (c *bytecodeCompiler) reset() {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
+	c.sealedStack = c.sealedStack[:0]
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
@@ -131,6 +138,7 @@ func (c *bytecodeCompiler) reset() {
 // PushScope enters a Describe/When block. Call PopScope when the block callback returns.
 func (c *bytecodeCompiler) PushScope(name string) {
 	c.closeOpenParallelRun()
+	c.sealTop()
 	parent := -1
 	if n := len(c.scopeIDStack); n > 0 {
 		parent = c.scopeIDStack[n-1]
@@ -142,6 +150,7 @@ func (c *bytecodeCompiler) PushScope(name string) {
 	c.nameStack = append(c.nameStack, name)
 	c.beforeStack = append(c.beforeStack, nil)
 	c.afterStack = append(c.afterStack, nil)
+	c.sealedStack = append(c.sealedStack, false)
 	c.groupStartStack = append(c.groupStartStack, len(c.plan.Names))
 }
 
@@ -159,6 +168,9 @@ func (c *bytecodeCompiler) PopScope() {
 	}
 	if n := len(c.afterStack); n > 0 {
 		c.afterStack = c.afterStack[:n-1]
+	}
+	if n := len(c.sealedStack); n > 0 {
+		c.sealedStack = c.sealedStack[:n-1]
 	}
 	c.groupScopes.truncate(len(c.nameStack))
 	if n := len(c.groupStartStack); n > 0 {
@@ -208,6 +220,30 @@ func (c *bytecodeCompiler) closeOpenParallelRun() {
 	c.openParallelStart = -1
 }
 
+// sealTop records that the innermost open scope has registered a spec or a nested scope.
+func (c *bytecodeCompiler) sealTop() {
+	if n := len(c.sealedStack); n > 0 {
+		c.sealedStack[n-1] = true
+	}
+}
+
+// requireUnsealed panics when the innermost scope already registered a spec or nested scope (issue
+// #307): a per-spec hook declared now would apply only to later specs while BeforeAll/AfterAll
+// cover the whole scope, so a teardown assertion could silently never run for earlier specs.
+func (c *bytecodeCompiler) requireUnsealed(method string) {
+	if n := len(c.sealedStack); n > 0 && c.sealedStack[n-1] {
+		panic(lateHookMessage(method))
+	}
+}
+
+// lateHookMessage is the shared build-time diagnostic for a per-spec hook registered after the
+// first spec or nested scope of its scope (issue #307), used by every build path.
+func lateHookMessage(method string) string {
+	return "specs: " + method + " registered after a spec or nested scope in the same scope; " +
+		"per-spec hooks apply only to specs declared after them, so declare " + method +
+		" before the first It/When/Describe of its scope"
+}
+
 // AppendBefore adds a before-each hook to the current scope.
 func (c *bytecodeCompiler) AppendBefore(fn func(*Context)) {
 	if fn == nil {
@@ -216,6 +252,7 @@ func (c *bytecodeCompiler) AppendBefore(fn func(*Context)) {
 	if len(c.beforeStack) == 0 {
 		return
 	}
+	c.requireUnsealed("BeforeEach")
 	i := len(c.beforeStack) - 1
 	c.beforeStack[i] = append(c.beforeStack[i], fn)
 }
@@ -228,6 +265,7 @@ func (c *bytecodeCompiler) AppendAfter(fn func(*Context)) {
 	if len(c.afterStack) == 0 {
 		return
 	}
+	c.requireUnsealed("AfterEach")
 	i := len(c.afterStack) - 1
 	c.afterStack[i] = append(c.afterStack[i], fn)
 }
@@ -330,6 +368,7 @@ func (c *bytecodeCompiler) flattenHooks() {
 
 // EmitIt appends one spec program with specialized opcodes: OpBeforeHook, OpBody, OpAfterHook.
 func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
+	c.sealTop()
 	c.flattenHooks()
 	c.program = c.program[:0]
 	for _, h := range c.beforeFlat {
@@ -394,11 +433,13 @@ func (c *bytecodeCompiler) EmitItParallel(name string, body func(*Context)) {
 // later turns out to have a focus, applyFocusFilter drops every buffered skip/pending mark
 // wholesale, the same as Builder drops every unfocused It/SkipIt/PendingIt.
 func (c *bytecodeCompiler) EmitSkip(name string) {
+	c.sealTop()
 	registerSkipMark(&c.groups, name, c.nameStack, c.scopeIDStack)
 }
 
 // EmitPending is EmitSkip for PendingIt.
 func (c *bytecodeCompiler) EmitPending(name string) {
+	c.sealTop()
 	registerPendingMark(&c.groups, name, c.nameStack, c.scopeIDStack)
 }
 
