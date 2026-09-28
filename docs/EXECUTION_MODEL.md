@@ -293,6 +293,18 @@ Precedence is strict and fail-closed:
 2. Otherwise `SHARD=2/10`, on the same terms.
 3. Otherwise `SHARD_INDEX` + `SHARD_TOTAL`. Setting exactly one of the two is a configuration error, not "not configured": a half-configured pair is a typo, not a request to run everything.
 
+#### Passing the shard to `go test`
+
+go-specs does not register `-shard` with Go's `flag` package: `ParseShardFlag` only scans `os.Args`. `go test ./x -args -shard 1/2` therefore exits before any spec runs with `flag provided but not defined: -shard`, because the test binary's own flag parsing rejects it. End Go's flag parsing with `--` so the binary never sees the unknown flag, or use the environment:
+
+```bash
+go test ./... -args -- -shard 1/2      # flag form; -shard=1/2 also works
+SHARD=1/2 go test ./...                # environment form
+SHARD_INDEX=1 SHARD_TOTAL=2 go test ./...
+```
+
+Both forms are exercised through a real `go test` subprocess in `specs/shard_flag_invocation_real_process_test.go`. An unusable value (`-args -- -shard 5/2`) still fails closed.
+
 `total` must be >= 1 and `index` must satisfy `0 <= index < total`. A shard that draws no specs or groups under a *valid* configuration — more shards than work — is an empty partition, not an error, and runs nothing without failing.
 
 ```go
