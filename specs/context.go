@@ -97,7 +97,10 @@ type Context struct {
 	// live in the fields below and are set fresh, immediately before every t.Run call, by
 	// runSpecProgramIsolated. Nothing else reads or writes these fields, and Reset intentionally
 	// leaves isoRun alone — clearing it here would throw away the very allocation this exists to
-	// avoid repeating.
+	// avoid repeating. isoProgram and isoSub, by contrast, are cleared by runSpecProgramIsolated
+	// itself as soon as the subtest has finished, so a Context idle in contextPool does not keep the
+	// last spec's program or its finished *testing.T alive (#304); only a body parked on the
+	// unsupported ctx.T.Parallel() keeps them, together with the poisoned Context it still holds.
 	//
 	// Before this cache, every spec on this path paid five allocations testing.T.Run itself does not
 	// charge: one each for the message/output pair (named returns captured by the old per-spec

@@ -104,9 +104,10 @@ func TestIsolatedContextReuseDoesNotLeakPanicStackIntoFollowingAssertionFailure(
 // a reused Context panics and fails; the second is discarded by `go test -run` before its body ever
 // runs (testing.T.Run returns true without invoking f -- see runSpecProgramIsolated's doc comment on
 // `ran`). The filtered spec must report Filtered (ran=false) with no Failed, Skipped, Message or
-// Output carried over from the first -- in particular it must not read ctx.isoSub, which still points
-// at the first spec's own *testing.T (isoSub is only ever overwritten by a closure invocation, which
-// a filtered subtest never gets).
+// Output carried over from the first -- in particular it must not read ctx.isoSub, which a filtered
+// subtest never sets (isoSub is only ever assigned by a closure invocation, which a filtered subtest
+// never gets; the first spec's own *testing.T was already cleared from it once that spec finished,
+// see #304).
 func TestIsolatedContextReuseFilteredSpecDoesNotInheritPriorFailure(t *testing.T) {
 	const helperEnvKey = "GO_SPECS_ISOLATED_REUSE_FILTERED"
 	if os.Getenv(helperEnvKey) == "1" {

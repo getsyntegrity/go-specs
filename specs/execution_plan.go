@@ -898,6 +898,12 @@ func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, s
 		// release ctx back to the pool underneath it (#172).
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
+	// Only reached once the subtest has finished: failUnsupportedSpecBodyParallel above ends this
+	// goroutine through t.Fatalf, so a parked body keeps everything it was handed. Both values have
+	// been read by now, and leaving them set would keep this spec's program (and through it its
+	// suite's plan) and its finished *testing.T alive for as long as ctx sits in contextPool (#304).
+	// isoRun stays: reusing it is the allocation saving #244 exists for.
+	ctx.isoProgram, ctx.isoSub = nil, nil
 	failed = failed || ctx.hasFailed()
 	// skipped is folded against this final failed, not the raw subtest failed the guard above
 	// computed, so it always agrees with the Failed value this function actually reports: a body that
