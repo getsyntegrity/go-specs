@@ -65,8 +65,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 - Built-in assertion failures now reach every reporter with their message: `report.SpecResultEvent.Message`
   (and therefore `Case.Message` in JSON, the JUnit `<failure message=...>` attribute, HTML and TXT) carries
   the assertion text, e.g. `expected 2 to equal 3`, instead of being empty. This applies to
-  `ctx.Expect`/`ExpectT`/`EqualTo`/`Context.Snapshot` failures on every engine that runs a spec in its own
-  subtest (`Describe`, `Builder`/`Runner` and `Spec.ItParallel`). A recovered panic's message still takes
+  `ctx.Expect`/`ExpectT`/`EqualTo`/`Context.Snapshot` failures on every execution mode: `Describe`,
+  `Builder`/`Runner`, `Spec.ItParallel` and `Builder.ItParallel`. `Builder.ItParallel` already carried
+  the text through its parallel failure record, so it is unchanged; this closes the gap on the other
+  three. A recovered panic's message still takes
   priority. A failure raised directly through `ctx.T` (`Error`, `Fatal`, `FailNow`) still has no message,
   because go-specs never sees that text. Consumers that treated an empty `Message` on a failed case as
   "assertion failure" should read `Status` instead. ([#272](https://github.com/getsyntegrity/go-specs/issues/272))
@@ -76,9 +78,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   reported as `failed` with no stack. Assertion failures in the same specs are still `failed`. JUnit
   output moves those cases from `<failure>` to `<error>`. ([#314](https://github.com/getsyntegrity/go-specs/issues/314))
 
-- Lower per-spec cost on the default `Describe` path with a real `*testing.T`: the subtest closure and
-  its bookkeeping are now built once per pooled `Context` instead of once per spec, cutting
-  `make bench-e2e` from 30 to 25 allocations per spec (the bare `t.Run` baseline). A `Context` idle in
+- Lower per-spec cost on the sequential real-`*testing.T` path: the subtest closure and its bookkeeping
+  are now built once per pooled `Context` instead of once per spec. In `make bench-e2e`, `BuildSuite`
+  (run only) drops from 30 to 25 allocations per spec, matching the bare `t.Run` baseline, and
+  `Describe` (declare and run) from 31 to 26. A `Context` idle in
   the pool also no longer keeps the last spec's program, suite plan and finished `*testing.T` alive.
   No API change. ([#244](https://github.com/getsyntegrity/go-specs/issues/244), [#304](https://github.com/getsyntegrity/go-specs/issues/304))
 
