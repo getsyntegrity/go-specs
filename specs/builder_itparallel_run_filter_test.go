@@ -106,3 +106,33 @@ func TestBuilderItParallel_RunSelector_RealProcess(t *testing.T) {
 		})
 	}
 }
+
+// TestBuilderItParallel_FailingSpecFailsItsOwnSubtest pins that, now that each Builder.ItParallel
+// spec runs in its own subtest (#330), `go test` marks the failing spec's subtest FAIL and leaves the
+// passing one PASS, as Spec.ItParallel does, instead of a PASS line for a spec that failed.
+func TestBuilderItParallel_FailingSpecFailsItsOwnSubtest(t *testing.T) {
+	if os.Getenv(builderItParallelRunFilterEnv) == "fail" {
+		b := NewBuilder()
+		b.Describe("suite", func() {
+			b.ItParallel("ok", func(*Context) {})
+			b.ItParallel("bad", func(ctx *Context) { ctx.Expect(1).ToEqual(2) })
+		})
+		NewRunner(b.Build()).Run(t)
+		return
+	}
+
+	const test = "TestBuilderItParallel_FailingSpecFailsItsOwnSubtest"
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^"+test+"$")
+	cmd.Env = append(os.Environ(), builderItParallelRunFilterEnv+"=fail")
+	output, _ := cmd.CombinedOutput() // the helper fails on purpose
+	transcript := string(output)
+	for _, want := range []string{
+		"--- FAIL: " + test + "/suite/bad ",
+		"--- PASS: " + test + "/suite/ok ",
+		"--- FAIL: " + test + " ",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("missing %q in:\n%s", want, transcript)
+		}
+	}
+}

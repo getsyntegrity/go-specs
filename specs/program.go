@@ -364,9 +364,15 @@ func parallelStep(steps []step, specNames []string, scopeNames [][]string) step 
 					return
 				}
 				begin := time.Now()
-				t.Run(names[i], func(*testing.T) {
+				t.Run(names[i], func(st *testing.T) {
 					ran[i] = true
 					runOne(i, s)
+					// The failure text is still replayed on the parent by reportFailures below, which
+					// is what marks the batch's Context failed; this only makes `go test` show FAIL on
+					// the spec's own subtest instead of PASS.
+					if results[i].Failed {
+						st.Fail()
+					}
 				})
 				if !ran[i] && obs != nil {
 					timings[i] = parallelTiming{start: begin}
