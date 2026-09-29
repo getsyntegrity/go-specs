@@ -374,7 +374,16 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
-		message, output, ran, failed, skipped := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		var message, output string
+		var ran, failed, skipped bool
+		if g.parallelBatch {
+			// No generated subtest around the batch: parallelStep gives each spec its own (#330).
+			message, output = runSpecWithHooks(ctx, g.before, s, g.after)
+			failed = ctx.hasFailed()
+			message, ran = ctx.assertionMessage(message, failed), true
+		} else {
+			message, output, ran, failed, skipped = runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		}
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 		}

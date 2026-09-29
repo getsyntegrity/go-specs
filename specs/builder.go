@@ -425,6 +425,7 @@ func (b *Builder) finalize() {
 			// is populated, so it correctly stays out of the way here instead of double-reporting.
 			groups = append(groups, group{
 				specs:                 []step{parallelStep(parSteps, parNames, parScopeNames)},
+				parallelBatch:         true,
 				skipped:               pendingSkips,
 				skippedScopeNames:     pendingSkipScopeNames,
 				pendingSpecs:          bufferedPending,
