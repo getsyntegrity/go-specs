@@ -21,6 +21,16 @@ func HaveLen(n int) Matcher { return assert.HaveLen(n) }
 // map or chan is empty.
 func BeEmpty() Matcher { return assert.BeEmpty() }
 
+// StartWith expects actual (a string or []byte) to start with prefix.
+func StartWith(prefix string) Matcher { return assert.StartWith(prefix) }
+
+// EndWith expects actual (a string or []byte) to end with suffix.
+func EndWith(suffix string) Matcher { return assert.EndWith(suffix) }
+
+// MatchRegex expects actual (a string or []byte) to contain a match for the RE2 pattern, compiled
+// once. An invalid pattern never matches and its failure message carries the compile error.
+func MatchRegex(pattern string) Matcher { return assert.MatchRegex(pattern) }
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }

@@ -770,9 +770,23 @@ specs.HaveLen(3).FailureMessage(42)          // "HaveLen: int has no length"
 
 Because an unsupported actual simply fails to match, `Not(HaveLen(3))` and `Not(BeEmpty())` succeed on a value that has no length; pair them with a type-specific matcher if that matters.
 
+### `StartWith`, `EndWith` and `MatchRegex`
+
+`StartWith(prefix)` and `EndWith(suffix)` expect the actual to begin or end with the given string; `MatchRegex(pattern)` expects it to contain a match for an [RE2](https://pkg.go.dev/regexp/syntax) pattern (unanchored, so write `^...$` to match the whole text). The actual may be a `string`, a `[]byte` (compared in place, without converting it to a string) or a named type whose kind is `string`. Any other actual never matches and the failure says so:
+
+```go
+ctx.Expect("hello world").To(specs.StartWith("hello"))
+ctx.Expect([]byte("id-42")).To(specs.MatchRegex(`^id-\d+$`))
+
+specs.EndWith("x").FailureMessage("abc")   // `expected "abc" to end with "x"`
+specs.StartWith("a").FailureMessage(42)    // "StartWith: int is not a string or []byte"
+```
+
+`MatchRegex` compiles its pattern once, when the matcher is built. An invalid pattern does not panic: the matcher never matches, and its failure message carries the compile error (`MatchRegex: invalid pattern "(": error parsing regexp: ...`), so the mistake surfaces at the assertion that used it. As with `HaveLen`, `Not(StartWith("a"))` succeeds on a non-text actual, because the inner matcher fails to match it.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation

@@ -246,14 +246,17 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		failing     any
 		wantMessage string
 	}{
-		"Equal":    {Equal(1), 1, 2, "expected 2 to equal 1"},
-		"NotEqual": {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
-		"BeNil":    {BeNil(), nil, 1, "expected nil, got 1 (int)"},
-		"BeTrue":   {BeTrue(), true, false, "expected true, got false (bool)"},
-		"BeFalse":  {BeFalse(), false, true, "expected false, got true (bool)"},
-		"Contain":  {Contain("b"), "abc", "axc", "expected axc to contain b"},
-		"HaveLen":  {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
-		"BeEmpty":  {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
+		"Equal":      {Equal(1), 1, 2, "expected 2 to equal 1"},
+		"NotEqual":   {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
+		"BeNil":      {BeNil(), nil, 1, "expected nil, got 1 (int)"},
+		"BeTrue":     {BeTrue(), true, false, "expected true, got false (bool)"},
+		"BeFalse":    {BeFalse(), false, true, "expected false, got true (bool)"},
+		"Contain":    {Contain("b"), "abc", "axc", "expected axc to contain b"},
+		"HaveLen":    {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
+		"BeEmpty":    {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
+		"StartWith":  {StartWith("a"), "abc", "xbc", `expected "xbc" to start with "a"`},
+		"EndWith":    {EndWith("c"), "abc", "abx", `expected "abx" to end with "c"`},
+		"MatchRegex": {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -287,6 +290,13 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect([]int{1, 2, 3}).To(HaveLen(3))
 			ctx.Expect(map[string]int{}).To(BeEmpty())
 			ctx.Expect([]int{1}).To(Not(BeEmpty()))
+		})
+		s.It("accepts string prefixes, suffixes and patterns", func(ctx *Context) {
+			ctx.Expect("hello world").To(StartWith("hello"))
+			ctx.Expect("hello world").To(EndWith("world"))
+			ctx.Expect("id-42").To(MatchRegex(`^id-\d+$`))
+			ctx.Expect("hello").To(Not(StartWith("world")))
+			ctx.Expect("hello").To(All(StartWith("he"), EndWith("lo")))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
