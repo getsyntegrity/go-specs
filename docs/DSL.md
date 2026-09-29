@@ -819,9 +819,36 @@ specs.ContainTheSameElementsAs([]int{1, 1, 2}).FailureMessage([]int{1, 2, 2})
 
 Elements compare with `ValuesEqual`, the comparison `Equal` and `Contain` use: `1` is not `int64(1)`, an error matches by identity, and everything else is structural. A collection is a slice or an array; `ContainAllOf` and `ContainAnyOf` also accept a string, where each element must be a string and is looked up as a substring (a non-string element is just never found). `ContainTheSameElementsAs` does not accept a string, and its two sides may have different types (`[]int` against `[]any` works when the elements are equal). It is multiset equality, so duplicates count, and elements are paired greedily one to one: exact for ordinary equality, best-effort for exotic equality such as errors matching through wrapping. With no elements, `ContainAllOf()` matches any collection (nothing is required) while `ContainAnyOf()` and `BeOneOf()` never match. An actual that is not a collection fails with a `ContainAllOf: int is not a string, slice or array` style message, and, as with `HaveLen`, `Not(ContainAllOf(1))` succeeds on it. `[]int`, `[]string`, `[]float64` and `[]any` are allocation-free fast paths.
 
+### `BeGreaterThan`, `BeLessThan`, `BeBetween` and `BeCloseTo`
+
+`BeGreaterThan(x)`, `BeGreaterThanOrEqual(x)`, `BeLessThan(x)` and `BeLessThanOrEqual(x)` compare the actual with `x`. `BeBetween(lo, hi)` expects `lo <= actual <= hi`, **inclusive on both ends**. `BeCloseTo(target, delta)` expects `|actual - target| <= delta` (also inclusive).
+
+```go
+ctx.Expect(5).To(specs.BeGreaterThan(3))
+ctx.Expect(uint8(5)).To(specs.BeGreaterThanOrEqual(int64(5)))
+ctx.Expect(elapsed).To(specs.BeLessThan(time.Second))
+ctx.Expect("b").To(specs.BeBetween("a", "c"))
+ctx.Expect(3.14159).To(specs.BeCloseTo(3.14, 0.01))
+
+specs.BeGreaterThan(5).FailureMessage(3)  // "expected 3 to be greater than 5"
+specs.BeBetween(1, 10).FailureMessage(11) // "expected 11 to be between 1 and 10 (inclusive)"
+specs.BeGreaterThan("a").FailureMessage(5) // "BeGreaterThan: cannot compare int with string"
+```
+
+The rules, in one place:
+
+- **Numbers** are any `int`, `uint` or `float` kind, named types included, so a `time.Duration` (an `int64`) works. Different kinds compare by exact value rather than by converting one side: a negative `int` is below every `uint`, a `uint64` above `math.MaxInt64` is above every `int64`, and an `int64` beyond 2^53 is not rounded to a `float64` before it meets a float.
+- **Strings** compare with strings, byte-wise, like Go's `<`. A number never compares with a string; the failure says `cannot compare int with string`.
+- **NaN** is not ordered, so it never matches, as the actual or as the expected value, and `BeCloseTo` never matches a NaN either. The failure says so.
+- **Not supported**: bools, `nil`, structs, slices and `time.Time` (compare `t.UnixNano()` or a `Sub` result instead). They fail with `BeGreaterThan: time.Time is not a number or string`, never a panic.
+- **`BeBetween`** needs both bounds and the actual to be numbers, or all strings. A range with `lo` above `hi` never matches and the failure says so.
+- **`BeCloseTo`** converts the actual to a `float64`, so it is exactly as precise as a `float64`: use the comparison matchers when exactness beyond 2^53 matters. A negative or NaN `delta` never matches, and the failure names it. Equal infinities count as close.
+
+As with `HaveLen`, an unsupported actual simply fails to match, so `Not(BeGreaterThan(1))` succeeds on a NaN or a non-number. Builtin numeric types compare without reflection or allocation.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation
