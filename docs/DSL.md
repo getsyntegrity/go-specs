@@ -801,9 +801,27 @@ specs.HaveKey("a").FailureMessage(42)        // "HaveKey: int is not a map"
 
 `map[string]any` and `map[string]string` are the allocation-free fast paths; every other map (named map types included) goes through reflection. A key whose type cannot be assigned to the map's key type is an ordinary non-match, never a panic, and the failure says which key type the map has. That is assignability, not conversion: a plain `string` is not a key of a `map[MyString]V`, and `nil` is only a key of a map whose key type is an interface. A key present with a `nil` value is still a key. A non-map actual never matches, and, as with `HaveLen`, `Not(HaveKey("a"))` therefore succeeds on it.
 
+### `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs` and `BeOneOf`
+
+These extend `Contain` to several elements. `ContainAllOf(a, b)` needs every listed element, `ContainAnyOf(a, b)` needs at least one, `ContainTheSameElementsAs(other)` needs the same elements as `other` in any order, and `BeOneOf(a, b)` checks that the actual itself equals one of the listed values.
+
+```go
+ctx.Expect([]int{1, 2, 3}).To(specs.ContainAllOf(3, 1))
+ctx.Expect([]string{"a", "b"}).To(specs.ContainAnyOf("z", "b"))
+ctx.Expect([]int{3, 1, 2}).To(specs.ContainTheSameElementsAs([]int{1, 2, 3}))
+ctx.Expect(2).To(specs.BeOneOf(1, 2, 3))
+
+specs.ContainAllOf(1, 3, 4).FailureMessage([]int{1, 2})
+// "expected [1 2] to contain all of [1 3 4], missing [3 4]"
+specs.ContainTheSameElementsAs([]int{1, 1, 2}).FailureMessage([]int{1, 2, 2})
+// "expected [1 2 2] to contain the same elements as [1 1 2] — missing [1], unexpected [2]"
+```
+
+Elements compare with `ValuesEqual`, the comparison `Equal` and `Contain` use: `1` is not `int64(1)`, an error matches by identity, and everything else is structural. A collection is a slice or an array; `ContainAllOf` and `ContainAnyOf` also accept a string, where each element must be a string and is looked up as a substring (a non-string element is just never found). `ContainTheSameElementsAs` does not accept a string, and its two sides may have different types (`[]int` against `[]any` works when the elements are equal). It is multiset equality, so duplicates count, and elements are paired greedily one to one: exact for ordinary equality, best-effort for exotic equality such as errors matching through wrapping. With no elements, `ContainAllOf()` matches any collection (nothing is required) while `ContainAnyOf()` and `BeOneOf()` never match. An actual that is not a collection fails with a `ContainAllOf: int is not a string, slice or array` style message, and, as with `HaveLen`, `Not(ContainAllOf(1))` succeeds on it. `[]int`, `[]string`, `[]float64` and `[]any` are allocation-free fast paths.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation

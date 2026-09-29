@@ -246,20 +246,24 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		failing     any
 		wantMessage string
 	}{
-		"Equal":      {Equal(1), 1, 2, "expected 2 to equal 1"},
-		"NotEqual":   {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
-		"BeNil":      {BeNil(), nil, 1, "expected nil, got 1 (int)"},
-		"BeTrue":     {BeTrue(), true, false, "expected true, got false (bool)"},
-		"BeFalse":    {BeFalse(), false, true, "expected false, got true (bool)"},
-		"Contain":    {Contain("b"), "abc", "axc", "expected axc to contain b"},
-		"HaveLen":    {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
-		"BeEmpty":    {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
-		"StartWith":  {StartWith("a"), "abc", "xbc", `expected "xbc" to start with "a"`},
-		"EndWith":    {EndWith("c"), "abc", "abx", `expected "abx" to end with "c"`},
-		"HaveKey":    {HaveKey("a"), map[string]int{"a": 1}, map[string]int{"b": 1}, "expected map[b:1] to have key a"},
-		"HaveValue":  {HaveValue(1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have value 1"},
-		"HavePair":   {HavePair("a", 1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have key a with value 1 — key has value 2"},
-		"MatchRegex": {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
+		"Equal":                    {Equal(1), 1, 2, "expected 2 to equal 1"},
+		"NotEqual":                 {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
+		"BeNil":                    {BeNil(), nil, 1, "expected nil, got 1 (int)"},
+		"BeTrue":                   {BeTrue(), true, false, "expected true, got false (bool)"},
+		"BeFalse":                  {BeFalse(), false, true, "expected false, got true (bool)"},
+		"Contain":                  {Contain("b"), "abc", "axc", "expected axc to contain b"},
+		"HaveLen":                  {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
+		"BeEmpty":                  {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
+		"StartWith":                {StartWith("a"), "abc", "xbc", `expected "xbc" to start with "a"`},
+		"EndWith":                  {EndWith("c"), "abc", "abx", `expected "abx" to end with "c"`},
+		"HaveKey":                  {HaveKey("a"), map[string]int{"a": 1}, map[string]int{"b": 1}, "expected map[b:1] to have key a"},
+		"HaveValue":                {HaveValue(1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have value 1"},
+		"HavePair":                 {HavePair("a", 1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have key a with value 1 — key has value 2"},
+		"ContainAllOf":             {ContainAllOf(1, 2), []int{2, 1}, []int{1}, "expected [1] to contain all of [1 2], missing [2]"},
+		"ContainAnyOf":             {ContainAnyOf(1, 2), []int{2}, []int{3}, "expected [3] to contain any of [1 2]"},
+		"ContainTheSameElementsAs": {ContainTheSameElementsAs([]int{1, 2}), []int{2, 1}, []int{1}, "expected [1] to contain the same elements as [1 2] — missing [2]"},
+		"BeOneOf":                  {BeOneOf(1, 2), 2, 3, "expected 3 to be one of [1 2]"},
+		"MatchRegex":               {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -308,6 +312,13 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect(m).To(HavePair("name", "go-specs"))
 			ctx.Expect(m).To(Not(HaveKey("missing")))
 			ctx.Expect(m).To(All(HaveKey("stars"), HaveLen(2)))
+		})
+		s.It("accepts collection membership", func(ctx *Context) {
+			ctx.Expect([]int{1, 2, 3}).To(ContainAllOf(3, 1))
+			ctx.Expect([]string{"a", "b"}).To(ContainAnyOf("z", "b"))
+			ctx.Expect([]int{3, 1, 2}).To(ContainTheSameElementsAs([]int{1, 2, 3}))
+			ctx.Expect(2).To(BeOneOf(1, 2, 3))
+			ctx.Expect([]int{1}).To(Not(ContainAllOf(1, 2)))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
