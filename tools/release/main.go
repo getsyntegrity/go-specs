@@ -20,6 +20,7 @@
 //	go run ./tools/release changelog -version v0.2.0 -date 2026-10-01 -file CHANGELOG.md
 //	go run ./tools/release latest-heading -file CHANGELOG.md
 //	go run ./tools/release notes -version v0.2.0 -file CHANGELOG.md
+//	go run ./tools/release validate -file CHANGELOG.md   # read-only structure check of [Unreleased]
 package main
 
 import (
@@ -44,7 +45,7 @@ func logf(w io.Writer, format string, a ...any) {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		logf(stderr, "release: expected a subcommand (next-version, changelog, latest-heading, notes)\n")
+		logf(stderr, "release: expected a subcommand (next-version, changelog, latest-heading, notes, validate)\n")
 		return 1
 	}
 
@@ -57,8 +58,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runLatestHeading(args[1:], stdout, stderr)
 	case "notes":
 		return runNotes(args[1:], stdout, stderr)
+	case "validate":
+		return runValidate(args[1:], stdout, stderr)
 	default:
-		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog, latest-heading, notes)\n", args[0])
+		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog, latest-heading, notes, validate)\n", args[0])
 		return 1
 	}
 }
@@ -216,6 +219,29 @@ func runNotes(args []string, stdout, stderr io.Writer) int {
 	}
 
 	logf(stdout, "%s\n", notes)
+	return 0
+}
+
+func runValidate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "CHANGELOG.md", "changelog file to check (never modified)")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	content, err := os.ReadFile(*file)
+	if err != nil {
+		logf(stderr, "release validate: %v\n", err)
+		return 1
+	}
+
+	if err := ValidateUnreleased(string(content)); err != nil {
+		logf(stderr, "release validate: %s: %v\n", *file, err)
+		return 1
+	}
+
+	logf(stdout, "release validate: %s [Unreleased] structure is valid\n", *file)
 	return 0
 }
 

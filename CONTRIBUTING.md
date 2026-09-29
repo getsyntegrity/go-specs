@@ -129,6 +129,8 @@ A release *is* a `develop` → `main` pull request. There is no separate release
 3. **Merge with a merge commit, not a squash.** Squashing creates a commit on `main` that does not exist on `develop`, so the branches diverge again the moment the release lands (see the Branching Model above).
 4. **`Release` runs automatically on merge.** `.github/workflows/release.yml` triggers on the PR's `closed` event, checks `merged == true` and that the head was `develop`, re-derives the version from commit history, cross-checks it against what `Release prep` wrote into `CHANGELOG.md` (a mismatch means `Release prep` didn't run, or didn't get to re-run after a late commit — the job fails loudly instead of tagging the wrong version), tags the merge commit, and runs GoReleaser. `main` and `develop` end up identical, so no sync PR is needed for an ordinary release.
 
+Before any of that, CI's `verify` job runs `go run ./tools/release validate -file CHANGELOG.md` on every PR. It is read-only and only checks structure: within `## [Unreleased]`, each of the `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed` and `### Security` headings may appear at most once, in that order (omitted sections are fine). It does not read entry prose, so it never decides what is breaking and never moves an entry; put a **Breaking.** item under whichever category fits it. Run the same command locally before opening a PR that touches `CHANGELOG.md`.
+
 There is no `workflow_dispatch` for releases anymore, and no manual tagging step — a single path, matching Decision 2 of [`docs/investigations/odd-tasks/native-ci-pipeline.md`](docs/investigations/odd-tasks/native-ci-pipeline.md).
 
 ### Prerequisite: the release GitHub App
