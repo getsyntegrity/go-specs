@@ -1,7 +1,12 @@
 // context_stale_repro_test.go is the deterministic reproducer for issue #324: what happens when a
 // goroutine keeps a spec's pooled *Context after that spec ended and uses it once a later spec owns
-// the same pointer. It PINS the current, documented-as-unsupported behavior so a design change
-// (docs/investigations/stale-context-handles-324.md) shows up as a deliberate test change.
+// the same pointer. It PINS the current behavior, which is outside the supported lifecycle contract
+// (docs/DSL.md, docs/investigations/stale-context-handles-324.md), so the misattribution stays
+// visible and documented rather than silently changing.
+//
+// contextPool is a sync.Pool, which may hand b a different Context (the race detector drops pooled
+// items at random on purpose, and a GC can empty the pool). A test that observes no reuse skips
+// rather than passing on nothing; the ordinary `go test` run is where reuse is dependable.
 //
 // Every stale access here is ordered by channels: the later spec ("b") is parked while the stale
 // goroutine acts, so the run is deterministic and race-free under `go test -race`. The truly

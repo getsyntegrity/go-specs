@@ -1,7 +1,9 @@
 # Stale Context handles after pool reuse (#324)
 
-Status: investigation and decision only. Nothing here changes pooling or production behavior;
-the limitation documented in `docs/DSL.md` and the v0.3.0 changelog stays in force.
+Status: decided. A `ctx` retained after its spec ends is outside the supported contract, and
+`ctx.Go` is the supported way to make concurrent assertions. Nothing here changes pooling or
+production behavior; the strict mode and the analyzer below are separate proposals, not part of
+this decision.
 
 ## The problem
 
@@ -12,14 +14,17 @@ valid-looking handle. Nothing in the handle says which spec it belonged to, so w
 lands on the spec that owns the pointer now.
 
 `ctx.Go` (#318) does not have this problem: its task gets a private Context that is never pooled,
-and the spec waits for it. The open question is only about the pooled, spec-level Context that
-user code can retain and use from a raw goroutine.
+and the spec waits for it. What this note settles is the pooled, spec-level Context that user
+code can retain and use from a raw goroutine.
 
 ## Current behavior, with evidence
 
 The reproducer is `specs/context_stale_repro_test.go`. It runs spec `a` (leaks `ctx`, starts a
 goroutine) and spec `b` (owns the same pointer, then releases the goroutine). Channels order every
 step, so the run is deterministic and race-free under `go test -race`; it passed `-count=5`.
+`contextPool` is a `sync.Pool`, so reuse is not guaranteed (the race detector drops pooled items
+at random on purpose): a run that observes no reuse skips instead of claiming a result, and the
+ordinary `go test` run is the one that reliably exercises the reuse.
 
 | Stale operation | Result observed (both engines: `Describe`/`Spec` and `Builder`) |
 | --- | --- |
@@ -88,9 +93,9 @@ way to ask which goroutines hold a pointer, and goroutine-count heuristics are f
 | 1 Per-spec Context | yes | +1 per spec | safe |
 | 2 Generation token | no (or same as 1) | 0 or +1 | not safe (check/reuse race) |
 | 3 `ctx.Go` | yes | 0 | safe for tasks only |
-| 4 Prohibition + analyzer | yes | 0 | not protected, detected statically |
+| 4 Prohibition (+ proposed analyzer) | yes | 0 | not protected; an analyzer could flag direct captures only |
 
-## Recommended lifecycle contract
+## Decided lifecycle contract
 
 Keep the pooled Context and the documented limitation. State it as a rule rather than a warning:
 a spec's `ctx` is valid only while that spec's body, hooks and `ctx.Go` tasks are running, and
@@ -107,9 +112,12 @@ Migration for a spec that spawns goroutines:
   spec goroutine.
 - Copy plain data out of the spec rather than capturing `ctx`.
 
-## Proposed implementation (needs approval)
+## Separate proposals (not part of this contract)
 
-Not approved and not started. If approved, at most five tasks, each independently verifiable:
+The contract above stands on its own and does not wait on any of these. They are candidates for
+their own issues, each to be justified with measurements; none is implemented, and none would make
+the raw-`go` pattern supported. Even an analyzer can only flag direct captures, so late use is
+never promised to be detected:
 
 1. **Opt-in strict Context mode.** A runner option (or `GO_SPECS_STRICT_CONTEXT=1`) that hands each
    spec a fresh, non-pooled Context and never returns it to `contextPool`. Default path untouched.
