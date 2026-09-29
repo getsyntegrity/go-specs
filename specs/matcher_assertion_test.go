@@ -269,6 +269,8 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		"BeLessThanOrEqual":        {BeLessThanOrEqual(1), 1, 2, "expected 2 to be less than or equal to 1"},
 		"BeBetween":                {BeBetween(1, 3), 3, 4, "expected 4 to be between 1 and 3 (inclusive)"},
 		"BeCloseTo":                {BeCloseTo(3, 0.5), 3.25, 4.0, "expected 4 to be within 0.5 of 3, difference is 1"},
+		"BeZero":                   {BeZero(), 0, 5, "expected 5 to be the zero value of int"},
+		"Satisfy":                  {Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }), 2, 3, `expected 3 to satisfy "is even"`},
 		"MatchRegex":               {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
@@ -334,6 +336,13 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect(5).To(BeBetween(1, 10))
 			ctx.Expect(3.14159).To(BeCloseTo(3.14, 0.01))
 			ctx.Expect(5).To(Not(BeLessThan(1)))
+		})
+		s.It("accepts zero values and custom predicates", func(ctx *Context) {
+			var p *int
+			ctx.Expect(p).To(BeZero())
+			ctx.Expect("").To(BeZero())
+			ctx.Expect(3).To(Not(BeZero()))
+			ctx.Expect(4).To(Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
