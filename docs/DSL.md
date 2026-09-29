@@ -508,6 +508,19 @@ Edge cases:
 - Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
   path. `ctx.Go` itself allocates (a task context and a goroutine).
 
+### Context lifecycle at a glance
+
+- A spec's `ctx` is valid while its body, its `BeforeEach`/`AfterEach` hooks and its `ctx.Go` tasks
+  are running. After that it belongs to the pool and to whichever spec gets it next.
+- `ctx.Go` is the only protected way to use a `Context` from another goroutine. A raw `go`
+  goroutine that touches `ctx` (`Expect`, `ctx.T`, `ctx.Go`) must finish before the spec does.
+  go-specs does not protect it: a stale call may fail a different spec, may race, and does not
+  reliably panic.
+- To compute something concurrently without `ctx.Go`, keep `ctx` out of the goroutine, join it
+  (`sync.WaitGroup` or a channel) before the body returns, and assert on the result in the spec.
+- This is the supported contract, not a bug awaiting a fix; a possible opt-in strict mode is
+  discussed in `docs/investigations/stale-context-handles-324.md`.
+
 ## Builder.It, Skip and Focus
 
 `Builder.It` is the Builder-API counterpart of `Spec.It`: `func (b *Builder) It(name string, fn func(*Context))`. Use it directly for a plain spec body:
