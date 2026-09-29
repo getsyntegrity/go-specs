@@ -846,9 +846,28 @@ The rules, in one place:
 
 As with `HaveLen`, an unsupported actual simply fails to match, so `Not(BeGreaterThan(1))` succeeds on a NaN or a non-number. Builtin numeric types compare without reflection or allocation.
 
+### `BeZero` and `Satisfy`
+
+`BeZero()` expects the actual to be the zero value of its type, and `Satisfy(description, pred)` runs your own check when no built-in matcher says what you mean.
+
+```go
+var err error
+ctx.Expect(err).To(specs.BeZero())
+ctx.Expect(cfg.Timeout).To(specs.Not(specs.BeZero()))
+ctx.Expect(n).To(specs.Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }))
+
+specs.BeZero().FailureMessage(5)                    // "expected 5 to be the zero value of int"
+specs.Satisfy("is even", isEven).FailureMessage(3)  // `expected 3 to satisfy "is even"`
+specs.Satisfy("is even", nil).FailureMessage(3)     // `Satisfy: no predicate given for "is even"`
+```
+
+`BeZero` follows `reflect.Value.IsZero`: `0`, `""`, `false`, a nil pointer, slice, map, chan or func, and a struct or array whose every field or element is zero. `nil` itself (an untyped nil, or a nil `error`) is zero. An empty but non-nil slice or map is **not** zero (use `BeEmpty` for that), a float `-0.0` is zero (it equals `0`), and a zero `time.Time{}` is zero.
+
+`Satisfy`'s description names the expectation in its own failure message and in the messages `Not`, `All` and `Any` build from it, so make it read as a phrase (`"is even"`, not `"even check"`); an empty description falls back to "the given predicate". The predicate receives the actual as is (including `nil`) and is called once per assertion. A panic inside it propagates: swallowing it would hide the bug in the predicate. A `nil` predicate does not panic; the matcher never matches and its failure says no predicate was given.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `BeZero`, `Satisfy`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation

@@ -72,6 +72,14 @@ func BeBetween(lo, hi any) Matcher { return assert.BeBetween(lo, hi) }
 // BeCloseTo expects |actual - target| <= delta for a number actual of any kind.
 func BeCloseTo(target, delta float64) Matcher { return assert.BeCloseTo(target, delta) }
 
+// BeZero expects actual to be the zero value of its type (reflect.Value.IsZero); nil is zero.
+func BeZero() Matcher { return assert.BeZero() }
+
+// Satisfy expects pred(actual) to be true; description names the expectation in failure messages.
+func Satisfy(description string, pred func(any) bool) Matcher {
+	return assert.Satisfy(description, pred)
+}
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }
