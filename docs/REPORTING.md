@@ -118,6 +118,52 @@ PR that introduced them:
   a shard that never itself failed reports no Unstarted specs, even if a sibling shard's fail-fast
   stopped early.
 
+## Consumer migration: v0.3.0 reporting semantics
+
+Schema version `"3"` did not change in v0.3.0, but several things a consumer can observe did. The
+version describes the *shape* of the document: the closed status vocabulary, the keys every case
+always carries, and which fields are optional. It does not promise that a status or a message means
+what it meant in an earlier release, so an unchanged version is not evidence that your parser's
+assumptions still hold. Check each item below against the way you read reports.
+
+Meaning changes (same shape, different values):
+
+- **Assertion messages are populated.** A failed built-in `ctx.Expect(...)` or `Context.Snapshot`
+  assertion now carries its formatted text in `message` (JSON), in the `message` attribute of
+  `<failure>` (JUnit) and in the TXT/HTML diagnostics, on every execution mode ([#272](https://github.com/getsyntegrity/go-specs/issues/272)). Before, it was empty. A
+  consumer that treated an empty message as "assertion failure" must key off `status` instead.
+- **A direct `ctx.T` failure still has no message.** A spec that fails only through `ctx.T.Error`,
+  `Fatal`, `Fail`, `FailNow` or a `Cleanup` is `failed` with the `message` key omitted, and its JUnit
+  `<failure>` has no `message` attribute. Never assume a failed case has a message.
+- **A recovered panic is `error`, on every mode.** `Builder.ItParallel` used to report a panic as
+  `failed`; it is now `error` with the panic value as `message` and the stack in `output`, matching
+  the other engines ([#314](https://github.com/getsyntegrity/go-specs/issues/314)). In JUnit that is `<error>`, not `<failure>`, and it counts in `errors`,
+  not `failures`. A consumer that alerted only on `failures` will now see these under `errors`.
+- **Cases arrive in declaration order.** A parallel batch (`Spec.ItParallel` and `Builder.ItParallel`)
+  is reported in the order its specs were declared, not the order they finished ([#315](https://github.com/getsyntegrity/go-specs/issues/315)). A consumer that
+  relied on completion order, for example to approximate timing, must use `durationMs`.
+- **Package identity is part of a merged report.** A module-wide report carries `package` on each
+  suite, and JUnit prefixes each `classname` with it ([#308](https://github.com/getsyntegrity/go-specs/issues/308)). Two packages with the same suite and spec
+  names are now distinct; a consumer that keyed on `classname` and `name` alone from a merged report
+  should expect the prefix.
+- **`unstarted` cases exist.** A fail-fast stop reports the specs it prevented as `unstarted`, which
+  are excluded from `total` but included in JUnit `tests` and `skipped` ([#274](https://github.com/getsyntegrity/go-specs/issues/274)); see [Status
+  vocabulary](#status-vocabulary).
+
+New optional fields (additive, never a version bump): `package` on a suite, `declared` on a case,
+and `hook` on a case. Each is omitted when empty, so a consumer decoding only the fields it knows is
+unaffected.
+
+The contract is enforced by tests, not only described here. `specs/reporting_contract_test.go` runs
+one table of scenarios (pass, assertion failure, direct `ctx.T` failure, panic, inverted completion
+order, fail-fast, `-run` filtering) through default `Describe`, `Builder`/`Runner`, `Spec.ItParallel`
+and `Builder.ItParallel`, and checks the normalized events plus the JSON, JUnit, TXT and HTML output.
+`report/schema_v3_contract_test.go` pins the status vocabulary and which keys are optional.
+
+Known gap: under a `-run` selector that excludes a `Builder.ItParallel` batch, the batch is neither
+run nor reported as `filtered`, unlike `Spec.ItParallel`. That case is skipped in the contract test
+with a note until it is fixed.
+
 ## Multi-package reporting: `go test ./...` across many packages
 
 A single `MultiFormatReporter` renders one process's events. For a whole `go test ./...` run,
