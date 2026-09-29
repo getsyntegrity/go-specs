@@ -140,6 +140,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Read-only structure check of CHANGELOG.md's [Unreleased] section: each Keep a Changelog
+      # category at most once, in canonical order. Catching it here means release-prep.yml never
+      # carries a duplicated or misordered section into a release (getsyntegrity/go-specs#326).
+      - name: Validate changelog structure
+        run: go run ./tools/release validate -file CHANGELOG.md
+
   # `go test ./...` only -- see `race` and `bench-smoke` below for the race
   # detector and benchmark-path coverage split out of the old monolithic
   # `test` job.
