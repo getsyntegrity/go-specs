@@ -6,6 +6,15 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Added
+
+- `HaveLen(n)` and `BeEmpty()` matchers (`assert` and re-exported from `specs`) for the length of a string, slice, array, map or chan. A nil slice, map or chan is empty. An actual with no length fails with a `HaveLen: int has no length` style message instead of panicking or reporting a bogus length, and both compose with `Not`, `All` and `Any`. See `docs/DSL.md`.
+- `StartWith(prefix)`, `EndWith(suffix)` and `MatchRegex(pattern)` string matchers (`assert` and re-exported from `specs`). The actual may be a `string`, a `[]byte` or a named string type; anything else fails with a `StartWith: int is not a string or []byte` style message. `MatchRegex` compiles its RE2 pattern once, and an invalid pattern never panics: it never matches and the failure message carries the compile error. See `docs/DSL.md`.
+- `HaveKey(key)`, `HaveValue(value)` and `HavePair(key, value)` map matchers (`assert` and re-exported from `specs`). `map[string]any` and `map[string]string` take allocation-free fast paths and any other map falls back to reflection. A key whose type cannot be assigned to the map's key type is a non-match with an explanatory message, never a panic, and values compare with `ValuesEqual`. A non-map actual fails with a `HaveKey: int is not a map` style message. See `docs/DSL.md`.
+- `ContainAllOf(elems...)`, `ContainAnyOf(elems...)`, `ContainTheSameElementsAs(elems)` and `BeOneOf(values...)` collection matchers (`assert` and re-exported from `specs`). Elements compare with `ValuesEqual`, like `Contain`. `ContainTheSameElementsAs` is order-insensitive multiset equality, so duplicates count, and its failure message lists the missing and unexpected elements. `ContainAllOf` and `ContainAnyOf` also accept a string (substrings). `[]int`, `[]string`, `[]float64` and `[]any` take allocation-free fast paths. See `docs/DSL.md`.
+- `BeGreaterThan(x)`, `BeGreaterThanOrEqual(x)`, `BeLessThan(x)`, `BeLessThanOrEqual(x)`, `BeBetween(lo, hi)` and `BeCloseTo(target, delta)` ordering matchers (`assert` and re-exported from `specs`). They accept every int, uint and float kind, named types such as `time.Duration` included, and compare different kinds by exact value (a negative int is below every uint, and an int64 beyond 2^53 is not rounded to a float64), without allocating for builtin types. Strings compare with strings. NaN never matches. `BeBetween` is inclusive on both ends. `time.Time` is not supported. A non-orderable actual or a number-against-string comparison fails with an explanatory message instead of panicking. See `docs/DSL.md`.
+- `BeZero()` and `Satisfy(description, pred)` general matchers (`assert` and re-exported from `specs`). `BeZero` follows `reflect.Value.IsZero` (so an empty non-nil slice is not zero, and a nil interface is). `Satisfy` runs a custom `func(any) bool` and names it in failure messages and in `Not`/`All`/`Any` output; a nil predicate never matches and says so instead of panicking. See `docs/DSL.md`.
+
 ## [v0.3.1] - 2026-09-29
 
 ### Fixed

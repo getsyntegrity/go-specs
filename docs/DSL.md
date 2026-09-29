@@ -755,9 +755,119 @@ specs.Contain("x").FailureMessage([]int{1, 2, 3})
 
 `Match` itself is unchanged: it already returned `false` for an unsupported actual or an incompatible `expected`, and still does. Only `FailureMessage` gained the extra reason, appended after an em dash so the original `expected X to contain Y` wording stays intact for the genuine-miss case that was always correct.
 
+### `HaveLen` and `BeEmpty`
+
+`HaveLen(n)` expects the actual's length to equal `n`; `BeEmpty()` expects it to be zero. Both support a string (byte length), slice, array, map and chan (buffered element count); a nil slice, map or chan is empty. Pointers to arrays are not supported. An actual with no length (an `int`, a struct, `nil`) never matches, and the failure names the cause instead of a length:
+
+```go
+ctx.Expect([]int{1, 2, 3}).To(specs.HaveLen(3))
+ctx.Expect(map[string]int{}).To(specs.BeEmpty())
+
+specs.HaveLen(3).FailureMessage([]int{1, 2}) // "expected [1 2] to have length 3, got length 2"
+specs.BeEmpty().FailureMessage([]int{1})     // "expected [1] to be empty, got length 1"
+specs.HaveLen(3).FailureMessage(42)          // "HaveLen: int has no length"
+```
+
+Because an unsupported actual simply fails to match, `Not(HaveLen(3))` and `Not(BeEmpty())` succeed on a value that has no length; pair them with a type-specific matcher if that matters.
+
+### `StartWith`, `EndWith` and `MatchRegex`
+
+`StartWith(prefix)` and `EndWith(suffix)` expect the actual to begin or end with the given string; `MatchRegex(pattern)` expects it to contain a match for an [RE2](https://pkg.go.dev/regexp/syntax) pattern (unanchored, so write `^...$` to match the whole text). The actual may be a `string`, a `[]byte` (compared in place, without converting it to a string) or a named type whose kind is `string`. Any other actual never matches and the failure says so:
+
+```go
+ctx.Expect("hello world").To(specs.StartWith("hello"))
+ctx.Expect([]byte("id-42")).To(specs.MatchRegex(`^id-\d+$`))
+
+specs.EndWith("x").FailureMessage("abc")   // `expected "abc" to end with "x"`
+specs.StartWith("a").FailureMessage(42)    // "StartWith: int is not a string or []byte"
+```
+
+`MatchRegex` compiles its pattern once, when the matcher is built. An invalid pattern does not panic: the matcher never matches, and its failure message carries the compile error (`MatchRegex: invalid pattern "(": error parsing regexp: ...`), so the mistake surfaces at the assertion that used it. As with `HaveLen`, `Not(StartWith("a"))` succeeds on a non-text actual, because the inner matcher fails to match it.
+
+### `HaveKey`, `HaveValue` and `HavePair`
+
+`HaveKey(key)` expects a map to contain `key`, `HaveValue(value)` expects at least one value equal to `value`, and `HavePair(key, value)` expects `key` to map to a value equal to `value` (a value that only exists under another key does not count). Values compare with `ValuesEqual`, the same comparison `Equal` uses, so `1` and `int64(1)` are different values and an error compares by identity.
+
+```go
+m := map[string]any{"name": "go-specs", "stars": 42}
+ctx.Expect(m).To(specs.HaveKey("name"))
+ctx.Expect(m).To(specs.HaveValue(42))
+ctx.Expect(m).To(specs.HavePair("name", "go-specs"))
+
+specs.HavePair("stars", 7).FailureMessage(m) // "expected map[name:go-specs stars:42] to have key stars with value 7 — key has value 42"
+specs.HaveKey(1).FailureMessage(m)           // "expected map[...] to have key 1 — map[string]interface {} keys are string, got int"
+specs.HaveKey("a").FailureMessage(42)        // "HaveKey: int is not a map"
+```
+
+`map[string]any` and `map[string]string` are the allocation-free fast paths; every other map (named map types included) goes through reflection. A key whose type cannot be assigned to the map's key type is an ordinary non-match, never a panic, and the failure says which key type the map has. That is assignability, not conversion: a plain `string` is not a key of a `map[MyString]V`, and `nil` is only a key of a map whose key type is an interface. A key present with a `nil` value is still a key. A non-map actual never matches, and, as with `HaveLen`, `Not(HaveKey("a"))` therefore succeeds on it.
+
+### `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs` and `BeOneOf`
+
+These extend `Contain` to several elements. `ContainAllOf(a, b)` needs every listed element, `ContainAnyOf(a, b)` needs at least one, `ContainTheSameElementsAs(other)` needs the same elements as `other` in any order, and `BeOneOf(a, b)` checks that the actual itself equals one of the listed values.
+
+```go
+ctx.Expect([]int{1, 2, 3}).To(specs.ContainAllOf(3, 1))
+ctx.Expect([]string{"a", "b"}).To(specs.ContainAnyOf("z", "b"))
+ctx.Expect([]int{3, 1, 2}).To(specs.ContainTheSameElementsAs([]int{1, 2, 3}))
+ctx.Expect(2).To(specs.BeOneOf(1, 2, 3))
+
+specs.ContainAllOf(1, 3, 4).FailureMessage([]int{1, 2})
+// "expected [1 2] to contain all of [1 3 4], missing [3 4]"
+specs.ContainTheSameElementsAs([]int{1, 1, 2}).FailureMessage([]int{1, 2, 2})
+// "expected [1 2 2] to contain the same elements as [1 1 2] — missing [1], unexpected [2]"
+```
+
+Elements compare with `ValuesEqual`, the comparison `Equal` and `Contain` use: `1` is not `int64(1)`, an error matches by identity, and everything else is structural. A collection is a slice or an array; `ContainAllOf` and `ContainAnyOf` also accept a string, where each element must be a string and is looked up as a substring (a non-string element is just never found). `ContainTheSameElementsAs` does not accept a string, and its two sides may have different types (`[]int` against `[]any` works when the elements are equal). It is multiset equality, so duplicates count, and elements are paired greedily one to one: exact for ordinary equality, best-effort for exotic equality such as errors matching through wrapping. With no elements, `ContainAllOf()` matches any collection (nothing is required) while `ContainAnyOf()` and `BeOneOf()` never match. An actual that is not a collection fails with a `ContainAllOf: int is not a string, slice or array` style message, and, as with `HaveLen`, `Not(ContainAllOf(1))` succeeds on it. `[]int`, `[]string`, `[]float64` and `[]any` are allocation-free fast paths.
+
+### `BeGreaterThan`, `BeLessThan`, `BeBetween` and `BeCloseTo`
+
+`BeGreaterThan(x)`, `BeGreaterThanOrEqual(x)`, `BeLessThan(x)` and `BeLessThanOrEqual(x)` compare the actual with `x`. `BeBetween(lo, hi)` expects `lo <= actual <= hi`, **inclusive on both ends**. `BeCloseTo(target, delta)` expects `|actual - target| <= delta` (also inclusive).
+
+```go
+ctx.Expect(5).To(specs.BeGreaterThan(3))
+ctx.Expect(uint8(5)).To(specs.BeGreaterThanOrEqual(int64(5)))
+ctx.Expect(elapsed).To(specs.BeLessThan(time.Second))
+ctx.Expect("b").To(specs.BeBetween("a", "c"))
+ctx.Expect(3.14159).To(specs.BeCloseTo(3.14, 0.01))
+
+specs.BeGreaterThan(5).FailureMessage(3)  // "expected 3 to be greater than 5"
+specs.BeBetween(1, 10).FailureMessage(11) // "expected 11 to be between 1 and 10 (inclusive)"
+specs.BeGreaterThan("a").FailureMessage(5) // "BeGreaterThan: cannot compare int with string"
+```
+
+The rules, in one place:
+
+- **Numbers** are any `int`, `uint` or `float` kind, named types included, so a `time.Duration` (an `int64`) works. Different kinds compare by exact value rather than by converting one side: a negative `int` is below every `uint`, a `uint64` above `math.MaxInt64` is above every `int64`, and an `int64` beyond 2^53 is not rounded to a `float64` before it meets a float.
+- **Strings** compare with strings, byte-wise, like Go's `<`. A number never compares with a string; the failure says `cannot compare int with string`.
+- **NaN** is not ordered, so it never matches, as the actual or as the expected value, and `BeCloseTo` never matches a NaN either. The failure says so.
+- **Not supported**: bools, `nil`, structs, slices and `time.Time` (compare `t.UnixNano()` or a `Sub` result instead). They fail with `BeGreaterThan: time.Time is not a number or string`, never a panic.
+- **`BeBetween`** needs both bounds and the actual to be numbers, or all strings. A range with `lo` above `hi` never matches and the failure says so.
+- **`BeCloseTo`** converts the actual to a `float64`, so it is exactly as precise as a `float64`: use the comparison matchers when exactness beyond 2^53 matters. A negative or NaN `delta` never matches, and the failure names it. Equal infinities count as close.
+
+As with `HaveLen`, an unsupported actual simply fails to match, so `Not(BeGreaterThan(1))` succeeds on a NaN or a non-number. Builtin numeric types compare without reflection or allocation.
+
+### `BeZero` and `Satisfy`
+
+`BeZero()` expects the actual to be the zero value of its type, and `Satisfy(description, pred)` runs your own check when no built-in matcher says what you mean.
+
+```go
+var err error
+ctx.Expect(err).To(specs.BeZero())
+ctx.Expect(cfg.Timeout).To(specs.Not(specs.BeZero()))
+ctx.Expect(n).To(specs.Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }))
+
+specs.BeZero().FailureMessage(5)                    // "expected 5 to be the zero value of int"
+specs.Satisfy("is even", isEven).FailureMessage(3)  // `expected 3 to satisfy "is even"`
+specs.Satisfy("is even", nil).FailureMessage(3)     // `Satisfy: no predicate given for "is even"`
+```
+
+`BeZero` follows `reflect.Value.IsZero`: `0`, `""`, `false`, a nil pointer, slice, map, chan or func, and a struct or array whose every field or element is zero. `nil` itself (an untyped nil, or a nil `error`) is zero. An empty but non-nil slice or map is **not** zero (use `BeEmpty` for that), a float `-0.0` is zero (it equals `0`), and a zero `time.Time{}` is zero.
+
+`Satisfy`'s description names the expectation in its own failure message and in the messages `Not`, `All` and `Any` build from it, so make it read as a phrase (`"is even"`, not `"even check"`); an empty description falls back to "the given predicate". The predicate receives the actual as is (including `nil`) and is called once per assertion. A panic inside it propagates: swallowing it would hide the bug in the predicate. A `nil` predicate does not panic; the matcher never matches and its failure says no predicate was given.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `BeZero`, `Satisfy`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation
