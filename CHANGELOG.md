@@ -9,6 +9,7 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 ### Added
 
 - `HaveLen(n)` and `BeEmpty()` matchers (`assert` and re-exported from `specs`) for the length of a string, slice, array, map or chan. A nil slice, map or chan is empty. An actual with no length fails with a `HaveLen: int has no length` style message instead of panicking or reporting a bogus length, and both compose with `Not`, `All` and `Any`. See `docs/DSL.md`.
+- `StartWith(prefix)`, `EndWith(suffix)` and `MatchRegex(pattern)` string matchers (`assert` and re-exported from `specs`). The actual may be a `string`, a `[]byte` or a named string type; anything else fails with a `StartWith: int is not a string or []byte` style message. `MatchRegex` compiles its RE2 pattern once, and an invalid pattern never panics: it never matches and the failure message carries the compile error. See `docs/DSL.md`.
 
 ## [v0.3.1] - 2026-09-29
 
