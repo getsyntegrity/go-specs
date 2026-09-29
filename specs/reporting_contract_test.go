@@ -54,10 +54,7 @@ type contractScenario struct {
 	// selector is an optional -test.run tail appended after the suite's subtest name, so the
 	// filtered scenario makes go test itself exclude specs.
 	selector string
-	// knownGaps maps an engine to the production defect that makes this scenario fail on it. The
-	// case is skipped, not fixed: this slice adds contract tests only (#325).
-	knownGaps map[string]string
-	want      []contractCase
+	want     []contractCase
 }
 
 // contractCase is one expected case, in declaration order.
@@ -226,13 +223,6 @@ func contractScenarios() []contractScenario {
 			engines:  allContractEngines,
 			specs:    contractPassSpecs("one", "two", "three"),
 			selector: "^two$",
-			knownGaps: map[string]string{
-				// Builder.ItParallel runs a batch under one generated subtest ("#00"), so `-run
-				// ^suite$/^two$` matches none of it: the batch neither runs nor reports, and the
-				// suite ends with zero cases. Spec.ItParallel reports the same batch as Filtered
-				// (#111, #273). Tracked in #330; unskip this cell when it is fixed.
-				"builder-itparallel": "Builder.ItParallel specs vanish from the report under a -run selector instead of being reported Filtered (#330)",
-			},
 			want: []contractCase{
 				{name: "one", status: "filtered"},
 				{name: "two", status: "passed"},
@@ -355,9 +345,6 @@ func TestReportingContract(t *testing.T) {
 	for _, sc := range contractScenarios() {
 		for _, engine := range sc.engines {
 			t.Run(sc.name+"/"+engine, func(t *testing.T) {
-				if gap := sc.knownGaps[engine]; gap != "" {
-					t.Skip("known reporting gap: " + gap)
-				}
 				pattern := "^TestReportingContract$"
 				if sc.selector != "" {
 					pattern += "/^suite$/" + sc.selector

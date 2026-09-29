@@ -8,6 +8,7 @@ package specs
 import (
 	"runtime/debug"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -47,6 +48,10 @@ type step func(*Context)
 // outermost first, captured by Builder at registration time (see specItem.scopeNames) — for
 // SpecStartEvent.Path (see specPath). Like names, it is left nil for a parallelStep group.
 // skippedScopeNames is the same, parallel to skipped.
+//
+// parallelBatch marks a group whose single spec is a parallelStep closure. Runner does not wrap it in
+// a generated subtest: parallelStep opens one real subtest per ItParallel spec itself, so `go test
+// -run` selects each spec individually (#330).
 type group struct {
 	before                []step
 	specs                 []step
@@ -55,6 +60,7 @@ type group struct {
 	scopeNames            [][]string
 	after                 []step
 	hookKey               string
+	parallelBatch         bool
 	skipped               []string
 	skippedScopeNames     [][]string
 	pendingSpecs          []string
@@ -273,7 +279,7 @@ type parallelTiming struct {
 // t.Fatalf from the wrong goroutine, reintroducing the race this fixes), so child.T is nil inside
 // an ItParallel body; use ctx.Expect(...) instead of ctx.T directly.
 //
-// names holds one entry per steps entry (its ItParallel name); when the caller's Context has an
+// specNames holds one entry per steps entry (its ItParallel name); when the caller's Context has an
 // execObserver (i.e. Runner.Run has a Reporter), each spec is reported individually instead of the
 // group being one opaque unit. Each goroutine only captures its own outcome (start time, duration,
 // result — classified after nil/parallelAbort{}/a real panic) and never touches the reporter; once
@@ -288,7 +294,7 @@ type parallelTiming struct {
 // scopeNames parallels names and steps, holding each spec's declared enclosing Describe names (see
 // group.scopeNames) for SpecStartEvent.Path; an out-of-range or nil entry reports a nil path, same
 // as an unnamed spec reports an empty name.
-func parallelStep(steps []step, names []string, scopeNames [][]string) step {
+func parallelStep(steps []step, specNames []string, scopeNames [][]string) step {
 	return func(ctx *Context) {
 		if len(steps) == 0 {
 			return
@@ -300,40 +306,77 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		if obs != nil {
 			timings = make([]parallelTiming, len(steps))
 		}
+		// runOne runs spec i on its own Context and records its outcome. It never touches the
+		// reporter or ctx, so it is safe on any goroutine, including a subtest's.
+		runOne := func(i int, s step) {
+			backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
+			child := acquireContext(backend)
+			var startTime time.Time
+			if obs != nil {
+				startTime = time.Now()
+			}
+			defer func() {
+				// Recording rule shared with the worker-pool engines — see panic_report.go. Only
+				// the reporting and release below are specific to this path.
+				alreadyFailed := results[i].Failed
+				recoverParallelSpecFailure(recover(), &results, i)
+				if !alreadyFailed && results[i].Failed {
+					// Only a real panic can flip Failed inside this defer. Its stack trace in
+					// Output is what report classifies as Error rather than Failed (#314), like
+					// the sequential engines' recoverSpecFailure.
+					outputs[i] = string(debug.Stack())
+				}
+				// ctx.Go tasks are awaited before the spec is reported or its Context released; a
+				// task panic fails the spec only if nothing failed first (#318).
+				if out := settleParallelTasks(child, &results, i); out != "" {
+					outputs[i] = out
+				}
+				if obs != nil {
+					timings[i] = parallelTiming{start: startTime, duration: time.Since(startTime)}
+				}
+				releaseContext(child)
+			}()
+			s(child)
+		}
+		// Against a real *testing.T each spec runs inside its own subtest, named like the sequential
+		// specs (the Describe breadcrumb), so `go test -run` selects them one by one exactly as it
+		// does for Spec.ItParallel. ran[i] is set from inside the subtest closure, since t.Run
+		// returns true for a filtered-out subtest too (#111); a spec that never ran is Filtered.
+		var (
+			t     *testing.T
+			ran   []bool
+			names []string
+		)
+		if rb, ok := ctx.backend.(*runnableBackend); ok {
+			if t, _ = rb.tb.(*testing.T); t != nil {
+				ran = make([]bool, len(steps))
+				names = parallelSubtestNames(len(steps), specNames, scopeNames)
+			}
+		}
 		var wg sync.WaitGroup
 		for i, s := range steps {
 			i, s := i, s
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
-				child := acquireContext(backend)
-				var startTime time.Time
-				if obs != nil {
-					startTime = time.Now()
+				if t == nil {
+					runOne(i, s)
+					return
 				}
-				defer func() {
-					// Recording rule shared with the worker-pool engines — see panic_report.go. Only
-					// the reporting and release below are specific to this path.
-					alreadyFailed := results[i].Failed
-					recoverParallelSpecFailure(recover(), &results, i)
-					if !alreadyFailed && results[i].Failed {
-						// Only a real panic can flip Failed inside this defer. Its stack trace in
-						// Output is what report classifies as Error rather than Failed (#314), like
-						// the sequential engines' recoverSpecFailure.
-						outputs[i] = string(debug.Stack())
+				begin := time.Now()
+				t.Run(names[i], func(st *testing.T) {
+					ran[i] = true
+					runOne(i, s)
+					// The failure text is still replayed on the parent by reportFailures below, which
+					// is what marks the batch's Context failed; this only makes `go test` show FAIL on
+					// the spec's own subtest instead of PASS.
+					if results[i].Failed {
+						st.Fail()
 					}
-					// ctx.Go tasks are awaited before the spec is reported or its Context released; a
-					// task panic fails the spec only if nothing failed first (#318).
-					if out := settleParallelTasks(child, &results, i); out != "" {
-						outputs[i] = out
-					}
-					if obs != nil {
-						timings[i] = parallelTiming{start: startTime, duration: time.Since(startTime)}
-					}
-					releaseContext(child)
-				}()
-				s(child)
+				})
+				if !ran[i] && obs != nil {
+					timings[i] = parallelTiming{start: begin}
+				}
 			}()
 		}
 		wg.Wait()
@@ -343,14 +386,14 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 				if i < len(scopeNames) {
 					scopes = scopeNames[i]
 				}
-				name := specName(names, i)
+				name := specName(specNames, i)
 				path := make([]string, 0, len(scopes)+1)
 				path = append(path, scopes...)
 				path = append(path, name)
 				obs.specReported(
 					report.SpecStartEvent{Name: name, Path: path, Time: timings[i].start},
 					timings[i].duration,
-					specResult{Failed: results[i].Failed, Message: results[i].Message, Output: outputs[i]},
+					specResult{Failed: results[i].Failed, Message: results[i].Message, Output: outputs[i], Filtered: ran != nil && !ran[i]},
 				)
 			}
 		}
@@ -362,4 +405,22 @@ func parallelStep(steps []step, names []string, scopeNames [][]string) step {
 		}
 		reportFailures(ctx.backend, results)
 	}
+}
+
+// parallelSubtestNames returns the Go subtest name of every spec in one ItParallel batch: its full
+// Describe breadcrumb, as the sequential specs use (#102), made unique across the batch with the same
+// "#NN" suffixes testing itself would add. The concurrent t.Run calls would otherwise race for the
+// unsuffixed name of two specs sharing one, making `-run` select a nondeterministic body.
+func parallelSubtestNames(n int, names []string, scopeNames [][]string) []string {
+	out := make([]string, n)
+	counts := make(map[string]int32, n)
+	for i := range out {
+		name := specName(names, i)
+		var scopes []string
+		if i < len(scopeNames) {
+			scopes = scopeNames[i]
+		}
+		out[i] = uniqueSubtestName(counts, normalizeSubtestName(joinSubtestPath(scopes, name)))
+	}
+	return out
 }

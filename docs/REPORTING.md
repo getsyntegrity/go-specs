@@ -164,11 +164,6 @@ and `Builder.ItParallel`, and checks the normalized events plus the JSON, JUnit,
 `report/schema_v3_contract_test.go` pins the status vocabulary, the exact set of always-present keys
 (document, execution, suite, totals, coverage and case) and which keys are optional.
 
-Known gap ([#330](https://github.com/getsyntegrity/go-specs/issues/330)): under a `-run` selector,
-a `Builder.ItParallel` batch is neither run nor reported. Even the matching spec does not run, and
-the suite ends with zero cases, where `Spec.ItParallel` runs the match and reports the rest as
-`filtered`. That cell is skipped in the contract test, so a green contract run does not cover it.
-
 ## Multi-package reporting: `go test ./...` across many packages
 
 A single `MultiFormatReporter` renders one process's events. For a whole `go test ./...` run,
