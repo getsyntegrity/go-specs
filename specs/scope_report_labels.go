@@ -26,6 +26,9 @@ func disambiguateSiblingNames(names []string) []string {
 	counts := make(map[string]int, len(names))
 	dup := false
 	for _, n := range names {
+		if n == "" {
+			continue // an empty scope adds no segment, so it never collides (see joinSubtestPath)
+		}
 		counts[n]++
 		if counts[n] > 1 {
 			dup = true
@@ -42,6 +45,9 @@ func disambiguateSiblingNames(names []string) []string {
 	assigned := make(map[string]struct{}, len(names))
 	out := make([]string, len(names))
 	for i, n := range names {
+		if n == "" {
+			continue
+		}
 		seen[n]++
 		if seen[n] == 1 {
 			out[i] = n
@@ -143,10 +149,11 @@ func resolveScopeIDs(ids []int, labels []string) []string {
 	if len(ids) == 0 {
 		return nil
 	}
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		if id >= 0 && id < len(labels) {
-			out[i] = labels[id]
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		// An empty scope adds no path element, matching its absence from the subtest name.
+		if id >= 0 && id < len(labels) && labels[id] != "" {
+			out = append(out, labels[id])
 		}
 	}
 	return out
