@@ -14,6 +14,13 @@ func BeTrue() Matcher               { return assert.BeTrue() }
 func BeFalse() Matcher              { return assert.BeFalse() }
 func Contain(expected any) Matcher  { return assert.Contain(expected) }
 
+// HaveLen expects actual (a string, slice, array, map or chan) to have length n.
+func HaveLen(n int) Matcher { return assert.HaveLen(n) }
+
+// BeEmpty expects actual (a string, slice, array, map or chan) to have length zero; a nil slice,
+// map or chan is empty.
+func BeEmpty() Matcher { return assert.BeEmpty() }
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }

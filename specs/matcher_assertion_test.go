@@ -252,6 +252,8 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		"BeTrue":   {BeTrue(), true, false, "expected true, got false (bool)"},
 		"BeFalse":  {BeFalse(), false, true, "expected false, got true (bool)"},
 		"Contain":  {Contain("b"), "abc", "axc", "expected axc to contain b"},
+		"HaveLen":  {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
+		"BeEmpty":  {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -280,6 +282,11 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 		})
 		s.It("accepts a contained element", func(ctx *Context) {
 			ctx.Expect([]string{"a", "b"}).To(Contain("b"))
+		})
+		s.It("accepts a length and emptiness", func(ctx *Context) {
+			ctx.Expect([]int{1, 2, 3}).To(HaveLen(3))
+			ctx.Expect(map[string]int{}).To(BeEmpty())
+			ctx.Expect([]int{1}).To(Not(BeEmpty()))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
