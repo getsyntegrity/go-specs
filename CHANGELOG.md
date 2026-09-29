@@ -62,6 +62,26 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   applies exactly as documented there.
   ([#275](https://github.com/getsyntegrity/go-specs/issues/275))
 
+- Built-in assertion failures now reach every reporter with their message: `report.SpecResultEvent.Message`
+  (and therefore `Case.Message` in JSON, the JUnit `<failure message=...>` attribute, HTML and TXT) carries
+  the assertion text, e.g. `expected 2 to equal 3`, instead of being empty. This applies to
+  `ctx.Expect`/`ExpectT`/`EqualTo`/`Context.Snapshot` failures on every engine that runs a spec in its own
+  subtest (`Describe`, `Builder`/`Runner` and `Spec.ItParallel`). A recovered panic's message still takes
+  priority. A failure raised directly through `ctx.T` (`Error`, `Fatal`, `FailNow`) still has no message,
+  because go-specs never sees that text. Consumers that treated an empty `Message` on a failed case as
+  "assertion failure" should read `Status` instead. ([#272](https://github.com/getsyntegrity/go-specs/issues/272))
+
+- A recovered panic in a `Builder.ItParallel` spec is now reported with status `error` and its stack
+  trace in `Output`, the same as a panic in a sequential spec or in `Spec.ItParallel`. It used to be
+  reported as `failed` with no stack. Assertion failures in the same specs are still `failed`. JUnit
+  output moves those cases from `<failure>` to `<error>`. ([#314](https://github.com/getsyntegrity/go-specs/issues/314))
+
+- Lower per-spec cost on the default `Describe` path with a real `*testing.T`: the subtest closure and
+  its bookkeeping are now built once per pooled `Context` instead of once per spec, cutting
+  `make bench-e2e` from 30 to 25 allocations per spec (the bare `t.Run` baseline). A `Context` idle in
+  the pool also no longer keeps the last spec's program, suite plan and finished `*testing.T` alive.
+  No API change. ([#244](https://github.com/getsyntegrity/go-specs/issues/244), [#304](https://github.com/getsyntegrity/go-specs/issues/304))
+
 ### Removed
 
 - **Breaking.** Remove the unused `gen/generators` package. It had no consumers in this repository; external imports of `github.com/getsyntegrity/go-specs/gen/generators` must supply their own test inputs.
@@ -95,6 +115,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `expected X to contain Y` wording is kept as-is for a genuine miss. Map-key containment remains
   unsupported and is diagnosed the same as any other unsupported actual type; whether to add it is
   a separate decision. ([#277](https://github.com/getsyntegrity/go-specs/issues/277))
+
+- `Builder.ItParallel` results are reported in declaration order. The parallel goroutines used to emit
+  `SpecStarted`/`SpecFinished` as each spec finished, so the order of cases in every report depended
+  on scheduling. They now match `Spec.ItParallel`, which already reported in declaration order. ([#315](https://github.com/getsyntegrity/go-specs/issues/315))
 
 ## [v0.2.0] - 2026-09-27
 
