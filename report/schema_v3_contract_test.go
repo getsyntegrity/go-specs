@@ -13,7 +13,8 @@ import (
 //
 // The version is a promise about shape: the closed status vocabulary and the set of always-present
 // case keys. It is not a promise that a given status or message means what it meant in an earlier
-// release. v0.3.0 kept version "3" while changing several meanings — a built-in assertion failure
+// release. Version "3" (bumped from "2" by #274 for the unstarted status) also covers several
+// meaning changes made without a bump — a built-in assertion failure
 // now carries its message (#272), a Builder.ItParallel panic is "error" rather than "failed"
 // (#314), and cases arrive in declaration order (#315). docs/REPORTING.md "Consumer migration"
 // lists them; this test does not pretend the version covers them.
@@ -22,6 +23,8 @@ func TestSchemaV3ContractPinsVocabularyAndOptionalFields(t *testing.T) {
 		t.Fatalf("SchemaVersion = %q: a change here must update this test and docs/REPORTING.md together", SchemaVersion)
 	}
 
+	// Hand-maintained: the package exports no list of statuses, so a new Status constant must be added
+	// here (and to docs/REPORTING.md's status vocabulary) by whoever introduces it.
 	statuses := []Status{StatusPassed, StatusFailed, StatusError, StatusSkipped, StatusFiltered, StatusPending, StatusUnstarted}
 	var cases []Case
 	for _, s := range statuses {
@@ -121,5 +124,59 @@ func TestSchemaV3OptionalFieldsAppearOnlyWhenSet(t *testing.T) {
 	}
 	if _, ok := top.Suites[0]["package"]; ok {
 		t.Error("a single-package suite carries a package key, want it omitted")
+	}
+}
+
+// TestSchemaV3ContractPinsDocumentKeySets pins the always-present keys above the case level: the
+// top-level document, execution, a suite, its totals and coverage. A decoder built on structs would
+// read a dropped key as a zero value, so the exact key sets are compared instead.
+func TestSchemaV3ContractPinsDocumentKeySets(t *testing.T) {
+	var buf bytes.Buffer
+	rep := NormalizedReport{SchemaVersion: SchemaVersion, Suites: []Suite{{Name: "suite"}}}
+	if err := RenderJSON(&buf, rep); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(buf.Bytes(), &top); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var execution, coverage map[string]json.RawMessage
+	var suites []map[string]json.RawMessage
+	for dst, key := range map[any]string{&execution: "execution", &coverage: "coverage", &suites: "suites"} {
+		if err := json.Unmarshal(top[key], dst); err != nil {
+			t.Fatalf("unmarshal %s: %v", key, err)
+		}
+	}
+	var totals map[string]json.RawMessage
+	if err := json.Unmarshal(suites[0]["totals"], &totals); err != nil {
+		t.Fatalf("unmarshal totals: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		obj  map[string]json.RawMessage
+		want []string
+	}{
+		{"document", top, []string{"coverage", "execution", "schemaVersion", "suites"}},
+		{"execution (totals plus durationMs)", execution, []string{"durationMs", "error", "failed", "filtered", "passed", "pending", "skipped", "total", "unstarted"}},
+		{"suite (single package)", suites[0], []string{"cases", "durationMs", "name", "totals"}},
+		{"totals", totals, []string{"error", "failed", "filtered", "passed", "pending", "skipped", "total", "unstarted"}},
+		{"coverage", coverage, []string{"packages", "total"}},
+	} {
+		var keys []string
+		for k := range tc.obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) != len(tc.want) {
+			t.Errorf("%s carries keys %v, want exactly %v", tc.name, keys, tc.want)
+			continue
+		}
+		for i := range keys {
+			if keys[i] != tc.want[i] {
+				t.Errorf("%s carries keys %v, want exactly %v", tc.name, keys, tc.want)
+				break
+			}
+		}
 	}
 }
