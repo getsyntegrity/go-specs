@@ -18,7 +18,7 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
   `BeforeAll`/`AfterAll` (once per group) for structured specs
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
-- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, etc.), composable with `Not`/`All`/`Any`, and snapshot testing
+- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, `ContainAllOf`, `BeOneOf`, etc.), composable with `Not`/`All`/`Any`, and snapshot testing
 - **Lightweight mocking** — Spies and argument matchers without heavy code generation
 
 ## Installation
@@ -224,7 +224,7 @@ Reproducible benchmark suite: [benchmarks/](benchmarks). From the repository roo
 go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel`, on both the `Describe`/`Spec` path and the Builder) are grouped and run concurrently, then execution continues sequentially — `Spec.ItParallel` launches each parallel spec as its own real Go subtest with a live `ctx.T`, while `Builder.ItParallel` shares one worker-style step with `ctx.T == nil`; see [docs/DSL.md](docs/DSL.md#itparallel). `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The repository is a single Go module; packages include:
 
 - **specs** — Core DSL, runner, context, and execution plan
-- **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, etc.) and composition (Not, All, Any)
+- **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, ContainAllOf, BeOneOf, etc.) and composition (Not, All, Any)
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
 - **mock** — Spies and argument matchers
 - **snapshots** — Snapshot testing support

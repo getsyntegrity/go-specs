@@ -40,6 +40,19 @@ func HaveValue(value any) Matcher { return assert.HaveValue(value) }
 // HavePair expects actual (a map) to map key to a value equal to value.
 func HavePair(key, value any) Matcher { return assert.HavePair(key, value) }
 
+// ContainAllOf expects actual (a slice, array or string) to contain every one of elems.
+func ContainAllOf(elems ...any) Matcher { return assert.ContainAllOf(elems...) }
+
+// ContainAnyOf expects actual (a slice, array or string) to contain at least one of elems.
+func ContainAnyOf(elems ...any) Matcher { return assert.ContainAnyOf(elems...) }
+
+// ContainTheSameElementsAs expects actual and elems (slices or arrays) to hold the same elements in
+// any order, duplicates counting.
+func ContainTheSameElementsAs(elems any) Matcher { return assert.ContainTheSameElementsAs(elems) }
+
+// BeOneOf expects actual to equal at least one of values.
+func BeOneOf(values ...any) Matcher { return assert.BeOneOf(values...) }
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }
