@@ -6,6 +6,10 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+### Fixed
+
+- An empty `Describe`/`When` name no longer adds an empty segment to the Go subtest name. `Describe(t, "", fn)` used to run its specs as `TestX//case` (and a nested empty scope as `TestX/outer//case`), so `go test -run 'TestX/case'` selected nothing and passed green; they now run as `TestX/case` and `TestX/outer/case`. Report `Path` no longer contains an empty element for such a scope, on both the `Spec` and `Builder` engines, `ItParallel` included. Non-empty scope names, including a non-empty root `Describe` name, are unchanged. Two specs that now share a name (a root `It("a")` and an `It("a")` under `Describe("")`) get testing's usual `#01` suffix. A `BeforeAll`/`AfterAll` group still needs an explicit non-empty name. See `docs/DSL.md`.
+
 ## [v0.3.0] - 2026-09-29
 
 ### Added
