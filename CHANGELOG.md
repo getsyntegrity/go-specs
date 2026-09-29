@@ -123,6 +123,20 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   `SpecStarted`/`SpecFinished` as each spec finished, so the order of cases in every report depended
   on scheduling. They now match `Spec.ItParallel`, which already reported in declaration order. ([#315](https://github.com/getsyntegrity/go-specs/issues/315))
 
+- `Builder.ItParallel` now runs `AfterEach` for every spec, whatever its outcome. A failing assertion,
+  a panic in the body or a failing `BeforeEach` used to stop the spec before its `AfterEach` hooks, so
+  cleanup was silently skipped; `Builder.It` and `Spec.ItParallel` already ran them. The hooks run after
+  every `ctx.Go` task has finished, in the same order as `Builder.It` (outer scope first, then last
+  registered first within a scope), and they also ran inner-first before, even for passing specs. The
+  first failure stays the reported one, and a panic inside an `AfterEach` is reported as an error.
+  ([#334](https://github.com/getsyntegrity/go-specs/issues/334))
+
+- A failing `Builder.ItParallel` spec now prints its failure message on its own Go subtest instead of
+  on the parent test as `spec[N]: ...`, so `go test -v` shows the text under the spec's `--- FAIL` line.
+  This applies with a real `*testing.T`; with any other `testing.TB` (for example a `*testing.B`) the
+  message is still reported on the parent as before.
+  ([#330](https://github.com/getsyntegrity/go-specs/issues/330))
+
 ## [v0.2.0] - 2026-09-27
 
 ### Removed
