@@ -230,9 +230,8 @@ func contractScenarios() []contractScenario {
 				// Builder.ItParallel runs a batch under one generated subtest ("#00"), so `-run
 				// ^suite$/^two$` matches none of it: the batch neither runs nor reports, and the
 				// suite ends with zero cases. Spec.ItParallel reports the same batch as Filtered
-				// (#111, #273). Follow-up: report a Builder.ItParallel batch excluded by -run as
-				// Filtered, one event per spec.
-				"builder-itparallel": "Builder.ItParallel specs vanish from the report under a non-matching -run selector instead of being reported Filtered",
+				// (#111, #273). Tracked in #330; unskip this cell when it is fixed.
+				"builder-itparallel": "Builder.ItParallel specs vanish from the report under a -run selector instead of being reported Filtered (#330)",
 			},
 			want: []contractCase{
 				{name: "one", status: "filtered"},
@@ -501,8 +500,8 @@ func assertContractJSON(t *testing.T, sc contractScenario, counts struct{ total,
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	// Schema v3 is unchanged as a version even though message and status semantics moved in 0.3.0;
-	// see docs/REPORTING.md "Consumer migration".
+	// The version stays "3" (bumped from "2" by #274) while message and status semantics moved
+	// without a bump; see docs/REPORTING.md "Consumer migration".
 	if doc.SchemaVersion != "3" {
 		t.Errorf("json schemaVersion = %q, want 3", doc.SchemaVersion)
 	}

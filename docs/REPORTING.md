@@ -120,11 +120,13 @@ PR that introduced them:
 
 ## Consumer migration: v0.3.0 reporting semantics
 
-Schema version `"3"` did not change in v0.3.0, but several things a consumer can observe did. The
-version describes the *shape* of the document: the closed status vocabulary, the keys every case
-always carries, and which fields are optional. It does not promise that a status or a message means
-what it meant in an earlier release, so an unchanged version is not evidence that your parser's
-assumptions still hold. Check each item below against the way you read reports.
+v0.3.0 reports carry `schemaVersion: "3"`. v0.2.0 carried `"2"`; the bump comes from #274, which
+added the `unstarted` status, the `unstarted` totals field and `Case.declared`. Every other change
+below kept the version at `"3"`. The version describes the *shape* of the document: the closed
+status vocabulary, the keys that are always present, and which fields are optional. It does not
+promise that a status or a message means what it meant in an earlier release, so the version alone
+is not evidence that your parser's assumptions still hold. Check each item below against the way you
+read reports.
 
 Meaning changes (same shape, different values):
 
@@ -150,19 +152,22 @@ Meaning changes (same shape, different values):
   are excluded from `total` but included in JUnit `tests` and `skipped` ([#274](https://github.com/getsyntegrity/go-specs/issues/274)); see [Status
   vocabulary](#status-vocabulary).
 
-New optional fields (additive, never a version bump): `package` on a suite, `declared` on a case,
-and `hook` on a case. Each is omitted when empty, so a consumer decoding only the fields it knows is
-unaffected.
+Optional fields, each omitted when empty: `message`, `output`, `hook` and `declared` on a case, and
+`package` on a suite. `package` (#308) is the one added in this release without a version bump;
+`declared` arrived with the `"3"` bump (#274), and `hook` predates it. A consumer decoding only the
+fields it knows is unaffected by any of them.
 
 The contract is enforced by tests, not only described here. `specs/reporting_contract_test.go` runs
 one table of scenarios (pass, assertion failure, direct `ctx.T` failure, panic, inverted completion
 order, fail-fast, `-run` filtering) through default `Describe`, `Builder`/`Runner`, `Spec.ItParallel`
 and `Builder.ItParallel`, and checks the normalized events plus the JSON, JUnit, TXT and HTML output.
-`report/schema_v3_contract_test.go` pins the status vocabulary and which keys are optional.
+`report/schema_v3_contract_test.go` pins the status vocabulary, the exact set of always-present keys
+(document, execution, suite, totals, coverage and case) and which keys are optional.
 
-Known gap: under a `-run` selector that excludes a `Builder.ItParallel` batch, the batch is neither
-run nor reported as `filtered`, unlike `Spec.ItParallel`. That case is skipped in the contract test
-with a note until it is fixed.
+Known gap ([#330](https://github.com/getsyntegrity/go-specs/issues/330)): under a `-run` selector,
+a `Builder.ItParallel` batch is neither run nor reported. Even the matching spec does not run, and
+the suite ends with zero cases, where `Spec.ItParallel` runs the match and reports the rest as
+`filtered`. That cell is skipped in the contract test, so a green contract run does not cover it.
 
 ## Multi-package reporting: `go test ./...` across many packages
 
