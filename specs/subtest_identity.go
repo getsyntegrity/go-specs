@@ -33,8 +33,12 @@ const subtestSeparator = "/"
 //     runes are escaped, by testing's own rewrite of the subtest name.
 //   - A "/" inside a single Describe/When/It name is not escaped; it adds a pattern element, so
 //     It("a/b") under Describe("D") normalizes exactly like Describe("D")/Describe("a")/It("b").
-//   - An empty name contributes an empty element rather than collapsing, so It("") under
-//     Describe("D") is "D/" — a trailing empty element, not just "D".
+//   - An empty Describe/When name contributes no segment at all: Describe(t, "", fn) with It("x")
+//     is TestX/x, not TestX//x, so `go test -run 'TestX/x'` selects it. That is the way to wrap a
+//     table test without adding a level to its case names. A non-empty scope name is always a
+//     segment, unchanged.
+//   - An empty It name is the leaf and is kept as an empty trailing element, so It("") under
+//     Describe("D") is "D/" — not just "D".
 //
 // The guarantee this mapping makes is therefore scoped to the normalized form: two specs are
 // independently identifiable — selectable one at a time with `go test -run`, and never told apart by
@@ -81,16 +85,21 @@ const subtestSeparator = "/"
 // leaf`, which would allocate the joined prefix and then the concatenation. This runs once per
 // declared It on both build paths, so the saved allocation is per spec, not per suite.
 func joinSubtestPath(scopes []string, leaf string) string {
-	if len(scopes) == 0 {
-		return leaf
-	}
-	n := len(leaf) + len(scopes)*len(subtestSeparator)
+	n := len(leaf)
 	for _, s := range scopes {
-		n += len(s)
+		if s != "" {
+			n += len(s) + len(subtestSeparator)
+		}
+	}
+	if n == len(leaf) {
+		return leaf
 	}
 	var b strings.Builder
 	b.Grow(n)
 	for _, s := range scopes {
+		if s == "" {
+			continue
+		}
 		b.WriteString(s)
 		b.WriteString(subtestSeparator)
 	}

@@ -29,7 +29,9 @@ func TestJoinSubtestPath(t *testing.T) {
 		{name: "spaces are preserved by the mapping", scopes: []string{"a b"}, leaf: "c d", want: "a b/c d"},
 		{name: "a slash inside a name is not escaped", scopes: []string{"D"}, leaf: "a/b", want: "D/a/b"},
 		{name: "an empty leaf keeps its element", scopes: []string{"D"}, leaf: "", want: "D/"},
-		{name: "an empty scope keeps its element", scopes: []string{"D", ""}, leaf: "it", want: "D//it"},
+		{name: "an empty scope adds no segment", scopes: []string{"D", ""}, leaf: "it", want: "D/it"},
+		{name: "an empty root scope adds no segment", scopes: []string{"", "D"}, leaf: "it", want: "D/it"},
+		{name: "only empty scopes leave the leaf", scopes: []string{"", ""}, leaf: "it", want: "it"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
