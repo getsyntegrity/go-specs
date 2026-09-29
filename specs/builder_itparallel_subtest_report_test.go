@@ -37,18 +37,11 @@ func TestBuilderItParallelReportsFailureOnSubtestNotParent(t *testing.T) {
 		t.Errorf("the failure was replayed on the parent as spec[N]; want it only on the subtest:\n%s", output)
 	}
 
-	// In -v output the subtest's own lines follow its "=== RUN" line; anything logged on the parent
-	// is instead introduced by a "=== NAME <parent>" switch. The message must be in the first form.
-	const run = "=== RUN   TestBuilderItParallelReportsFailureOnSubtestNotParent/D/par-assert\n"
-	block := ""
-	if i := strings.Index(output, run); i >= 0 {
-		block = output[i+len(run):]
-		if j := strings.Index(block, "--- FAIL"); j >= 0 {
-			block = block[:j]
-		}
-	}
-	if !strings.Contains(block, "expected 1 to equal 2") || strings.Contains(block, "=== NAME") {
-		t.Errorf("the failing subtest does not carry the assertion message; output:\n%s", output)
+	// In -v output every logged line belongs to the test named by the closest "=== RUN" or "=== NAME"
+	// header above it. The concurrent subtests interleave those headers in any order, so find the
+	// message line and check that its closest header names the failing subtest, not the parent.
+	if owner := testOwningLine(output, "expected 1 to equal 2"); !strings.HasSuffix(owner, "/D/par-assert") {
+		t.Errorf("the failing subtest does not carry the assertion message (logged under %q); output:\n%s", owner, output)
 	}
 	if !strings.Contains(output, "--- FAIL: TestBuilderItParallelReportsFailureOnSubtestNotParent (") {
 		t.Errorf("the parent must still fail; output:\n%s", output)
@@ -56,6 +49,26 @@ func TestBuilderItParallelReportsFailureOnSubtestNotParent(t *testing.T) {
 	if strings.Contains(output, "--- FAIL: TestBuilderItParallelReportsFailureOnSubtestNotParent/D/par-ok") {
 		t.Errorf("the passing sibling must not fail; output:\n%s", output)
 	}
+}
+
+// testOwningLine returns the test name from the closest "=== RUN" or "=== NAME" header above the
+// first line of output containing text, or "" when no line contains it or no header precedes it.
+func testOwningLine(output, text string) string {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, text) {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			for _, header := range []string{"=== RUN ", "=== NAME "} {
+				if rest, ok := strings.CutPrefix(lines[j], header); ok {
+					return strings.TrimSpace(rest)
+				}
+			}
+		}
+		return ""
+	}
+	return ""
 }
 
 // On the *testing.B shape parallelStep has no subtest to report on, so reportFailures still replays
