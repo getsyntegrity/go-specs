@@ -119,17 +119,15 @@ func (b *Builder) emitBefore() []step {
 	return out
 }
 
-// emitAfter returns afterEach in inner-to-outer order (innermost scope first).
-// Within each scope, hooks are in declaration order. Every runner (runSpecWithHooks,
-// runParallelSpec) iterates the result in reverse, so: flat case [after1, after2] => runs after2,
-// after1 (LIFO); nested case [afterInner, afterOuter] => runs afterOuter, afterInner.
+// emitAfter returns afterEach in outer-to-inner order (outermost scope first), each scope's hooks
+// in declaration order: the mirror of emitBefore. Every runner (runSpecWithHooks, runParallelSpec)
+// iterates the result in reverse, which yields the documented order (docs/DSL.md "AfterEach"):
+// innermost scope first, LIFO within a scope. Flat case [after1, after2] => runs after2, after1;
+// nested case [afterOuter, afterInner] => runs afterInner, afterOuter.
 func (b *Builder) emitAfter() []step {
 	var out []step
-	for i := len(b.scopes) - 1; i >= 0; i-- {
-		ae := b.scopes[i].afterEach
-		for j := 0; j < len(ae); j++ {
-			out = append(out, ae[j])
-		}
+	for i := range b.scopes {
+		out = append(out, b.scopes[i].afterEach...)
 	}
 	return out
 }

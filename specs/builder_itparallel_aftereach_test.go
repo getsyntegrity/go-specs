@@ -152,7 +152,7 @@ var aeCases = []aeCase{
 				reg("spec", aeHook(rec, "body", nil))
 			})
 		},
-		wantEvents: "body,after-outer,after-inner",
+		wantEvents: "body,after-inner,after-outer",
 		wantStatus: "passed",
 	},
 	{
@@ -166,7 +166,7 @@ var aeCases = []aeCase{
 				reg("spec", aeHook(rec, "body", aeFail))
 			})
 		},
-		wantEvents: "before-outer,before-inner,body,after-outer,after-inner",
+		wantEvents: "before-outer,before-inner,body,after-inner,after-outer",
 		wantStatus: "failed",
 	},
 	{
