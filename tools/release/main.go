@@ -61,7 +61,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
 	default:
-		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog, latest-heading, notes)\n", args[0])
+		logf(stderr, "release: unknown subcommand %q (expected next-version, changelog, latest-heading, notes, validate)\n", args[0])
 		return 1
 	}
 }

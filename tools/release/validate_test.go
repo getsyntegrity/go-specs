@@ -173,3 +173,15 @@ func TestReleasePrepRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestRun_SubcommandListsIncludeValidate(t *testing.T) {
+	for _, args := range [][]string{nil, {"bogus"}} {
+		var stdout, stderr bytes.Buffer
+		if got := run(args, strings.NewReader(""), &stdout, &stderr); got != 1 {
+			t.Errorf("run(%q): exit %d, want 1", args, got)
+		}
+		if !strings.Contains(stderr.String(), "validate") {
+			t.Errorf("run(%q): stderr %q does not list the validate subcommand", args, stderr.String())
+		}
+	}
+}
