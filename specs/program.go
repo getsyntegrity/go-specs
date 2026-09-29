@@ -425,11 +425,15 @@ func parallelStep(steps []step, specNames []string, scopeNames [][]string) step 
 				t.Run(names[i], func(st *testing.T) {
 					ran[i] = true
 					runOne(i, s)
-					// The failure text is still replayed on the parent by reportFailures below, which
-					// is what marks the batch's Context failed; this only makes `go test` show FAIL on
-					// the spec's own subtest instead of PASS.
+					// The failure text belongs to the spec's own subtest, so `go test -v` shows it
+					// under that spec's FAIL line; the parent is not repeated below. An empty
+					// message (a bare Fatal or FailNow) still fails the subtest, just with no text.
 					if results[i].Failed {
-						st.Fail()
+						if msg := results[i].text(); msg != "" {
+							st.Errorf("%s", msg)
+						} else {
+							st.Fail()
+						}
 					}
 				})
 				if !ran[i] && obs != nil {
@@ -461,7 +465,11 @@ func parallelStep(steps []step, specNames []string, scopeNames [][]string) step 
 				break
 			}
 		}
-		reportFailures(ctx.backend, results)
+		// With per-spec subtests every failure has already been reported on its own subtest
+		// (which also fails the parent testing.T); only the subtest-less shapes replay here.
+		if t == nil {
+			reportFailures(ctx.backend, results)
+		}
 	}
 }
 
