@@ -150,8 +150,8 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 	// Each spec runs its own before/after (#109): coalescing into one group is a compile-time
 	// optimization only, not a change in how often the hooks run.
 	want := []string{
-		"beforeOuter", "beforeInner", "it1", "afterOuter", "afterInner",
-		"beforeOuter", "beforeInner", "it2", "afterOuter", "afterInner",
+		"beforeOuter", "beforeInner", "it1", "afterInner", "afterOuter",
+		"beforeOuter", "beforeInner", "it2", "afterInner", "afterOuter",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("order len=%d, want %d", len(order), len(want))
