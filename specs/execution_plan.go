@@ -989,7 +989,11 @@ func specEventPath(plan *ExecutionPlan, i int) []string {
 		return nil
 	}
 	path := make([]string, 0, length+1)
-	path = append(path, plan.PathScopes[start:start+length]...)
+	for _, scope := range plan.PathScopes[start : start+length] {
+		if scope != "" { // an empty scope adds no path element (see joinSubtestPath)
+			path = append(path, scope)
+		}
+	}
 	return append(path, plan.Names[i])
 }
 

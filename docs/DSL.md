@@ -14,6 +14,42 @@ specs.Describe(t, "math", func(s *specs.Spec) {
 
 Nested `Describe` (when using the Builder API) creates nested scope; hooks from outer blocks run before and after inner specs.
 
+### The name is a subtest segment; an empty name adds none
+
+Every `Describe` and `When` name becomes one segment of the Go subtest name, so
+`Describe(t, "Cart", ...)` with `It("has no items")` runs as `TestX/Cart/has_no_items`, and
+`go test -run 'TestX/Cart/has_no_items'` selects it. An **empty** name adds no segment:
+`Describe(t, "", ...)` runs the same spec as `TestX/has_no_items`, and an empty `Describe`/`When`
+nested at any depth simply disappears from the name (`Describe("outer")` then `Describe("")` then
+`It("x")` is `TestX/outer/x`). The report `Path` omits it too. Non-empty names are unchanged.
+
+This is what to use when migrating a table test and you want to keep its case names, so existing
+`go test -run 'TestX/<case>'` selectors and CI filters keep working. Before:
+
+```go
+func TestPreconditionFromRevision(t *testing.T) {
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) { /* ... */ }) // TestPreconditionFromRevision/absent_is_unconditional
+    }
+}
+```
+
+After, same names:
+
+```go
+func TestPreconditionFromRevision(t *testing.T) {
+    specs.Describe(t, "", func(s *specs.Spec) {
+        for _, tc := range cases {
+            s.It(tc.name, func(ctx *specs.Context) { /* ... */ }) // TestPreconditionFromRevision/absent_is_unconditional
+        }
+    })
+}
+```
+
+Two specs that end up with the same name (for example a root `It("a")` and an `It("a")` inside
+`Describe("")`) are told apart by `go test`'s usual `#01` suffix, in declaration order. A scope
+that registers `BeforeAll`/`AfterAll` is its own subtest and still needs an explicit, non-empty name.
+
 ## When
 
 `When` starts a nested block, exactly like a nested `Describe`, for naming the condition a group of specs runs under. It takes a name and a callback that receives the nested `*Spec`.
