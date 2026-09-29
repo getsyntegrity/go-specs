@@ -31,6 +31,28 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ### Changed
 
+- **Breaking.** Nested `AfterEach` hooks registered through `Builder` now run in the documented order
+  (`docs/DSL.md`, `docs/ARCHITECTURE.md`), the same as the `Spec` engine (`Spec.It`, `Spec.ItParallel`):
+  innermost scope first, and last registered first within a scope. `Builder.It` used to run the outer
+  scope's hooks before the inner scope's; `Builder.ItParallel` already ran the inner scope first but ran
+  the hooks of one scope in registration order. A single scope's `AfterEach` order under `Builder.It` is
+  unchanged. Suites whose teardown depends on the old order must reorder their hooks. Example:
+
+  ```go
+  b.Describe("outer", func() {
+      b.AfterEach(afterOuter1)
+      b.AfterEach(afterOuter2)
+      b.Describe("inner", func() {
+          b.AfterEach(afterInner1)
+          b.AfterEach(afterInner2)
+          b.It("spec", body)
+      })
+  })
+  // Builder.It before:         body, afterOuter2, afterOuter1, afterInner2, afterInner1
+  // Builder.ItParallel before: body, afterInner1, afterInner2, afterOuter1, afterOuter2
+  // Now (every engine):        body, afterInner2, afterInner1, afterOuter2, afterOuter1
+  ```
+
 - **Breaking.** A committed `FIt` (or `Focus`/`ItWith(specs.Focus(...))`) is no longer allowed to
   silently turn a partial suite green: whenever at least one focused spec is active anywhere in a
   `Describe`/`BuildSuite`/`Analyze` call, the `Builder`/`Runner` program, or `RunShard`, the run now
@@ -126,9 +148,9 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 - `Builder.ItParallel` now runs `AfterEach` for every spec, whatever its outcome. A failing assertion,
   a panic in the body or a failing `BeforeEach` used to stop the spec before its `AfterEach` hooks, so
   cleanup was silently skipped; `Builder.It` and `Spec.ItParallel` already ran them. The hooks run after
-  every `ctx.Go` task has finished, in the same order as `Builder.It` (outer scope first, then last
-  registered first within a scope), and they also ran inner-first before, even for passing specs. The
-  first failure stays the reported one, and a panic inside an `AfterEach` is reported as an error.
+  every `ctx.Go` task has finished, in the documented order: innermost scope first, last registered
+  first within a scope (see the **Breaking.** `AfterEach` order entry under Changed). The first failure
+  stays the reported one, and a panic inside an `AfterEach` is reported as an error.
   ([#334](https://github.com/getsyntegrity/go-specs/issues/334))
 
 - A failing `Builder.ItParallel` spec now prints its failure message on its own Go subtest instead of
