@@ -6,6 +6,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-09-29
+
 ### Added
 
 - `ctx.Go(func(*Context))` runs a task that is bound to its spec, the supported way to make concurrent assertions (#318). The spec waits for every task before its `AfterEach` hooks run and before it is reported or its `Context` is reused; assertion failures, `ctx.T` failures and panics inside a task are charged to the spec that started it (a panic is reported as an error), and tasks may start further tasks. Calling `ctx.Go` after its spec finished panics with an actionable `specs:` message, but only until that pooled `Context` is reused by a later spec; after reuse a `ctx.Go` issued through a stale handle does not panic and may be attributed to whichever spec owns the `Context` then (a task's own `*Context` is never pooled and always panics). Retaining a spec's `ctx` past the end of its spec, including in a goroutine launched directly with `go`, is unsupported and unprotected, because a pooled `Context` cannot tell a stale goroutine from the next spec. Specs that never call `ctx.Go` allocate nothing extra. See `docs/DSL.md`.
@@ -1170,5 +1172,6 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
 
-[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/getsyntegrity/go-specs/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/getsyntegrity/go-specs/compare/v0.1.0...v0.2.0
