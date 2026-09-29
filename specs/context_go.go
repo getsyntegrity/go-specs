@@ -297,10 +297,6 @@ func settleParallelTasks(ctx *Context, results *[]failureRecord, idx int) (outpu
 	return ""
 }
 
-// awaitTasksStep is the step Builder.ItParallel inserts between a spec's body and its AfterEach
-// hooks, so the hooks run after the tasks — the parallel engine has no per-spec defer to do it in.
-func awaitTasksStep(ctx *Context) { ctx.awaitTasks() }
-
 // taskAbort is the sentinel goTaskBackend panics with to end a task on a fatal assertion, mirroring
 // parallelAbort: the failure is already recorded, so recovery must not report it a second time.
 type taskAbort struct{}
