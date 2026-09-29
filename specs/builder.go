@@ -120,9 +120,9 @@ func (b *Builder) emitBefore() []step {
 }
 
 // emitAfter returns afterEach in inner-to-outer order (innermost scope first).
-// Within each scope, hooks are in declaration order. The runner iterates the
-// result in reverse, so: flat case [after1, after2] => runs after2, after1 (LIFO);
-// nested case [afterInner, afterOuter] => runs afterOuter, afterInner.
+// Within each scope, hooks are in declaration order. Every runner (runSpecWithHooks,
+// runParallelSpec) iterates the result in reverse, so: flat case [after1, after2] => runs after2,
+// after1 (LIFO); nested case [afterInner, afterOuter] => runs afterOuter, afterInner.
 func (b *Builder) emitAfter() []step {
 	var out []step
 	for i := len(b.scopes) - 1; i >= 0; i-- {
@@ -134,20 +134,20 @@ func (b *Builder) emitAfter() []step {
 	return out
 }
 
-// emitSpecSteps returns the full step sequence for one spec (used for parallel runAll).
+// emitSpecSteps returns the step sequence for one ItParallel spec (run by parallelStep through
+// runAll). Without AfterEach hooks that is just before + fn. With them it is a single step,
+// runParallelSpec bound to this spec's hooks, so the hooks run in a defer and therefore also when a
+// fatal assertion or a panic unwinds before/fn (#334), in the same order Builder.It runs them (see
+// emitAfter). The closure is built here, once per spec at Build time; running it allocates nothing.
 func (b *Builder) emitSpecSteps(fn func(*Context)) []step {
 	before := b.emitBefore()
 	after := b.emitAfter()
-	steps := make([]step, 0, len(before)+2+len(after))
-	steps = append(steps, before...)
-	steps = append(steps, step(fn))
-	if len(after) > 0 {
-		// The parallel engine has no per-spec defer to wait in, so the wait for ctx.Go tasks is a
-		// step of its own, placed so AfterEach hooks run after every task has finished (#318).
-		steps = append(steps, awaitTasksStep)
+	if len(after) == 0 {
+		steps := make([]step, 0, len(before)+1)
+		steps = append(steps, before...)
+		return append(steps, step(fn))
 	}
-	steps = append(steps, after...)
-	return steps
+	return []step{func(ctx *Context) { runParallelSpec(ctx, before, fn, after) }}
 }
 
 // newScope returns a scope with a fresh, unique id (see scope.id) and advances nextScopeID.

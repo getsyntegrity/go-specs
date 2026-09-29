@@ -235,13 +235,70 @@ type Program struct {
 }
 
 // runAll returns a single step that runs the given steps in order. Used to wrap one spec's
-// full sequence (beforeEach+fn+afterEach) for parallelStep.
+// sequence (beforeEach, then fn or, when the spec has AfterEach hooks, runParallelSpec) for
+// parallelStep. It stops at the first step that unwinds, so AfterEach hooks must not be steps of
+// their own: Builder.emitSpecSteps folds them into the one step that runs them in a defer.
 func runAll(steps []step) step {
 	return func(ctx *Context) {
 		for _, s := range steps {
 			s(ctx)
 		}
 	}
+}
+
+// runParallelSpec runs one ItParallel spec that has AfterEach hooks: before hooks, the body, a wait
+// for its ctx.Go tasks (#318), then the hooks last-registered first — the order runSpecWithHooks uses.
+// The hooks run in a defer, so they also run when a before hook or the body unwinds: a fatal
+// assertion (panic(parallelAbort{}), see parallelStep) or a real panic (#334).
+//
+// It mirrors runSpecWithHooks' panic handling. Every hook runs even if an earlier one panicked or
+// aborted, each recovered on its own so one cannot hide the rest. The first failure stays the spec's
+// failure: a fatal assertion already recorded itself in the backend, and a later panic never
+// replaces it (recoverParallelSpecFailure). A panic that is the first failure is re-raised once all
+// hooks ran, for parallelStep's runOne to classify as an error with a stack trace (#314); a
+// parallelAbort{} is an already-recorded stop and is not raised again.
+func runParallelSpec(ctx *Context, before []step, body step, after []step) {
+	next := len(after) - 1 // the next hook to run, counting down; already decremented for a running hook
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		// first is the first real panic, from before/body or a hook; an abort is never one.
+		first := recover()
+		if first == any(parallelAbort{}) {
+			first = nil
+		}
+		ctx.awaitTasks()
+		for next >= 0 {
+			hook := after[next]
+			next--
+			if p := runHookRecovered(ctx, hook); first == nil && p != any(parallelAbort{}) {
+				first = p
+			}
+		}
+		if first != nil {
+			panic(first)
+		}
+	}()
+	for _, s := range before {
+		s(ctx)
+	}
+	body(ctx)
+	ctx.awaitTasks()
+	for next >= 0 {
+		hook := after[next]
+		next--
+		hook(ctx)
+	}
+	completed = true
+}
+
+// runHookRecovered runs one AfterEach hook and returns what it panicked with, or nil.
+func runHookRecovered(ctx *Context, hook step) (recovered any) {
+	defer func() { recovered = recover() }()
+	hook(ctx)
+	return nil
 }
 
 // parallelTiming is one parallelStep goroutine's own start time and duration, buffered until the
@@ -264,8 +321,9 @@ type parallelTiming struct {
 //
 // abortOnFatal makes a fatal assertion (Fatal/Fatalf/FailNow) panic(parallelAbort{}) after
 // recording, so — like the real testing.T.FailNow it replaces — it stops the rest of the current
-// spec's before/fn/after sequence (runAll) instead of silently continuing into code that assumed
-// the spec had already stopped. The deferred recover below treats that sentinel as an expected,
+// spec's before/fn sequence (runAll) instead of silently continuing into code that assumed the spec
+// had already stopped. The spec's AfterEach hooks still run: runParallelSpec runs them in a defer and
+// then lets the stop (or a real panic) continue up to this step (#334). The deferred recover below treats that sentinel as an expected,
 // already-recorded stop, not a failure to report; any other panic (e.g. from the nil ctx.T below)
 // is recorded as an ordinary spec failure instead of crashing the process. Pool cleanup always
 // runs via defer, panic or not.
