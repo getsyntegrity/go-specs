@@ -17,13 +17,14 @@ type jsonReport struct {
 }
 
 type jsonTotals struct {
-	Total    int `json:"total"`
-	Passed   int `json:"passed"`
-	Failed   int `json:"failed"`
-	Error    int `json:"error"`
-	Skipped  int `json:"skipped"`
-	Filtered int `json:"filtered"`
-	Pending  int `json:"pending"`
+	Total     int `json:"total"`
+	Passed    int `json:"passed"`
+	Failed    int `json:"failed"`
+	Error     int `json:"error"`
+	Skipped   int `json:"skipped"`
+	Filtered  int `json:"filtered"`
+	Pending   int `json:"pending"`
+	Unstarted int `json:"unstarted"`
 }
 
 type jsonExecution struct {
@@ -33,6 +34,7 @@ type jsonExecution struct {
 
 type jsonSuite struct {
 	Name       string     `json:"name"`
+	Package    string     `json:"package,omitempty"`
 	DurationMs int64      `json:"durationMs"`
 	Totals     jsonTotals `json:"totals"`
 	Cases      []jsonCase `json:"cases"`
@@ -48,6 +50,9 @@ type jsonCase struct {
 	// Hook marks a synthetic group hook case ("BeforeAll"/"AfterAll"); omitted entirely for a real
 	// spec (issue #207 H8) so a report with no group hooks renders no "hook" key anywhere.
 	Hook string `json:"hook,omitempty"`
+	// Declared preserves an Unstarted case's original SkipIt/PendingIt declaration ("skip"/"pending",
+	// issue #274); omitted entirely for a plain unstarted spec and for every non-Unstarted status.
+	Declared string `json:"declared,omitempty"`
 }
 
 type jsonPackageCoverage struct {
@@ -109,10 +114,12 @@ func toJSONSuite(s Suite) jsonSuite {
 			Message:    c.Message,
 			Output:     c.Output,
 			Hook:       c.Hook,
+			Declared:   c.Declared,
 		})
 	}
 	return jsonSuite{
 		Name:       s.Name,
+		Package:    s.Package,
 		DurationMs: s.Duration.Milliseconds(),
 		Totals:     toJSONTotals(s.Totals),
 		Cases:      cases,

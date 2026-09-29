@@ -149,6 +149,9 @@ func (r *registry) appendBeforeHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := r.currentNodeIDLocked()
+	if len(r.arena.Children[id]) > 0 {
+		panic(lateHookMessage("BeforeEach"))
+	}
 	r.arena.BeforeHooks[id] = append(r.arena.BeforeHooks[id], fn)
 }
 
@@ -156,6 +159,9 @@ func (r *registry) appendAfterHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := r.currentNodeIDLocked()
+	if len(r.arena.Children[id]) > 0 {
+		panic(lateHookMessage("AfterEach"))
+	}
 	r.arena.AfterHooks[id] = append(r.arena.AfterHooks[id], fn)
 }
 

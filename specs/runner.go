@@ -51,13 +51,14 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // share one instance via ctx.execObserver) for the run's SuiteEndEvent. total counts
 // passed+failed+skipped+filtered+pending.
 type reporterObserver struct {
-	mu       sync.Mutex
-	rep      report.EventReporter
-	total    int
-	failed   int
-	skipped  int
-	filtered int
-	pending  int
+	mu        sync.Mutex
+	rep       report.EventReporter
+	total     int
+	failed    int
+	skipped   int
+	filtered  int
+	pending   int
+	unstarted int
 }
 
 func (o *reporterObserver) specStarted(name string, path []string) report.SpecStartEvent {
@@ -71,6 +72,20 @@ func (o *reporterObserver) specStarted(name string, path []string) report.SpecSt
 func (o *reporterObserver) specFinished(start report.SpecStartEvent, result specResult) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.finishLocked(start, time.Since(start.Time), result)
+}
+
+// specReported emits SpecStarted then SpecFinished for a spec that already ran, under one lock, so
+// a batch reported in declaration order is never interleaved with another reporter call.
+func (o *reporterObserver) specReported(start report.SpecStartEvent, duration time.Duration, result specResult) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.rep.SpecStarted(start)
+	o.finishLocked(start, duration, result)
+}
+
+// finishLocked tallies result and emits its SpecFinished; o.mu must be held.
+func (o *reporterObserver) finishLocked(start report.SpecStartEvent, duration time.Duration, result specResult) {
 	o.total++
 	if result.Failed {
 		o.failed++
@@ -78,7 +93,6 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, result spec
 	if result.Skipped {
 		o.skipped++
 	}
-	duration := time.Since(start.Time)
 	if result.Filtered {
 		o.filtered++
 		duration = 0
@@ -122,7 +136,56 @@ func (o *reporterObserver) specPending(name string, path []string) {
 	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Pending: true})
 }
 
+// specUnstarted reports one spec fail-fast prevented from ever running (issue #274): SpecStarted
+// immediately followed by SpecFinished{Unstarted: true, Declared: declared}, reusing the exact same
+// SpecStartEvent for both, mirroring specSkipped/specPending exactly — Duration is left at its zero
+// value, since no body ever ran, and Failed is always false. Counted in a separate unstarted
+// bucket, never in total: SuiteEndEvent.TotalSpecs keeps its pre-existing meaning of "specs that
+// entered execution, plus declared SkipIt/PendingIt that were actually processed" (see
+// report.Totals.add's doc comment for the same rule on the report side).
+func (o *reporterObserver) specUnstarted(name string, path []string, declared report.DeclaredKind) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	o.unstarted++
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Unstarted: true, Declared: declared})
+}
+
 var _ specExecutionObserver = (*reporterObserver)(nil)
+
+// reportFocusPolicy fails tb via Errorf when program registered at least one focused (FIt/Focus)
+// spec and GO_SPECS_ALLOW_FOCUS=1 does not opt out (issue #273): a forgotten debugging focus must
+// not let a partial suite report green. Errorf, not Fatalf/FailNow: the focused specs still run and
+// report their own results below — this only marks the enclosing test failed, it never stops or
+// skips the run. See execution_plan.go's CompiledSuite.reportFocusPolicy for the Describe/
+// ExecutionPlan engine's mirror of this exact same policy.
+func reportFocusPolicy(tb testing.TB, program *Program) {
+	if program == nil || len(program.FocusedNames) == 0 || focusAllowed() {
+		return
+	}
+	tb.Helper()
+	tb.Errorf("%s", focusPolicyMessage(len(program.FocusedNames), program.FocusExcludedCount, program.FocusedNames))
+}
+
+// reportFocusExcluded reports every mark in marks as Filtered (issue #273): a spec this program's
+// Builder dropped because of an active focus elsewhere in the same Builder.Describe/top-level call.
+// Unlike reportSkipped/reportPending (runGroup), this runs once for the whole program, not per
+// group — an excluded spec never became part of any group at all (see builder.go's finalize), so
+// there is no group to attach it to. A nil ctx.execObserver (no Reporter attached) means nothing
+// happens, the same "nothing to report without one" rule every other compile-time-only report in
+// this package already follows.
+func reportFocusExcluded(ctx *Context, marks []specMark) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for _, m := range marks {
+		path := append(append([]string(nil), m.path...), m.name)
+		started := obs.specStarted(m.name, path)
+		obs.specFinished(started, specResult{Filtered: true})
+	}
+}
 
 // Run executes all groups in order. Within each group, every spec runs its own before hooks, body,
 // and after hooks (reverse order) as one unit — see runSpecWithHooks. Zero allocations in the loop
@@ -132,7 +195,15 @@ var _ specExecutionObserver = (*reporterObserver)(nil)
 // testing.T.Fatal/Fatalf/FailNow in before or the spec (runtime.Goexit) still guarantees after runs,
 // via a defer registered before before/body ever start — see runSpecWithHooks for the exact contract.
 func (r *Runner) Run(tb testing.TB) {
-	if r == nil || r.program == nil || tb == nil || len(r.program.Groups) == 0 {
+	if r == nil || r.program == nil || tb == nil {
+		return
+	}
+	// Checked unconditionally, before the empty-program early return below: RunShard (scheduler.go)
+	// propagates FocusedNames to every shard's own Program regardless of what that shard draws, so
+	// every shard's enclosing test fails on its own when focus is active (issue #273's "ALWAYS" —
+	// each shard is ordinarily its own CI job).
+	reportFocusPolicy(tb, r.program)
+	if len(r.program.Groups) == 0 && len(r.program.FocusExcluded) == 0 {
 		return
 	}
 	backend := asTestBackend(tb)
@@ -156,16 +227,18 @@ func (r *Runner) Run(tb testing.TB) {
 	ctx.execObserver = obs
 	suiteStart := time.Now()
 	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
+	reportFocusExcluded(ctx, r.program.FocusExcluded)
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:          name,
-		Time:          time.Now(),
-		Duration:      time.Since(suiteStart),
-		TotalSpecs:    obs.total,
-		FailedSpecs:   obs.failed,
-		SkippedSpecs:  obs.skipped,
-		FilteredSpecs: obs.filtered,
-		PendingSpecs:  obs.pending,
+		Name:           name,
+		Time:           time.Now(),
+		Duration:       time.Since(suiteStart),
+		TotalSpecs:     obs.total,
+		FailedSpecs:    obs.failed,
+		SkippedSpecs:   obs.skipped,
+		FilteredSpecs:  obs.filtered,
+		PendingSpecs:   obs.pending,
+		UnstartedSpecs: obs.unstarted,
 	})
 }
 
@@ -177,12 +250,57 @@ func runGroups(ctx *Context, groups []group) {
 	n := len(groups)
 	for gi := 0; gi < n; gi++ {
 		if ctx.failFast && ctx.hasFailed() {
+			reportGroupsUnstarted(ctx, groups[gi:])
 			break
 		}
 		runGroup(ctx, &groups[gi])
 		if ctx.failFast && ctx.hasFailed() {
+			reportGroupsUnstarted(ctx, groups[gi+1:])
 			break
 		}
+	}
+}
+
+// reportGroupsUnstarted reports every spec of groups[:] as Unstarted (issue #274): FailFast stopped
+// the run before any of these groups was ever entered at all — distinct from
+// reportSpecsUnstartedFrom, which covers a stop partway through one already-entered group's own
+// specs. Each group's compile-time SkipIt/PendingIt marks are reported first, exactly mirroring
+// reportSkipped/reportPending's own ordering for a group that *was* reached, preserving their
+// original declaration via the Declared field instead of silently losing them (the gap issue #274
+// itself reports). A parallelStep group (g.names == nil, a whole ItParallel batch compiled as one
+// opaque step — see program.go's group.names doc comment) has no per-spec identity available at
+// this level without running it, so its specs are left unreported here, exactly as an unreached
+// group already was before this feature: a pre-existing limitation of this engine's ItParallel
+// shape (unlike CompiledSuite/Describe's ItParallel, which has full per-spec plan identity), not a
+// regression this change introduces.
+func reportGroupsUnstarted(ctx *Context, groups []group) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for gi := range groups {
+		g := &groups[gi]
+		for i, name := range g.skipped {
+			obs.specUnstarted(name, g.skippedPath(i), report.DeclaredSkip)
+		}
+		for i, name := range g.pendingSpecs {
+			obs.specUnstarted(name, g.pendingPath(i), report.DeclaredPending)
+		}
+		reportSpecsUnstartedFrom(ctx, g, 0)
+	}
+}
+
+// reportSpecsUnstartedFrom reports g.specs[from:] as Unstarted (issue #274): FailFast stopped the
+// run partway through this already-entered group's own specs. An index at or beyond g.names' bound
+// is a parallelStep group entry (see reportGroupsUnstarted's doc comment on why that shape cannot
+// be reported here) and is skipped, not reported.
+func reportSpecsUnstartedFrom(ctx *Context, g *group, from int) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for i := from; i < len(g.specs) && i < len(g.names); i++ {
+		obs.specUnstarted(g.names[i], g.specPath(i), report.DeclaredNone)
 	}
 }
 
@@ -256,11 +374,21 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i], g.specPath(i))
 		}
-		message, output, ran, failed, skipped := runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		var message, output string
+		var ran, failed, skipped bool
+		if g.parallelBatch {
+			// No generated subtest around the batch: parallelStep gives each spec its own (#330).
+			message, output = runSpecWithHooks(ctx, g.before, s, g.after)
+			failed = ctx.hasFailed()
+			message, ran = ctx.assertionMessage(message, failed), true
+		} else {
+			message, output, ran, failed, skipped = runSpecRecovered(ctx, g.before, s, g.after, g.subtestName(i))
+		}
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output, Filtered: !ran, Skipped: skipped})
 		}
 		if ctx.failFast && failed {
+			reportSpecsUnstartedFrom(ctx, g, i+1)
 			return
 		}
 	}
@@ -300,12 +428,14 @@ func runSpecRecovered(ctx *Context, before []step, s step, after []step, subtest
 	real, ok := ctx.backend.(*runnableBackend)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		message, output = runSpecWithHooks(ctx, before, s, after)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	return runSpecIsolated(ctx, t, subtestName, before, s, after)
 }
@@ -346,6 +476,10 @@ func runSpecIsolated(ctx *Context, t *testing.T, subtestName string, before []st
 	// agrees with the Failed value this function reports: a body that fails and then calls SkipNow
 	// must be reported failed, not skipped (#254) — see spec_body_parallel.go's doc comment.
 	skipped = skipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272).
+	message = ctx.assertionMessage(message, failed)
 	if ran {
 		putTestBackend(ctx.backend)
 		ctx.backend, ctx.T, ctx.tb = prevBackend, prevT, prevTB
@@ -427,21 +561,35 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 		}
 		if afterIdx < 0 {
 			message, output = recoverSpecFailure(ctx, recovered, "panic")
+			// ctx.Go tasks finish before the after hooks run (#318).
+			if m, o := ctx.settleTasks(false); message == "" {
+				message, output = m, o
+			}
 			afterMessage, afterOutput := runAfterRecovered(ctx, after)
 			if message == "" {
 				message, output = afterMessage, afterOutput
+			}
+			if m, o := ctx.settleTasks(true); message == "" {
+				message, output = m, o
 			}
 			return
 		}
 		if recovered == nil {
 			// A real Fatal/FailNow/Skip inside after[afterIdx] called runtime.Goexit: it never returns
 			// control to the loop below, so the remaining after hooks do not run, same as before #235.
+			// Tasks already started are still awaited: the Context must not be released under them.
+			if m, o := ctx.settleTasks(true); message == "" {
+				message, output = m, o
+			}
 			return
 		}
 		message, output = recoverSpecFailure(ctx, recovered, "panic in after hook")
 		remMessage, remOutput := runAfterRecoveredFrom(ctx, after, afterIdx-1)
 		if message == "" {
 			message, output = remMessage, remOutput
+		}
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
 		}
 	}()
 
@@ -456,9 +604,16 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 	if !skipBody {
 		s(ctx)
 	}
+	// Wait for the ctx.Go tasks before any after hook runs (#318); a task panic is this spec's panic.
+	if m, o := ctx.settleTasks(false); m != "" {
+		message, output = m, o
+	}
 	for i := len(after) - 1; i >= 0; i-- {
 		afterIdx = i
 		after[i](ctx)
+	}
+	if m, o := ctx.settleTasks(true); message == "" {
+		message, output = m, o
 	}
 	completed = true
 	return

@@ -129,13 +129,15 @@ A release *is* a `develop` → `main` pull request. There is no separate release
 3. **Merge with a merge commit, not a squash.** Squashing creates a commit on `main` that does not exist on `develop`, so the branches diverge again the moment the release lands (see the Branching Model above).
 4. **`Release` runs automatically on merge.** `.github/workflows/release.yml` triggers on the PR's `closed` event, checks `merged == true` and that the head was `develop`, re-derives the version from commit history, cross-checks it against what `Release prep` wrote into `CHANGELOG.md` (a mismatch means `Release prep` didn't run, or didn't get to re-run after a late commit — the job fails loudly instead of tagging the wrong version), tags the merge commit, and runs GoReleaser. `main` and `develop` end up identical, so no sync PR is needed for an ordinary release.
 
+Before any of that, CI's `verify` job runs `go run ./tools/release validate -file CHANGELOG.md` on every PR. It is read-only and only checks structure: within `## [Unreleased]`, each of the `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed` and `### Security` headings may appear at most once, in that order (omitted sections are fine). It does not read entry prose, so it never decides what is breaking and never moves an entry; put a **Breaking.** item under whichever category fits it. Run the same command locally before opening a PR that touches `CHANGELOG.md`.
+
 There is no `workflow_dispatch` for releases anymore, and no manual tagging step — a single path, matching Decision 2 of [`docs/investigations/odd-tasks/native-ci-pipeline.md`](docs/investigations/odd-tasks/native-ci-pipeline.md).
 
 ### Prerequisite: the release GitHub App
 
 `Release prep` and `Hotfix sync` both push commits, and push or open PRs, in a way that needs to retrigger this repository's other required checks — a commit or PR authored by the default `GITHUB_TOKEN` does not retrigger anything, so a required check would never run on the prepare commit or the sync PR, and neither could be merged. Both workflows instead push using a short-lived installation token minted from a dedicated GitHub App.
 
-A GitHub App is used instead of a personal access token because the ruleset `protect-main-develop` (see below) needs exactly one actor able to bypass it for the prepare commit. A personal access token's bypass actor is the maintainer's own GitHub user — who could then also push directly to `main`/`develop` themselves, defeating the ruleset. A GitHub App installed only on this repository is a narrower actor: only the App can bypass, never a human.
+A GitHub App is used instead of a personal access token because the rulesets `protect-develop` and `protect-main` need exactly one actor able to bypass them for the prepare commit. A personal access token's bypass actor is the maintainer's own GitHub user — who could then also push directly to `main`/`develop` themselves, defeating the ruleset. A GitHub App installed only on this repository is a narrower actor: only the App can bypass, never a human.
 
 Set it up once:
 
@@ -145,7 +147,7 @@ Set it up once:
 4. Install it only on `getsyntegrity/go-specs`, not org-wide.
 5. Generate a private key for the App.
 6. Add two repository secrets: `RELEASE_APP_ID` (the App's ID) and `RELEASE_APP_PRIVATE_KEY` (the private key's contents).
-7. Add the App as the sole bypass actor of the `protect-main-develop` ruleset.
+7. Add the App as the sole bypass actor of both rulesets, `protect-develop` and `protect-main`.
 
 Both workflows fail fast with a clear `::error::` while either secret is missing, rather than failing deep inside a git push with an opaque authentication error.
 
@@ -159,11 +161,23 @@ The next version is computed from [Conventional Commits](https://www.conventiona
 | `feat` | bumps **patch** | bumps **minor** |
 | Any other valid type (`build`, `chore`, `ci`, `docs`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`) | bumps **patch** | bumps **patch** |
 
-The highest-ranked bump among all qualifying commits wins (breaking > `feat` > everything else). A merge commit, a commit whose subject isn't a valid Conventional Commit, and the benchmark chart bot's own `chore: update benchmark charts [skip ci]` commit are all ignored and never trigger a release on their own.
+The highest-ranked bump among all qualifying commits wins (breaking > `feat` > everything else). A merge commit, a commit whose subject isn't a valid Conventional Commit, and the benchmark chart bot's own `chore: update benchmark charts` commit (or its historical `[skip ci]`-suffixed form) are all ignored and never trigger a release on their own.
 
 ### Hotfixes
 
-A hotfix branches from `main`, PRs back into `main` (never targets `main` from `develop` — that's an ordinary release), and does **not** go through `Release prep` or `Release`: a `hotfix/*` PR merging into `main` does not tag or publish anything by itself. Once merged, `.github/workflows/hotfix-sync.yml` opens (or comments on an existing open) `main` → `develop` pull request automatically, titled `chore: sync hotfix <branch> into develop`, using the release GitHub App's installation token — completing the "merged down into `develop`" step the Branching Model above requires. If the hotfix itself should also ship as a release, that happens the ordinary way afterward: once it's synced into `develop`, open a `develop` → `main` release PR like any other release.
+A hotfix branches from `main` and PRs back into `main` (never targets `main` from `develop` — that's an ordinary release). Unlike before, a hotfix *does* go through `Release prep` and `Release` now, the same as a `develop` → `main` release, with one difference: the version is always forced to the next patch of the last tag, and the workflow fails if any commit on the branch is a breaking change or a `feat` — a hotfix must not change the API (see "Version rules" above; `tools/release next-version -patch-only`).
+
+1. **Branch and fix.** Branch from `main`, make the fix, and add a changelog entry under `## [Unreleased]` in `CHANGELOG.md` — this is required, not optional: `main`'s `[Unreleased]` is always empty right after the previous release, so `Release prep` fails with an actionable error (`add an entry under "## [Unreleased]" describing the fix, then run this again`) until one exists.
+2. **Open the PR.** Base `main`, head `hotfix/*`. `Release prep` runs exactly as it does for a `develop` PR, except it computes the version with `-patch-only` and prepares the changelog on the hotfix branch itself.
+3. **Merge with a merge commit.** `Release` runs automatically, tags the merge commit, and publishes — same as an ordinary release.
+4. **The fix is synced back into `develop` automatically.** As the last step of that same `Release` run, a `sync/hotfix-vX.Y.Z` branch is pushed from the just-tagged commit and a pull request is opened from it into `develop`, titled `chore: sync hotfix <version> into develop`, using the release GitHub App's installation token, completing the "merged down into `develop`" step the Branching Model above requires. This sync PR's head is deliberately **not** `main` itself: `.github/settings.yml` sets `delete_branch_on_merge: true`, which deletes a merged PR's head branch (whether merged with a merge commit or a squash) once nothing is protecting it from deletion, and `main` is neither this repository's default branch nor protected — a PR headed `main` would make GitHub delete `main` the moment it's merged. The disposable `sync/hotfix-vX.Y.Z` branch exists only to carry that one PR and is expected to disappear once it's merged.
+5. **Resolve the likely `CHANGELOG.md` conflict.** By the time the sync PR is reviewed, `main` has gained a dated `## [vX.Y.Z]` section for the hotfix while `develop`'s own `## [Unreleased]` has likely kept growing — both edit the top of the file, so the sync PR usually conflicts there. Resolve it by keeping `develop`'s `[Unreleased]` section above the hotfix's released section, not the other way around.
+
+If the hotfix itself should also ship as part of a larger release later, nothing further is needed — it is already tagged and published; `develop` just also carries it once the sync PR is merged.
+
+### Benchmark charts
+
+`benchmark-charts.yml` regenerates `benchmarks/results/*.png` on every push to `develop` (and via manual dispatch) and rolls the result into a single pull request from the fixed branch `chore/benchmark-charts` into `develop`, opened or updated with the release GitHub App's installation token — it never pushes to `develop` (or `main`) directly, for the same reason a hotfix's sync PR never does. The workflow ignores a push whose only change is those chart files (`paths-ignore`), so merging the rolling PR does not immediately retrigger it and reopen a fresh one — benchmark numbers differ slightly on every run, so without that rule the PR would never stay closed. Like the hotfix sync branch above, `chore/benchmark-charts` is expected to be deleted once its PR merges (`delete_branch_on_merge`); the next push to `develop` recreates it fresh.
 
 ---
 
@@ -175,6 +189,14 @@ PRs must include:
 * tests
 * benchmarks (if performance related)
 * documentation updates if APIs change
+
+A PR is validated by `ci.yml` and `codeql.yml` running as its own `pull_request` checks, aggregated
+into the single required status check `ci-ok` (plus CodeQL's own `analyze (go)`/`analyze
+(actions)`) — no workflow re-runs the same checks again after merge. The one commit that reaches
+`develop` before `ci.yml` has run on it is release prep's `chore(release): prepare` commit, which
+may change only `CHANGELOG.md` and is validated by the release PR before it can reach `main`. See
+[`docs/CI.md`](docs/CI.md) for the full pipeline reference: the workflow inventory, required
+checks, ruleset settings, and the SHA-pin policy every third-party action follows.
 
 ---
 

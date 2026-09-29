@@ -58,7 +58,10 @@ func TestRenderXMLIsValidJUnit(t *testing.T) {
 
 	// Coverage properties are present and carry the aggregate arithmetic, not per-package averages.
 	found := map[string]string{}
-	for _, p := range checkout.Properties {
+	if checkout.Properties == nil {
+		t.Fatalf("coverage properties container missing")
+	}
+	for _, p := range checkout.Properties.Property {
 		found[p.Name] = p.Value
 	}
 	if found["go-specs.coverage.aggregate.covered"] != "790" || found["go-specs.coverage.aggregate.total"] != "900" {
@@ -139,6 +142,84 @@ func TestRenderXMLPendingRendersAsSkippedWithMessage(t *testing.T) {
 	}
 	if cases[0].Skipped.Message != "pending" {
 		t.Fatalf("skipped message = %q, want %q", cases[0].Skipped.Message, "pending")
+	}
+}
+
+// TestRenderXMLUnstartedRendersAsSkippedWithFailFastMessage proves a fail-fast-prevented spec
+// (issue #274) renders as <skipped message="not run: fail-fast"/> (JUnit has no "unstarted" state)
+// and is counted in the skipped attribute at both testsuites and testsuite level, exactly as
+// Pending/Filtered already are — but the tests attribute must also grow, since Total never counts
+// an Unstarted spec (maintainer decision) and a JUnit consumer must still see the full declared
+// suite size.
+func TestRenderXMLUnstartedRendersAsSkippedWithFailFastMessage(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 1, Passed: 1, Unstarted: 2},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 1, Passed: 1, Unstarted: 2},
+			Cases: []Case{
+				{Name: "ran", Status: StatusPassed},
+				{Name: "never reached", Status: StatusUnstarted},
+				{Name: "never reached (declared skip)", Status: StatusUnstarted, Declared: "skip"},
+			},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, r); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	var doc junitTestSuites
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if doc.Tests != 3 {
+		t.Fatalf("testsuites tests attr = %d, want 3 (Total 1 + Unstarted 2)", doc.Tests)
+	}
+	if doc.Skipped != 2 {
+		t.Fatalf("testsuites skipped attr = %d, want 2", doc.Skipped)
+	}
+	if len(doc.Suites) != 1 || doc.Suites[0].Tests != 3 || doc.Suites[0].Skipped != 2 {
+		t.Fatalf("testsuite = %+v, want tests=3 skipped=2", doc.Suites)
+	}
+	cases := doc.Suites[0].TestCases
+	if len(cases) != 3 {
+		t.Fatalf("got %d testcases, want 3", len(cases))
+	}
+	for _, tc := range cases[1:] {
+		if tc.Skipped == nil {
+			t.Fatalf("expected <skipped> for unstarted case %q, got %+v", tc.Name, tc)
+		}
+		if tc.Skipped.Message != "not run: fail-fast" {
+			t.Fatalf("skipped message = %q, want %q", tc.Skipped.Message, "not run: fail-fast")
+		}
+	}
+}
+
+// TestRenderXMLPropertiesContainerOnlyWithCoverage proves the <properties> container is absent
+// entirely when no coverage is attached (a JUnit validator may require at least one <property>
+// child) and populated in every suite when coverage exists (issue #316).
+func TestRenderXMLPropertiesContainerOnlyWithCoverage(t *testing.T) {
+	noCov := sampleReport()
+	noCov.Coverage = Coverage{}
+	var buf bytes.Buffer
+	if err := RenderXML(&buf, noCov); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	if strings.Contains(buf.String(), "properties") {
+		t.Fatalf("report without coverage rendered a properties element:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	if err := RenderXML(&buf, sampleReport()); err != nil {
+		t.Fatalf("RenderXML: %v", err)
+	}
+	out := buf.String()
+	if got, want := strings.Count(out, "<properties>"), 2; got != want {
+		t.Fatalf("<properties> count = %d, want %d", got, want)
+	}
+	if strings.Contains(out, "<properties></properties>") || strings.Contains(out, "<properties/>") {
+		t.Fatalf("empty properties element rendered:\n%s", out)
 	}
 }
 

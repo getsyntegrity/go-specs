@@ -238,3 +238,63 @@ github.com/getsyntegrity/go-specs/shared/util.go:20.1,22.2 3 0
 		t.Fatalf("Covered = %d, want 3 (only the first block executed)", pc.Covered)
 	}
 }
+
+// TestCoverageParsersRejectInvalidProfiles proves both parsers fail explicitly on a bogus mode, a
+// negative execution count, and a negative statement count instead of silently treating them as
+// valid input (issue #310).
+func TestCoverageParsersRejectInvalidProfiles(t *testing.T) {
+	parsers := map[string]func(r *strings.Reader) error{
+		"ParseCoverageProfile":       func(r *strings.Reader) error { _, err := ParseCoverageProfile(r); return err },
+		"ParseCoverageProfileMerged": func(r *strings.Reader) error { _, err := ParseCoverageProfileMerged(r); return err },
+	}
+	cases := []struct {
+		name    string
+		profile string
+		wantErr string
+	}{
+		{"bogus mode", "mode: bogus\ngithub.com/x/y.go:1.1,2.2 1 1\n", "mode"},
+		{"empty mode", "mode:\ngithub.com/x/y.go:1.1,2.2 1 1\n", "mode"},
+		{"negative execution count", "mode: count\ngithub.com/x/y.go:1.1,2.2 1 -5\n", "execution count"},
+		{"negative statement count", "mode: set\ngithub.com/x/y.go:1.1,2.2 -1 1\n", "statement count"},
+	}
+	for pname, parse := range parsers {
+		for _, tc := range cases {
+			t.Run(pname+"/"+tc.name, func(t *testing.T) {
+				err := parse(strings.NewReader(tc.profile))
+				if err == nil {
+					t.Fatalf("expected an error for %s, got nil", tc.name)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+				}
+			})
+		}
+	}
+}
+
+func TestCoverageParsersAcceptEveryValidMode(t *testing.T) {
+	for _, mode := range []string{"set", "count", "atomic"} {
+		profile := "mode: " + mode + "\ngithub.com/x/y.go:1.1,2.2 2 1\n"
+		if _, err := ParseCoverageProfile(strings.NewReader(profile)); err != nil {
+			t.Fatalf("ParseCoverageProfile mode %s: %v", mode, err)
+		}
+		if _, err := ParseCoverageProfileMerged(strings.NewReader(profile)); err != nil {
+			t.Fatalf("ParseCoverageProfileMerged mode %s: %v", mode, err)
+		}
+	}
+}
+
+// TestParseCoverageProfileMergedRejectsConflictingStatementCounts proves a repeated file/span with
+// a different numStmt fails explicitly rather than becoming a second block that inflates Total.
+func TestParseCoverageProfileMergedRejectsConflictingStatementCounts(t *testing.T) {
+	profile := "mode: count\n" +
+		"github.com/x/y.go:10.1,12.2 3 1\n" +
+		"github.com/x/y.go:10.1,12.2 4 1\n"
+	_, err := ParseCoverageProfileMerged(strings.NewReader(profile))
+	if err == nil {
+		t.Fatal("expected an error for conflicting statement counts on one span, got nil")
+	}
+	if !strings.Contains(err.Error(), "conflicting statement count") {
+		t.Fatalf("error %q does not name the conflict", err)
+	}
+}

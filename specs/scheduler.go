@@ -220,8 +220,24 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 // runBytecodeWorkerSpec and parallelStep). Applied per spec so one spec's fatal assertion or panic
 // doesn't stop the worker from running the rest of its specs.
 func runWorkerSpec(fn func(*Context), ctx *Context, results *[]failureRecord, idx int) {
-	defer func() { recoverParallelSpecFailure(recover(), results, idx) }()
+	defer func() {
+		recoverParallelSpecFailure(recover(), results, idx)
+		settleParallelTasks(ctx, results, idx) // wait for ctx.Go tasks (#318)
+	}()
 	fn(ctx)
+}
+
+// recordFailure stores an already-built failure, with its captured location, as this spec's failure
+// unless one is already there (first write wins, like record). Used when a ctx.Go task's private
+// failure is folded onto the spec's backend (context_go.go); called only from the spec's goroutine.
+func (p *parallelBackend) recordFailure(f failureRecord) {
+	if p.results == nil || p.specIndex < 0 || p.specIndex >= len(*p.results) {
+		return
+	}
+	if (*p.results)[p.specIndex].Failed {
+		return
+	}
+	(*p.results)[p.specIndex] = f
 }
 
 // failureReporter is the minimal interface needed to report failures (avoids requiring full
@@ -326,8 +342,26 @@ func shardProgram(program *Program, shardIndex, shardCount int) (prog *Program, 
 			sharded = append(sharded, groups[gi])
 		}
 	}
-	if len(sharded) == 0 {
+	// marks is this shard's copy of program.FocusExcluded (issue #273): only shard 0 reports the
+	// detailed marks, the same deterministic rule CompiledSuite.RunShard already uses for compile-
+	// time SkipIt/PendingIt marks (shardSelection.reportsMarks) — the union across every shard must
+	// report each excluded spec exactly once.
+	var marks []specMark
+	if shardIndex == 0 {
+		marks = program.FocusExcluded
+	}
+	// A shard that draws no groups and has no marks to report still needs its own Program when
+	// focus is active suite-wide (FocusedNames non-empty): Runner.Run's fail-on-focus check must run
+	// for every shard, even one that draws none of the focused group's specs (issue #273's "ALWAYS"
+	// — each shard is ordinarily its own CI job). Without any of the three, this is the pre-existing
+	// "a valid shard may legitimately draw nothing" case (issue #174), unaffected.
+	if len(sharded) == 0 && len(marks) == 0 && len(program.FocusedNames) == 0 {
 		return nil, false
 	}
-	return &Program{Groups: sharded}, true
+	return &Program{
+		Groups:             sharded,
+		FocusedNames:       program.FocusedNames,
+		FocusExcludedCount: program.FocusExcludedCount,
+		FocusExcluded:      marks,
+	}, true
 }

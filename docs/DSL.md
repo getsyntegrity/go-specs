@@ -28,6 +28,36 @@ s.When("the account is empty", func(w *specs.Spec) {
 
 `fn` must be `func(*specs.Spec)`. Earlier versions also accepted a legacy `func()` body that ignored the nested `*Spec` and ran against the enclosing scope by closure; that shape is removed, so an unsupported body is now a compile error instead of being registered under `When`'s name and silently never run. Migrate a `func()` body to `func(*specs.Spec)`, adding the parameter and ignoring it if the body does not need it.
 
+## Duplicate sibling group names
+
+Two sibling `Describe`/`When` groups that share a literal name — `s.Describe("D", ...)` declared twice under the same parent — used to report the identical `Path` for every spec inside them: `["suite", "D", "z"]` for both groups' `It("z")`, indistinguishable in JSON, JUnit XML, TXT and HTML output (issue #275). This only ever affected the *reported* `Path`. #102 already documents, and this does not change, that Go's own subtest identity keeps its accepted ambiguity too: `go test -v` and `-run` still tell the two groups apart only by testing's own `#01` suffix, exactly as before.
+
+As of this fix, every reported spec, compile-time `SkipIt`/`PendingIt` mark, and hooked group's synthetic `[BeforeAll]`/`[AfterAll]` case gets a **disambiguated** `Path` instead, computed once when the suite compiles:
+
+- Among the sibling `Describe`/`When` groups of one parent scope, compared by their exact declared name (no space/slash normalization, unlike Go's own subtest naming):
+  - the first group with a given name keeps that name unchanged;
+  - each later group with the same name gets `name#k`, where `k` is the smallest integer `>= 2` such that `name#k` is neither the literal declared name of another sibling group in that parent nor a label this computation already assigned to an earlier sibling.
+- The ordinal is computed once, at compile time, from every sibling of a parent scope — not assigned as each group is declared. A literal `Describe("D#2")` declared *after* two plain `Describe("D")` siblings still reserves `"D#2"` for itself: the second `Describe("D")` skips over it and becomes `"D#3"`.
+- Nesting is independent per parent: a duplicate name in one `Describe`/`When` subtree never affects the ordinals of a same-named duplicate declared under a different parent.
+- Only `Describe`/`When` groups get a disambiguated segment. Two `It` specs with the same leaf name directly inside one group are unaffected — that ambiguity is #102's, and stays accepted exactly as documented there.
+- Repeated compilations of the same suite (e.g. in different test binaries, or via `BuildSuite` called more than once) produce byte-identical `Path`s: the ordinal is a pure function of declaration order, never a global or process-wide counter.
+- A suite with no duplicate sibling group name is completely unaffected: every reported `Path` is byte-identical to what it always was.
+
+Example: three sibling groups declared `Describe("D")`, `Describe("D")`, `Describe("D#2")` (in that order) report the segments `"D"`, `"D#3"`, `"D#2"` — the literal `"D#2"` is respected, so the second plain `"D"` is pushed to `"D#3"` instead of colliding with it.
+
+```go
+specs.Describe(t, "suite", func(s *specs.Spec) {
+    s.Describe("D", func(s *specs.Spec) { // reported segment: "D"
+        s.It("z", func(ctx *specs.Context) {}) // Path: ["suite", "D", "z"]
+    })
+    s.Describe("D", func(s *specs.Spec) { // reported segment: "D#2"
+        s.It("z", func(ctx *specs.Context) {}) // Path: ["suite", "D#2", "z"]
+    })
+})
+```
+
+Both sequential execution models (`Describe`/`Spec`/`ExecutionPlan`, including its arena/registry `Analyze` build path, and `Builder`/`Program`/`Runner`) apply the identical rule, so a suite reports the same disambiguated `Path`s regardless of which one built it.
+
 ## BeforeEach
 
 `BeforeEach` registers a function that runs before every `It` in the current scope (and nested scopes). Use it for setup that must run before each spec.
@@ -39,6 +69,16 @@ s.BeforeEach(func(ctx *specs.Context) {
 ```
 
 Multiple `BeforeEach` calls in the same scope run in registration order (outer scope first, then inner).
+
+### Declare per-spec hooks before specs and nested scopes
+
+`BeforeEach` and `AfterEach` are captured by each spec as it is registered, so a hook must be declared
+**before the first `It` (or `SkipIt`, `PendingIt`, `FIt`, `ItParallel`) and before the first nested
+`Describe`/`When` of its scope**. Registering one afterwards would apply it only to later specs, so a
+teardown assertion written at the end of a `Describe` would silently never run for the specs above it.
+Instead of allowing that, `Spec` and `Builder` fail the build with a panic that starts with `specs:` and
+names the hook (for example `specs: AfterEach registered after a spec or nested scope in the same scope`).
+`BeforeAll`/`AfterAll` are not affected: they cover the whole scope wherever they are declared.
 
 ## AfterEach
 
@@ -247,15 +287,66 @@ means "the specification exists, the implementation does not."
 
 `FIt` with a `nil` `fn` is a no-op. If a `Describe`/`BuildSuite` call registers at least one `FIt`
 anywhere in its tree, only focused specs compile — every other `It`, `SkipIt` and `PendingIt` in
-that same call is dropped, not merely skipped, exactly like `Builder.FIt`/`finalize`'s focus filter.
-Focus is scoped to that one top-level call, never process-wide. `BeforeEach`/`AfterEach` and
-`BeforeAll`/`AfterAll` around a focused spec still run; a `BeforeAll`/`AfterAll` group left with
-zero runnable specs after focus filtering is never entered — the same H3 rule
-(`docs/SUITE_HOOKS_CONTRACT.md`) that already applies to a group declaring no `It` at all.
+that same call is dropped from execution, exactly like `Builder.FIt`/`finalize`'s focus filter, but
+(since [#273](https://github.com/getsyntegrity/go-specs/issues/273)) it is no longer dropped
+*without a trace*: see "Committed focus fails the enclosing test" below. Focus is scoped to that one
+top-level call, never process-wide. `BeforeEach`/`AfterEach` and `BeforeAll`/`AfterAll` around a
+focused spec still run; a `BeforeAll`/`AfterAll` group left with zero runnable specs after focus
+filtering is never entered — the same H3 rule (`docs/SUITE_HOOKS_CONTRACT.md`) that already applies
+to a group declaring no `It` at all.
 
 Both `Spec` build paths agree: the bytecode compiler (the default, top-level `Describe`/
 `BuildSuite`) and the `Analyze`/registry path produce the same outcomes for the same declared tree
 — see `specs/spec_builder_equivalence_test.go` for the table proving `Spec` and `Builder` agree too.
+
+### Committed focus fails the enclosing test
+
+**Breaking change, [#273](https://github.com/getsyntegrity/go-specs/issues/273).** A suite-wide
+`FIt` used to compile only the focused specs and drop every other `It`/`SkipIt`/`PendingIt`
+entirely — no plan entry, no report, no trace at all. That let a forgotten debugging focus turn a
+failing suite green, silently, both locally and in CI: one failing `It` plus one passing `FIt`
+reported `Total:1 Passed:1` and a passing test.
+
+The policy now is:
+
+| | `GO_SPECS_ALLOW_FOCUS` unset (default) | `GO_SPECS_ALLOW_FOCUS=1` |
+|---|---|---|
+| Focus still filters (only focused specs run) | yes | yes |
+| Every excluded spec (`It`, `SkipIt`, `PendingIt`, `ItParallel`) is reported `Filtered` | yes | yes |
+| The enclosing test fails via `tb.Errorf` (focused specs still run and report their own result) | **yes, always — local and CI** | no |
+
+There is no CI-only detection: a forgotten `FIt` fails the same way on a laptop as it does in a CI
+job, which is the point — "fail only under CI" was considered and rejected, because it would still
+let the same suite pass green on a laptop. The failure message names how many specs are focused and
+how many were excluded, e.g.:
+
+```
+go-specs: 1 focused spec(s) (FIt) are active, 2 spec(s) excluded; remove FIt or set GO_SPECS_ALLOW_FOCUS=1
+```
+
+and, for the `Analyze`/registry build path, the focused spec's own file:line too, whenever caller-
+location capture is enabled (`specs.SetCaptureCallerLocation(true)`, off by default for unrelated
+allocation reasons — see its own doc comment): that path already records it on every node in that
+case, at zero extra cost. The bytecode-compiler and `Builder` paths name the spec's full
+`Describe`/`It` breadcrumb only, never a file:line — that path never records a caller location for
+any node, and adding it just for this diagnostic was not judged worth the new capture machinery on
+an allocation-pinned compiler.
+
+`GO_SPECS_ALLOW_FOCUS=1` is the only opt-out, and it disables *only* this failure — not the focus
+filtering itself, which still applies exactly as documented above. Set it as a real environment
+variable, or per-test via `t.Setenv("GO_SPECS_ALLOW_FOCUS", "1")`; it is read once per suite
+build/run, never per spec, so it costs nothing on the normal (unfocused) passing path.
+
+Every engine is covered the same way: the bytecode compiler and the `Analyze`/registry path behind
+`specs.Describe`/`specs.BuildSuite`, and `Builder`/`Runner` behind `specs.NewBuilder`. `RunShard`
+(both `CompiledSuite.RunShard` and the package-level `specs.RunShard`) reports each excluded spec
+exactly once across every shard — deterministically, the same shard that already owns compile-time
+`SkipIt`/`PendingIt` mark reporting (shard 0) — while every shard's own `RunShard` call still fails
+its own enclosing test when focus is active, since each shard is ordinarily its own CI job.
+
+Migration: a suite that intentionally keeps a committed `FIt` around (a WIP branch, or a
+deliberately focused CI debugging run) must now either remove the `FIt`, or set
+`GO_SPECS_ALLOW_FOCUS=1` for that run.
 
 ## ItParallel
 
@@ -367,6 +458,68 @@ subtest goroutine is left parked, and once every launched spec in the group has 
 reports the same diagnostic and stops the run — every enclosing `BeforeAll`/`AfterAll` group still
 runs its `AfterAll`s while the stop unwinds (`docs/SUITE_HOOKS_CONTRACT.md` H5), same as any other
 stopped run.
+
+## `ctx.Go`: concurrent assertions inside one spec
+
+A `*specs.Context` belongs to the spec that is running. It is pooled and handed to the next spec as
+soon as the current one finishes, so **a `ctx` used by a goroutine launched directly with a `go`
+statement must not outlive the spec.** If it does, the goroutine asserts through whichever spec owns
+that pointer next: the first spec passes, and the next one fails with the first one's message and
+source line. go-specs does not protect that pattern and cannot do so transparently (the pointer is
+the same, and a goroutine carries no identity an assertion could check for free). Semantics of raw
+`go` goroutines are unchanged.
+
+`ctx.Go` is the supported way to run concurrent assertions:
+
+```go
+s.It("both replicas agree", func(ctx *specs.Context) {
+    ctx.Go(func(ctx *specs.Context) { ctx.Expect(primary.Get("k")).ToEqual("v") })
+    ctx.Go(func(ctx *specs.Context) { ctx.Expect(replica.Get("k")).ToEqual("v") })
+})
+```
+
+The contract:
+
+- **The spec waits.** It is not finished until every task started with `ctx.Go` has finished: the
+  wait happens before `AfterEach` hooks, before the spec is reported, and before its `Context` is
+  reused. This holds even if the body fails, calls `FailNow`, or panics.
+- **Failures are charged to the spec that started the task**, with the task's own message and source
+  line. A failed assertion or a `ctx.T` failure inside a task fails that spec. A panic inside a task
+  is recovered and reported like a panic in the body: an *error* with its stack, not a failure.
+  A fatal assertion (or `ctx.T.FailNow`) ends only that task; the body and the other tasks keep going.
+- **`AfterEach` runs after all tasks have finished**, so it can safely read what they wrote.
+- **The task gets its own `*Context`.** Use the parameter, not the outer `ctx`, inside the task.
+
+Edge cases:
+
+- A task may call `ctx.Go` itself; the spec waits for those tasks too. `BeforeEach` and `AfterEach`
+  hooks may call it as well (tasks started by an `AfterEach` are awaited before the spec is finished).
+- Tasks are never cancelled. A task that blocks forever blocks its spec, so keep tasks finite.
+- `FailFast` reacts when the spec has finished, not while its tasks are still running: a task's
+  failure is folded into the spec at the end of the body, so the specs after it are what get skipped.
+- In an `ItParallel` spec, tasks belong to that one spec, on both `Spec.ItParallel` and
+  `Builder.ItParallel`.
+- Calling `ctx.Go` after its spec has finished panics with a `specs:` message that says how to fix
+  it, **but only until that pooled `Context` is reused by a later spec.** After reuse, a stale `ctx`
+  cannot be told apart from the new spec's own: the call does not panic, and its task may be
+  attributed to whichever spec currently owns the `Context`. Retaining a spec's `ctx` past the end of
+  its spec (including in a raw `go` goroutine) is unsupported. A task's own `*Context` is never
+  pooled, so `ctx.Go` on it after its task ended always panics.
+- Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
+  path. `ctx.Go` itself allocates (a task context and a goroutine).
+
+### Context lifecycle at a glance
+
+- A spec's `ctx` is valid while its body, its `BeforeEach`/`AfterEach` hooks and its `ctx.Go` tasks
+  are running. After that it belongs to the pool and to whichever spec gets it next.
+- `ctx.Go` is the only protected way to use a `Context` from another goroutine. A raw `go`
+  goroutine that touches `ctx` (`Expect`, `ctx.T`, `ctx.Go`) must finish before the spec does.
+  go-specs does not protect it: a stale call may fail a different spec, may race, and does not
+  reliably panic.
+- To compute something concurrently without `ctx.Go`, keep `ctx` out of the goroutine, join it
+  (`sync.WaitGroup` or a channel) before the body returns, and assert on the result in the spec.
+- This is the supported contract, not a bug awaiting a fix; a possible opt-in strict mode is
+  discussed in `docs/investigations/stale-context-handles-324.md`.
 
 ## Builder.It, Skip and Focus
 
@@ -546,6 +699,25 @@ One exception, and it is deliberate. The fallback runs only when `T` is an inter
 An error whose dynamic type is not comparable — `type sliceError []string`, say — does not panic the typed path either. `error` satisfies the `comparable` constraint, but Go's `==` panics on two interface values holding the same incomparable type; `EqualTo` and `ExpectT(...).ToEqual` treat that comparison as unequal and go on to `errors.Is`, exactly as `ctx.Expect` does.
 
 A typed nil pointer — a nil `*MyErr`, whether held as `*MyErr` or stored in an `error` — never reaches `errors.Is`, on any of these paths. `errors.Is` calls the error's own `Is` and `Unwrap` methods, and one that reads a field of a nil receiver would panic the spec instead of failing the assertion. A typed nil is compared with `==` alone: it equals itself and nothing else, and in particular it is not equal to a nil `error`.
+
+### `Contain`: supported types, and what a failure actually means
+
+`Contain(expected)` supports a string actual (substring search) and a slice or array actual (element search, via `[]int`/`[]string`/`[]float64` fast paths and a reflection fallback for anything else). Map-key containment is deliberately **not** supported — deciding whether to add it, and how, is a separate question from this matcher's diagnostics ([#277](https://github.com/getsyntegrity/go-specs/issues/277)).
+
+A failed `Contain` used to report every cause the same way — `expected 42 to contain 1` reads identically whether `42` is a genuinely searchable value that lacks `1`, or an `int` `Contain` never had a strategy for. `FailureMessage` now names the actual cause:
+
+```go
+specs.Contain(4).FailureMessage([]int{1, 2, 3})
+// "expected [1 2 3] to contain 4" — a genuine miss: 4 just isn't there.
+
+specs.Contain(1).FailureMessage(42)
+// "expected 42 to contain 1 — int is not a supported Contain actual (want string, slice, or array)"
+
+specs.Contain("x").FailureMessage([]int{1, 2, 3})
+// "expected [1 2 3] to contain x — []int actual needs an int expected value, got string"
+```
+
+`Match` itself is unchanged: it already returned `false` for an unsupported actual or an incompatible `expected`, and still does. Only `FailureMessage` gained the extra reason, appended after an em dash so the original `expected X to contain Y` wording stays intact for the genuine-miss case that was always correct.
 
 ### Matcher composition: `Not`, `All`, `Any`
 

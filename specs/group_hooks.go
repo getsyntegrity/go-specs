@@ -89,6 +89,74 @@ type planGroups struct {
 	// than as a new CompiledSuite/ExecutionPlan field, for the same H10 reason as every other field
 	// of this struct.
 	failFast bool
+	// focusedCount and focusedNames describe this suite's active focus, if any (issue #273):
+	// focusedCount is the number of FIt specs kept (0 means no focus is active at all, the common
+	// case, costing nothing beyond this already-lazily-allocated struct); focusedNames names each
+	// one, for the fail-on-focus diagnostic (see focusPolicyMessage) — a bare breadcrumb from the
+	// bytecode-compiler path, or "breadcrumb (file:line)" from the Analyze/registry arena path,
+	// which already has the location on the node at zero extra cost (see registerFocusedSpec).
+	focusedCount int
+	focusedNames []string
+	// focusExcluded holds the identity of every spec (real It, and now also a SkipIt/PendingIt mark
+	// or an ItParallel spec that would otherwise vanish without a trace) this suite's active focus
+	// dropped (issue #273) — reported as Filtered exactly once per Run, or per RunShard's shard 0
+	// (see shardSelection.reportsMarks, which already gates skipped/pending the same way).
+	focusExcluded []specMark
+}
+
+// registerFocusedSpec records one focused (FIt) spec's identity for the fail-on-focus diagnostic
+// (issue #273), allocating *pg on first use — the same lazy-allocation rule every other field of
+// planGroups already follows (H10). location is the spec's full Describe/It breadcrumb, optionally
+// followed by " (file:line)" when the caller already has that cheaply: the Analyze/registry arena
+// path does, straight off the ArenaNode it is already visiting (see buildExecutionPlanFromArenaRec);
+// the bytecode-compiler path passes just the breadcrumb, since capturing a caller location for
+// every FIt there would need new bookkeeping on an otherwise allocation-pinned compiler.
+func registerFocusedSpec(pg **planGroups, location string) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).focusedCount++
+	(*pg).focusedNames = append((*pg).focusedNames, location)
+}
+
+// registerFocusExcludedMark buffers one spec's identity into *pg.focusExcluded (issue #273):
+// exactly registerSkipMark/registerPendingMark's lazy-allocation shape, reused here for a spec (or
+// skip/pending mark, or ItParallel spec) an active focus dropped, so it can still be reported —
+// Filtered, not silently gone. scopeIDs is scopes' scope-record identity chain (issue #275), the
+// same deferred-resolution convention registerSkipMark/registerPendingMark already use: nil when
+// the caller (the arena/registry build path) already resolved scopes to their final disambiguated
+// segments; non-nil when the caller (the bytecode-compiler build path) cannot resolve them until
+// every sibling of the enclosing scopes is known (see resolveGroupReportPaths,
+// bytecodeCompiler.finalizeReportPaths) — at applyFocusFilter time, before finalizeReportPaths
+// runs, scopes itself cannot be resolved yet, so the compiler passes nil there and relies entirely
+// on scopeIDs.
+func registerFocusExcludedMark(pg **planGroups, name string, scopes []string, scopeIDs []int) {
+	if *pg == nil {
+		*pg = &planGroups{}
+	}
+	(*pg).focusExcluded = append((*pg).focusExcluded, specMark{
+		name:     name,
+		path:     append([]string(nil), scopes...),
+		scopeIDs: append([]int(nil), scopeIDs...),
+	})
+}
+
+// reportFilteredMarks emits SpecStarted immediately followed by SpecFinished{Filtered: true} for
+// every mark — mirroring reportMarks (Skipped/Pending) exactly, but for a spec an active focus
+// excluded (issue #273): it never ran, and is reported as excluded-by-selection (Filtered), the
+// same status a `go test -run` pattern already produces for a discarded spec, not as
+// Skipped/Pending, since those describe a deliberate compile-time mark, not a focus doing the
+// dropping.
+func reportFilteredMarks(rep report.EventReporter, marks []specMark) {
+	if rep == nil {
+		return
+	}
+	for _, m := range marks {
+		path := append(append([]string(nil), m.path...), m.name)
+		started := report.SpecStartEvent{Name: m.name, Path: path, Time: time.Now()}
+		rep.SpecStarted(started)
+		rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Filtered: true})
+	}
 }
 
 // parallelRange is one ItParallel group (issue #245): a maximal run of consecutive ItParallel specs,
@@ -120,23 +188,38 @@ func registerParallelGroup(pg **planGroups, startIdx, endIdx int) {
 type specMark struct {
 	name string
 	path []string // enclosing scopes, own name not included — matches ExecutionPlan.PathScopes' convention
+	// scopeIDs is path's scope-record identity chain (issue #275), used only by the bytecode-compiler
+	// build path to resolve path's disambiguated segments once every sibling of its enclosing scopes
+	// is known (see resolveGroupReportPaths, bytecodeCompiler.finalizeReportPaths). The arena/registry
+	// build path resolves path immediately instead (see buildExecutionPlanFromArenaRec) and leaves
+	// this nil.
+	scopeIDs []int
 }
 
 // registerSkipMark buffers one compile-time SkipIt registration into *pg (issue #245), allocating
-// *pg on first use — the same lazy-allocation rule registerHookGroup already uses (H10).
-func registerSkipMark(pg **planGroups, name string, scopes []string) {
+// *pg on first use — the same lazy-allocation rule registerHookGroup already uses (H10). scopeIDs is
+// scopes' scope-record identity chain (issue #275); nil when the caller already resolved scopes.
+func registerSkipMark(pg **planGroups, name string, scopes []string, scopeIDs []int) {
 	if *pg == nil {
 		*pg = &planGroups{}
 	}
-	(*pg).skipped = append((*pg).skipped, specMark{name: name, path: append([]string(nil), scopes...)})
+	(*pg).skipped = append((*pg).skipped, specMark{
+		name:     name,
+		path:     append([]string(nil), scopes...),
+		scopeIDs: append([]int(nil), scopeIDs...),
+	})
 }
 
 // registerPendingMark is registerSkipMark for PendingIt.
-func registerPendingMark(pg **planGroups, name string, scopes []string) {
+func registerPendingMark(pg **planGroups, name string, scopes []string, scopeIDs []int) {
 	if *pg == nil {
 		*pg = &planGroups{}
 	}
-	(*pg).pending = append((*pg).pending, specMark{name: name, path: append([]string(nil), scopes...)})
+	(*pg).pending = append((*pg).pending, specMark{
+		name:     name,
+		path:     append([]string(nil), scopes...),
+		scopeIDs: append([]int(nil), scopeIDs...),
+	})
 }
 
 // reportMarks emits SpecStarted immediately followed by SpecFinished{Skipped: true} (or
@@ -164,8 +247,19 @@ func reportMarks(rep report.EventReporter, marks []specMark, pending bool) {
 //
 // Name is the group's own declared name, kept separately from Path because the Analyze/registry
 // path does not record an empty name in Path; validateHookGroups needs it to reject one.
+//
+// ReportPath is Path's disambiguated counterpart (issue #275, docs/DSL.md): the segments actually
+// emitted in this group's synthetic [BeforeAll]/[AfterAll] case Path (see reportHookCase) and in
+// groupDisplayName's diagnostic message. Path itself always stays exactly as declared —
+// validateHookGroups needs the literal breadcrumb to check Go subtest-name collisions, which this
+// feature must never change. ScopeIDs is Path's scope-record identity chain, used only by the
+// bytecode-compiler build path to compute ReportPath once every sibling of this group's parent scope
+// is known (see resolveGroupReportPaths); the arena/registry build path resolves ReportPath
+// immediately instead and leaves ScopeIDs nil.
 type hookGroup struct {
 	Path       []string
+	ReportPath []string
+	ScopeIDs   []int
 	Name       string
 	BeforeAll  []func(*Context)
 	AfterAll   []func(*Context)
@@ -177,12 +271,13 @@ type hookGroup struct {
 // allocated (H10). Both compile paths (bytecodeCompiler.closeGroupHooksAtTop and
 // buildExecutionPlanFromArenaRec) call this at the exact point they close a Describe/When/root
 // scope, mirroring how BeforeEach/AfterEach are attributed but never flattened onto child specs
-// (H1).
+// (H1). reportPath is the already-resolved ReportPath (arena/registry path), or nil when scopeIDs
+// carries the identity chain to resolve it from later (bytecode-compiler path) — see hookGroup.
 //
 // startIdx > endIdx means the scope's subtree contributed zero specs to the plan — H3's "a group
 // with zero runnable specs is never entered": nothing is registered, so the hooks are silently
 // discarded along with the scope itself.
-func registerHookGroup(pg **planGroups, path []string, name string, before, after []func(*Context), startIdx, endIdx int) {
+func registerHookGroup(pg **planGroups, path []string, name string, reportPath []string, scopeIDs []int, before, after []func(*Context), startIdx, endIdx int) {
 	if pg == nil || startIdx < 0 || startIdx > endIdx {
 		return
 	}
@@ -193,13 +288,43 @@ func registerHookGroup(pg **planGroups, path []string, name string, before, afte
 		*pg = &planGroups{}
 	}
 	(*pg).groups = append((*pg).groups, hookGroup{
-		Path:      append([]string(nil), path...),
-		Name:      name,
-		BeforeAll: before,
-		AfterAll:  after,
-		Start:     startIdx,
-		End:       endIdx,
+		Path:       append([]string(nil), path...),
+		ReportPath: append([]string(nil), reportPath...),
+		ScopeIDs:   append([]int(nil), scopeIDs...),
+		Name:       name,
+		BeforeAll:  before,
+		AfterAll:   after,
+		Start:      startIdx,
+		End:        endIdx,
 	})
+}
+
+// resolveGroupReportPaths fills in pg's deferred report-Path fields (ReportPath on every hookGroup,
+// path on every skipped/pending/focusExcluded specMark) from their captured ScopeIDs/scopeIDs, once
+// every sibling group's disambiguation label is known (issue #275) — see
+// bytecodeCompiler.finalizeReportPaths, the only caller: the arena/registry build path resolves
+// these directly while it walks (see buildExecutionPlanFromArenaRec) and never populates
+// ScopeIDs/scopeIDs, so it never needs this. focusExcluded needs this exactly like skipped/pending:
+// a plain It an active focus dropped is registered mid-applyFocusFilter, before finalizeReportPaths
+// has resolved any label, so its path is only ever fillable here; a SkipIt/PendingIt mark an active
+// focus later moved into focusExcluded already carries the scopeIDs it captured at registration
+// (EmitSkip/EmitPending), unaffected by that move.
+func resolveGroupReportPaths(pg *planGroups, labels []string) {
+	if pg == nil {
+		return
+	}
+	for i := range pg.groups {
+		pg.groups[i].ReportPath = resolveScopeIDs(pg.groups[i].ScopeIDs, labels)
+	}
+	for i := range pg.skipped {
+		pg.skipped[i].path = resolveScopeIDs(pg.skipped[i].scopeIDs, labels)
+	}
+	for i := range pg.pending {
+		pg.pending[i].path = resolveScopeIDs(pg.pending[i].scopeIDs, labels)
+	}
+	for i := range pg.focusExcluded {
+		pg.focusExcluded[i].path = resolveScopeIDs(pg.focusExcluded[i].scopeIDs, labels)
+	}
 }
 
 // remapHookGroups rebuilds pg's Start/End spec-index ranges after bytecodeCompiler.applyFocusFilter
@@ -253,7 +378,8 @@ func remapHookGroups(pg *planGroups, oldToNew []int) *planGroups {
 		keptParallel = append(keptParallel, parallelRange{Start: newStart, End: newEnd})
 	}
 	pg.parallel = keptParallel
-	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 && len(pg.parallel) == 0 {
+	if len(pg.groups) == 0 && len(pg.skipped) == 0 && len(pg.pending) == 0 && len(pg.parallel) == 0 &&
+		pg.focusedCount == 0 && len(pg.focusExcluded) == 0 {
 		return nil
 	}
 	return pg
@@ -530,6 +656,7 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 	k := 0
 	for i := lo; i <= hi; {
 		if r.failFastStopped {
+			r.reportRangeUnstarted(i, hi)
 			return
 		}
 		if k < len(children) && r.pg.groups[children[k]].Start == i {
@@ -556,6 +683,24 @@ func (r *groupRun) runRange(t *testing.T, prefix string, lo, hi int, children []
 			r.stopIfStopped(t)
 		}
 		i++
+	}
+}
+
+// reportRangeUnstarted reports every plan index in [lo,hi] this shard owns (r.sel, RunShard, issue
+// #251) as Unstarted (issue #274): r.failFastStopped means none of them will ever run. It does not
+// need to distinguish a hook group's own range, an ItParallel batch, or a plain spec: every plan
+// index in this window is a real spec regardless of which of those three shapes contains it (a
+// BeforeAll/AfterAll hook occupies no plan index of its own — see hookGroup's doc comment), so a
+// flat scan over the window reports exactly the identities runRange itself would have visited, in
+// the same order.
+func (r *groupRun) reportRangeUnstarted(lo, hi int) {
+	if r.rep == nil {
+		return
+	}
+	for i := lo; i <= hi; i++ {
+		if r.sel.included(i) {
+			reportSpecUnstarted(r.rep, r.plan, i)
+		}
 	}
 }
 
@@ -603,7 +748,7 @@ func (r *groupRun) runGroup(t *testing.T, prefix string, g int) {
 		// Nothing but a cleanup can fail gt after its function returned, and only the group's hooks
 		// hold gt: a cleanup a BeforeAll or AfterAll registered failed. testing cannot say which hook
 		// registered it, so it is reported as the group's teardown, its [AfterAll] case (H6).
-		reportHookCase(r.rep, group.Path, hookKindAfterAll,
+		reportHookCase(r.rep, group.ReportPath, hookKindAfterAll,
 			fmt.Sprintf("go-specs: a Cleanup registered by a BeforeAll or AfterAll failed for group %q", groupDisplayName(r.pg, g)), "")
 		// Same H9 rule as an ordinary AfterAll failure (issue #251): a hook-registered cleanup
 		// failing is still reported as this group's [AfterAll] case, so it counts as one too.
@@ -659,7 +804,7 @@ func (r *groupRun) runBeforeAlls(gt *testing.T, hc *groupHookContext, g int) (ok
 		switch {
 		case failed || (gt != nil && gt.Failed()) || (!returned && (gt == nil || !gt.Skipped())):
 			ok = false
-			reportHookCase(r.rep, group.Path, hookKindBeforeAll, message, output)
+			reportHookCase(r.rep, group.ReportPath, hookKindBeforeAll, message, output)
 			if gt != nil {
 				gt.Errorf("go-specs: BeforeAll failed for group %q; its specs are reported skipped", groupDisplayName(r.pg, g))
 			}
@@ -724,7 +869,7 @@ func (r *groupRun) reportAfterAll(gt *testing.T, g int, acc *afterAllResult) {
 	if !acc.failed {
 		return
 	}
-	reportHookCase(r.rep, r.pg.groups[g].Path, hookKindAfterAll, acc.message, acc.output)
+	reportHookCase(r.rep, r.pg.groups[g].ReportPath, hookKindAfterAll, acc.message, acc.output)
 	if gt != nil {
 		gt.Errorf("go-specs: AfterAll failed for group %q", groupDisplayName(r.pg, g))
 	}
@@ -873,7 +1018,11 @@ func (r *groupRun) runParallelGroup(t *testing.T, prefix string, pi int) {
 		// runRange's plain-spec case, rather than running the rest of the range regardless.
 		for i := rng.Start; i <= rng.End; i++ {
 			r.runSpec(t, prefix, i)
-			if r.stopped.Load() || r.failFastStopped {
+			if r.failFastStopped {
+				r.reportRangeUnstarted(i+1, rng.End)
+				return
+			}
+			if r.stopped.Load() {
 				return
 			}
 		}
@@ -984,6 +1133,12 @@ func (r *groupRun) runParallelSpec(t *testing.T, prefix string, i int) parallelS
 	})
 	failed := ctx.hasFailed() || subTFailed
 	skipped := subTSkipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272). This
+	// is the one ItParallel model that runs against a real *testing.T subtest at all (see
+	// spec_body_parallel.go); Builder.ItParallel's parallelBackend already records its own Message.
+	message = ctx.assertionMessage(message, failed)
 	duration := time.Since(startTime)
 	if parked {
 		// Leaked deliberately, same rule as releaseContext/failUnsupportedSpecBodyParallel: the
@@ -1036,7 +1191,13 @@ func (r *groupRun) emitParallelOutcome(i int, o parallelSpecOutcome) {
 // message/output empty here (recover() sees nothing to recover); the caller reads the failure from
 // ctx.hasFailed() or the group subtest instead.
 func runGroupHookOnce(ctx *Context, fn func(*Context)) (message, output string) {
-	defer func() { message, output = recoverSpecFailure(ctx, recover(), "panic in group hook") }()
+	defer func() {
+		message, output = recoverSpecFailure(ctx, recover(), "panic in group hook")
+		// ctx.Go tasks a hook started finish before the hook is considered done (#318).
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
+		}
+	}()
 	fn(ctx)
 	return
 }
@@ -1205,7 +1366,7 @@ func groupDisplayName(pg *planGroups, g int) string {
 	if pg == nil || g < 0 || g >= len(pg.groups) {
 		return ""
 	}
-	return strings.Join(pg.groups[g].Path, "/")
+	return strings.Join(pg.groups[g].ReportPath, "/")
 }
 
 const (

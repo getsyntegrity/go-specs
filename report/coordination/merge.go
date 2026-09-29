@@ -29,7 +29,12 @@ func mergeReports(envelopes []ShardEnvelope) report.NormalizedReport {
 	merged := report.NormalizedReport{SchemaVersion: report.SchemaVersion}
 	for _, env := range sorted {
 		rep := env.Report
-		merged.Suites = append(merged.Suites, rep.Suites...)
+		// Stamp each suite with the shard's package so identical suite/spec names from different
+		// packages stay distinguishable (#308). rep.Suites is copied by value, never mutated.
+		for _, s := range rep.Suites {
+			s.Package = env.PackagePath
+			merged.Suites = append(merged.Suites, s)
+		}
 		merged.Execution = sumTotals(merged.Execution, rep.Execution)
 		merged.Duration += rep.Duration
 	}
@@ -37,15 +42,17 @@ func mergeReports(envelopes []ShardEnvelope) report.NormalizedReport {
 }
 
 // sumTotals adds two Totals field by field. Total is always the sum of the other six fields on
-// each side, so summing every field independently keeps that invariant on the result.
+// each side (Unstarted excluded, per Totals.add's doc), so summing every field independently
+// keeps that invariant on the result.
 func sumTotals(a, b report.Totals) report.Totals {
 	return report.Totals{
-		Total:    a.Total + b.Total,
-		Passed:   a.Passed + b.Passed,
-		Failed:   a.Failed + b.Failed,
-		Error:    a.Error + b.Error,
-		Skipped:  a.Skipped + b.Skipped,
-		Filtered: a.Filtered + b.Filtered,
-		Pending:  a.Pending + b.Pending,
+		Total:     a.Total + b.Total,
+		Passed:    a.Passed + b.Passed,
+		Failed:    a.Failed + b.Failed,
+		Error:     a.Error + b.Error,
+		Skipped:   a.Skipped + b.Skipped,
+		Filtered:  a.Filtered + b.Filtered,
+		Pending:   a.Pending + b.Pending,
+		Unstarted: a.Unstarted + b.Unstarted,
 	}
 }

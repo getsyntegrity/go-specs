@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2",
+  "schemaVersion": "3",
   "execution": {
     "total": 6,
     "passed": 2,
@@ -8,6 +8,7 @@
     "skipped": 1,
     "filtered": 1,
     "pending": 0,
+    "unstarted": 0,
     "durationMs": 19
   },
   "suites": [
@@ -21,7 +22,8 @@
         "error": 1,
         "skipped": 1,
         "filtered": 0,
-        "pending": 0
+        "pending": 0,
+        "unstarted": 0
       },
       "cases": [
         {
@@ -75,7 +77,8 @@
         "error": 0,
         "skipped": 0,
         "filtered": 1,
-        "pending": 0
+        "pending": 0,
+        "unstarted": 0
       },
       "cases": [
         {

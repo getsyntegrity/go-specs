@@ -59,6 +59,10 @@ const expectationReusedMessage = "go-specs: assertion handle reused. " +
 type Fixture func(*Context)
 
 // Context is the execution context passed to It and hooks.
+//
+// A Context belongs to the spec that is running and is reused by later specs. A ctx used by a
+// goroutine launched directly with a `go` statement must not outlive the spec; go-specs does not
+// protect that pattern. To assert concurrently, start the work with ctx.Go, which binds it to the spec.
 type Context struct {
 	backend testBackend
 	T       *testing.T
@@ -86,6 +90,41 @@ type Context struct {
 	// goroutine while the offending body is parked, so a plain bool needs no synchronisation; the
 	// parked body never reads it. See spec_body_parallel.go for the full rationale.
 	poisoned bool
+
+	// isoRun, isoProgram, isoMessage, isoOutput, isoStarted, isoDone and isoSub back
+	// runSpecProgramIsolated's cached subtest closure (execution_plan.go, #244).
+	//
+	// isoRun is built once, the first time this *Context is used on the sequential *testing.T
+	// isolation path, and reused for every later spec — including specs from a completely different
+	// suite — that runs against this same pooled Context. It is safe to reuse across suites because
+	// it closes only over the Context pointer itself, never over a spec's program or names: those
+	// live in the fields below and are set fresh, immediately before every t.Run call, by
+	// runSpecProgramIsolated. Nothing else reads or writes these fields, and Reset intentionally
+	// leaves isoRun alone — clearing it here would throw away the very allocation this exists to
+	// avoid repeating. isoProgram and isoSub, by contrast, are cleared by runSpecProgramIsolated
+	// itself as soon as the subtest has finished, so a Context idle in contextPool does not keep the
+	// last spec's program or its finished *testing.T alive (#304); only a body parked on the
+	// unsupported ctx.T.Parallel() keeps them, together with the poisoned Context it still holds.
+	//
+	// Before this cache, every spec on this path paid five allocations testing.T.Run itself does not
+	// charge: one each for the message/output pair (named returns captured by the old per-spec
+	// closure), one for that closure's own funcval, one for spec_body_parallel.go's bookkeeping
+	// struct, and one for its wrapping closure. Moving that state onto the Context — which is already
+	// pooled and, on the sequential path, reused spec to spec via contextPool — lets the same closure
+	// value serve every subsequent spec, so the cost is paid once per pooled Context rather than once
+	// per spec.
+	isoRun                func(*testing.T)
+	isoProgram            []Instruction
+	isoMessage, isoOutput string
+	isoStarted, isoDone   atomic.Bool
+	isoSub                *testing.T
+
+	// gs is the ctx.Go bookkeeping (context_go.go). nil until the first ctx.Go on this Context, then
+	// kept across Reset like isoRun so a pooled Context pays the allocation once; Reset clears its
+	// contents. A task's own Context shares its spec's gs.
+	gs *goState
+	// goTask is non-nil only on a task Context created by ctx.Go, and says when its task ended.
+	goTask *goTaskInfo
 }
 
 // poison marks c as unsafe to reset or return to contextPool. It is deliberately one-way: Reset

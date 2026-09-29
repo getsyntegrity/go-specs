@@ -2,6 +2,7 @@
 package specs
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -68,6 +69,18 @@ type planScratch struct {
 	afterFlat  []func(*Context)
 	program    []Instruction
 	path       []string
+	// reportPath mirrors path (same push/pop timing, see buildExecutionPlanFromArenaRec) but holds
+	// each node's disambiguated report-Path label from labels instead of its literal Name (issue
+	// #275, docs/DSL.md) — used everywhere path currently feeds a report Path (appendSpecPath,
+	// registerSkipMark/registerPendingMark, registerHookGroup's reportPath). path itself keeps
+	// feeding FullNames/Go subtest identity, untouched. Unlike the bytecode-compiler build path, the
+	// arena is already a complete, static tree by the time this walk starts (see
+	// buildExecutionPlanFromArenaGroups), so labels can be computed once, upfront, instead of
+	// deferred to a finalize pass.
+	reportPath []string
+	// labels is this call's computeArenaGroupLabels result (issue #275): nodeID's report-Path label
+	// for every node in rootID's subtree, indexed by node id. Cleared before the call returns.
+	labels []string
 	// hooks and groups carry the arena path's once-per-group hooks in and its compiled planGroups
 	// out for the duration of one buildExecutionPlanFromArenaGroups call (issue #207). They live on
 	// the pooled scratch rather than as extra recursion parameters or plan fields, so a suite
@@ -90,6 +103,7 @@ var planScratchPool = sync.Pool{
 			afterFlat:  make([]func(*Context), 0, 32),
 			program:    make([]Instruction, 0, 32),
 			path:       make([]string, 0, 8),
+			reportPath: make([]string, 0, 8),
 		}
 	},
 }
@@ -121,6 +135,8 @@ func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *Execu
 		return nil
 	}
 	scratch.path = scratch.path[:0]
+	scratch.reportPath = scratch.reportPath[:0]
+	scratch.labels = computeArenaGroupLabels(arena, rootID)
 	scratch.hooks = hooks
 	scratch.groups = nil
 	scratch.hasFocus = arenaHasFocus(arena, rootID)
@@ -128,6 +144,7 @@ func buildExecutionPlanFromArenaGroups(arena *NodeArena, rootID int, plan *Execu
 	groups := scratch.groups
 	scratch.hooks, scratch.groups = nil, nil
 	scratch.hasFocus = false
+	scratch.labels = nil
 	return groups
 }
 
@@ -158,23 +175,49 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	name := node.Name
 	if name != "" && node.Type != SuiteNode {
 		scratch.path = append(scratch.path, name)
+		reportLabel := name
+		if nodeID >= 0 && nodeID < len(scratch.labels) {
+			reportLabel = scratch.labels[nodeID]
+		}
+		scratch.reportPath = append(scratch.reportPath, reportLabel)
 	}
 	// groupStart is this node's own once-per-group hooks' entry point (H2/H3): the index the next
 	// spec emitted from here on would get, i.e. the first spec of this node's own subtree, if any.
 	groupStart := len(plan.Names)
 	if node.Type == ItNode {
-		// A non-focused It/SkipIt/PendingIt is dropped entirely — no plan entry, no skip/pending
-		// mark — whenever this Describe call registered at least one FIt (issue #245,
-		// Builder.finalize's focus filter). A focused It runs exactly like a normal one below.
+		// A non-focused It/SkipIt/PendingIt never becomes a plan entry, and never registers its
+		// original Skip/Pending mark, whenever this Describe call registered at least one FIt (issue
+		// #245, Builder.finalize's focus filter) — but it is still recorded as focus-excluded (issue
+		// #273), not simply discarded. A focused It runs exactly like a normal one below.
 		focusedOut := scratch.hasFocus && node.Kind != itFocus
 		switch {
 		case focusedOut:
-			// Nothing emitted; scratch.path is still popped below like any other node.
+			// This node — a plain It, a SkipIt/PendingIt mark, or an ItParallel spec (there is no
+			// FItParallel, so every one is unfocused) — never becomes a plan entry (issue #245's
+			// filter, unchanged), but since issue #273 it is no longer dropped without a trace
+			// either: it is recorded here so CompiledSuite.runSpecs can still report it, as
+			// Filtered, exactly once.
+			// markScopes(scratch.reportPath, ...), not scratch.path: reportPath already carries every
+			// enclosing group's disambiguated label (issue #275) — scratch.path holds the literal,
+			// possibly-ambiguous declared names instead, which would silently drop the "suite/D#2"-style
+			// segment down to just "suite" (or worse, an empty prefix) whenever a duplicate sibling name
+			// is in scope. registerSkipMark/registerPendingMark right below already get this right.
+			registerFocusExcludedMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itSkip:
-			registerSkipMark(&scratch.groups, name, markScopes(scratch.path, name))
+			registerSkipMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		case node.Kind == itPending:
-			registerPendingMark(&scratch.groups, name, markScopes(scratch.path, name))
+			registerPendingMark(&scratch.groups, name, markScopes(scratch.reportPath, name), nil)
 		default: // itNormal, or itFocus (already confirmed focused above)
+			if node.Kind == itFocus {
+				// Recorded before the program is compiled below, not after, so a focused spec that
+				// panics mid-build still leaves this suite's fail-on-focus bookkeeping intact
+				// (issue #273); registerFocusedSpec only ever appends, it never reads the program.
+				location := strings.Join(scratch.path, "/")
+				if node.File != "" {
+					location = fmt.Sprintf("%s (%s:%d)", location, node.File, node.Line)
+				}
+				registerFocusedSpec(&scratch.groups, location)
+			}
 			scratch.beforeFlat = scratch.beforeFlat[:0]
 			scratch.afterFlat = scratch.afterFlat[:0]
 			ancestorIDs := collectAncestorIDs(arena, node.Parent)
@@ -204,7 +247,7 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 			plan.ProgramLen = append(plan.ProgramLen, len(scratch.program))
 			plan.Names = append(plan.Names, name)
 			plan.FullNames = append(plan.FullNames, strings.Join(scratch.path, "/"))
-			appendSpecPath(plan, markScopes(scratch.path, name))
+			appendSpecPath(plan, markScopes(scratch.reportPath, name))
 		}
 	}
 	// openParallel tracks a currently-open run of consecutive ItParallel siblings (issue #245's
@@ -244,16 +287,22 @@ func buildExecutionPlanFromArenaRec(arena *NodeArena, nodeID int, plan *Executio
 	if node.Type != ItNode && node.Type != SuiteNode {
 		if before, after := scratch.hooks.of(nodeID); len(before) > 0 || len(after) > 0 {
 			path := scratch.path
+			reportPath := scratch.reportPath
 			if name == "" {
 				// The registry path never pushes an empty name; record it so the rejection names the
-				// group as declared (validateHookGroups).
+				// group as declared (validateHookGroups). validateHookGroups always rejects an
+				// empty-named hook group before ReportPath is ever reported, so it need not carry the
+				// same synthetic "" element as Path.
 				path = append(slices.Clip(path), "")
 			}
-			registerHookGroup(&scratch.groups, path, name, before, after, groupStart, len(plan.Names)-1)
+			registerHookGroup(&scratch.groups, path, name, reportPath, nil, before, after, groupStart, len(plan.Names)-1)
 		}
 	}
 	if name != "" && node.Type != SuiteNode && len(scratch.path) > 0 {
 		scratch.path = scratch.path[:len(scratch.path)-1]
+	}
+	if name != "" && node.Type != SuiteNode && len(scratch.reportPath) > 0 {
+		scratch.reportPath = scratch.reportPath[:len(scratch.reportPath)-1]
 	}
 }
 
@@ -401,6 +450,12 @@ func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 	if s == nil || s.Plan == nil || tb == nil {
 		return
 	}
+	// Checked on every call — Run's and every RunShard shard's alike (issue #273's "ALWAYS": each
+	// shard is ordinarily its own CI job, so each one must fail on its own when focus is active,
+	// not only the shard that happens to draw the focused spec). s.groups is the same object across
+	// every shard call (RunShard only varies sel), so this reads one shared count/name list, not a
+	// per-shard copy.
+	s.reportFocusPolicy(tb)
 	if len(s.Plan.ProgramStart) == 0 && !s.hasMarks() {
 		return
 	}
@@ -433,14 +488,15 @@ func (s *CompiledSuite) run(tb testing.TB, sel *shardSelection) {
 	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	s.runSpecs(backend, counter, sel)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:          name,
-		Time:          time.Now(),
-		Duration:      time.Since(suiteStart),
-		TotalSpecs:    counter.total,
-		FailedSpecs:   counter.failed,
-		FilteredSpecs: counter.filtered,
-		SkippedSpecs:  counter.skipped,
-		PendingSpecs:  counter.pending,
+		Name:           name,
+		Time:           time.Now(),
+		Duration:       time.Since(suiteStart),
+		TotalSpecs:     counter.total,
+		FailedSpecs:    counter.failed,
+		FilteredSpecs:  counter.filtered,
+		SkippedSpecs:   counter.skipped,
+		PendingSpecs:   counter.pending,
+		UnstartedSpecs: counter.unstarted,
 	})
 }
 
@@ -551,11 +607,26 @@ func (s *CompiledSuite) buildShardSelection(shardIndex, shardCount int) *shardSe
 	return sel
 }
 
-// hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt (issue #245):
-// such a suite may have zero entries in Plan.ProgramStart (e.g. a suite made only of SkipIt calls)
-// yet still needs Run to report those marks instead of returning early as an empty suite.
+// hasMarks reports whether s registered at least one compile-time SkipIt/PendingIt, or has at least
+// one focus-excluded spec to report (issue #273): such a suite may have zero entries in
+// Plan.ProgramStart (e.g. a suite made only of SkipIt calls) yet still needs Run to report those
+// marks instead of returning early as an empty suite.
 func (s *CompiledSuite) hasMarks() bool {
-	return s.groups != nil && (len(s.groups.skipped) > 0 || len(s.groups.pending) > 0)
+	return s.groups != nil && (len(s.groups.skipped) > 0 || len(s.groups.pending) > 0 || len(s.groups.focusExcluded) > 0)
+}
+
+// reportFocusPolicy fails tb via Errorf when s registered at least one focused (FIt) spec and
+// GO_SPECS_ALLOW_FOCUS=1 does not opt out (issue #273): a forgotten debugging focus must not let a
+// partial suite report green. Errorf, not Fatalf/FailNow: the focused specs still run and report
+// their own results below (or, on a real *testing.T, in their own subtest) — this only marks the
+// enclosing test failed, it never stops or skips the run. See runner.go's reportFocusPolicy for the
+// Builder/Runner engine's mirror of this exact same policy.
+func (s *CompiledSuite) reportFocusPolicy(tb testing.TB) {
+	if s.groups == nil || s.groups.focusedCount == 0 || focusAllowed() {
+		return
+	}
+	tb.Helper()
+	tb.Errorf("%s", focusPolicyMessage(s.groups.focusedCount, len(s.groups.focusExcluded), s.groups.focusedNames))
 }
 
 // suiteRunObserver, when set, sees every CompiledSuite right before it runs. It exists only so this
@@ -578,9 +649,20 @@ type specCounter struct {
 	// #245); SuiteEndEvent.PendingSpecs existed since #208 but this engine never populated it until
 	// this field did.
 	pending int
+	// unstarted counts a spec reported Unstarted: true — a spec FailFast prevented from ever being
+	// reached (issue #274). Counted separately, never folded into total: SuiteEndEvent.TotalSpecs
+	// keeps its pre-existing meaning of "specs that entered execution, plus declared
+	// SkipIt/PendingIt that were actually processed" (report.Totals.add's doc comment states the
+	// same rule on the report side).
+	unstarted int
 }
 
 func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
+	if e.Unstarted {
+		c.unstarted++
+		c.EventReporter.SpecFinished(e)
+		return
+	}
 	c.total++
 	if e.Failed {
 		c.failed++
@@ -610,6 +692,7 @@ func (s *CompiledSuite) runSpecs(backend testBackend, rep report.EventReporter, 
 	if s.groups != nil && sel.reportsMarks() {
 		reportMarks(rep, s.groups.skipped, false)
 		reportMarks(rep, s.groups.pending, true)
+		reportFilteredMarks(rep, s.groups.focusExcluded)
 	}
 	if s.groups == nil || (len(s.groups.groups) == 0 && len(s.groups.parallel) == 0) {
 		// failFast is read directly off s.groups rather than through a helper: s.groups may be
@@ -644,9 +727,40 @@ func runPlanSpecsInOrder(backend testBackend, rep report.EventReporter, plan *Ex
 		}
 		failed := runExecution(backend, rep, plan, i)
 		if failFast && failed {
+			reportRemainingUnstarted(rep, plan, i+1, sel)
 			return
 		}
 	}
+}
+
+// reportRemainingUnstarted reports plan[from:] as Unstarted (issue #274): a FailFast stop means
+// none of these specs will ever run. sel restricts this to the specs this shard actually owns
+// (RunShard, issue #251): a shard reports only the unstarted specs of its own units, never a
+// sibling shard's, which sel.included already excludes exactly as it does for the normal run.
+func reportRemainingUnstarted(rep report.EventReporter, plan *ExecutionPlan, from int, sel *shardSelection) {
+	if rep == nil {
+		return
+	}
+	for i := from; i < len(plan.ProgramStart); i++ {
+		if sel.included(i) {
+			reportSpecUnstarted(rep, plan, i)
+		}
+	}
+}
+
+// reportSpecUnstarted reports plan spec i as Unstarted (issue #274): a single SpecStarted +
+// SpecFinished{Unstarted: true} pair, with no body ever run — the same identity-only shape
+// reportSpecStarted/reportSpecFinished already use for a real spec, built directly here since
+// there is no specResult for a spec whose body never ran at all.
+func reportSpecUnstarted(rep report.EventReporter, plan *ExecutionPlan, i int) {
+	if rep == nil {
+		return
+	}
+	name := specEventName(plan, i)
+	path := specEventPath(plan, i)
+	started := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	rep.SpecStarted(started)
+	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: started, Unstarted: true})
 }
 
 // runExecution runs plan spec i and reports it, returning whether it failed — false for a spec
@@ -710,24 +824,36 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	t, ok := real.tb.(*testing.T)
 	if !ok {
 		ctx.Reset(backend)
 		message, output = runProgram(program, ctx)
-		return message, output, true, ctx.hasFailed(), false
+		failed = ctx.hasFailed()
+		return ctx.assertionMessage(message, failed), output, true, failed, false
 	}
 	return runSpecProgramIsolated(t, ctx, program, subtestName)
 }
 
-// runSpecProgramIsolated creates the real subtest and runs program inside it. Split out from
-// runSpecProgram because the closure below captures named returns by reference: if it lived directly
-// in runSpecProgram, Go's escape analysis would heap-allocate that function's message/output for
-// every call — including the non-*testing.T fast paths above that never reach this line — since
-// escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
-// the capture inside its own function scopes that heap allocation to the isolation path only (see the
-// identical split for runner.go's runSpecRecovered/runSpecIsolated).
+// runSpecProgramIsolated creates the real subtest and runs program inside it.
+//
+// It deliberately does not go through spec_body_parallel.go's runSubtestGuardingParallel, unlike
+// runner.go's runSpecIsolated and group_hooks.go's two call sites. That helper is written to be
+// reusable, so it builds its bookkeeping struct and wrapping closure fresh on every call — exactly
+// once per spec, since a fresh closure is the only way to hand it a fresh body. On this path,
+// though, the same *Context is reused spec to spec (contextPool; see acquireContext), and program is
+// the only thing that actually changes between calls, so this function inlines the same guarding
+// logic against fields on ctx instead (isoStarted, isoDone, isoSub, isoProgram, isoMessage,
+// isoOutput — see their doc comment on Context) and builds the subtest closure itself, ctx.isoRun,
+// only once per Context rather than once per spec (#244). Before this cache, every spec here paid
+// five allocations testing.T.Run itself does not charge: the message/output pair escaping as
+// closure-captured named returns, that closure's own funcval, runSubtestGuardingParallel's
+// bookkeeping struct, and its wrapping closure. ctx.isoRun closes only over ctx, so once it exists it
+// is valid for every later spec that lands on this same pooled Context, whichever suite it belongs
+// to — runSpecProgramIsolated always repopulates isoProgram and resets isoStarted/isoDone
+// immediately before every t.Run call, so nothing from a previous spec leaks into the next one.
 //
 // ctx stays bound to the subtest's backend until t.Run has returned, and the backend goes back to its
 // pool only then, not in a defer inside the closure. testing runs the subtest's Cleanup functions
@@ -737,23 +863,57 @@ func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, su
 // is read back from ctx.backend, which ctx.Reset set to it, rather than from a variable the closure
 // captures, so this adds no allocation.
 func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, subtestName string) (message, output string, ran, failed, skipped bool) {
-	var parked bool
-	ran, failed, skipped, parked = runSubtestGuardingParallel(t, subtestName, func(subT *testing.T) {
-		ctx.Reset(asTestBackend(subT))
-		message, output = runProgram(program, ctx)
-	})
+	if ctx.isoRun == nil {
+		ctx.isoRun = func(subT *testing.T) {
+			ctx.isoSub = subT
+			ctx.isoStarted.Store(true)
+			defer ctx.isoDone.Store(true)
+			ctx.Reset(asTestBackend(subT))
+			ctx.isoMessage, ctx.isoOutput = runProgram(ctx.isoProgram, ctx)
+		}
+	}
+	ctx.isoProgram = program
+	// runProgram may end through runtime.Goexit before assigning the cached results.
+	// A filtered subtest never runs the closure at all: t.Run reports shouldRun=false and returns
+	// without ever invoking ctx.isoRun, so ctx.Reset (inside the closure) never runs either. In either
+	// case, the next spec must not inherit a previous spec's panic text, stack trace or failure bit —
+	// resetFailure covers ctx.failure the same way the isoMessage/isoOutput/isoStarted/isoDone resets
+	// below cover their own fields, so this function's isolation holds on its own and does not depend
+	// on a caller (such as runExecution's acquireContext) having reset ctx first.
+	ctx.resetFailure()
+	ctx.isoMessage, ctx.isoOutput = "", ""
+	ctx.isoStarted.Store(false)
+	ctx.isoDone.Store(false)
+	t.Run(subtestName, ctx.isoRun)
+	ran = ctx.isoStarted.Load()
+	parked := ran && !ctx.isoDone.Load()
+	if ran && !parked {
+		failed = ctx.isoSub.Failed()
+		skipped = ctx.isoSub.Skipped()
+	}
+	message, output = ctx.isoMessage, ctx.isoOutput
 	if parked {
 		// The body called the unsupported ctx.T.Parallel(). ctx is still Reset to that subtest's
 		// backend and the parked body needs it that way, so stop the run rather than let the caller
 		// release ctx back to the pool underneath it (#172).
 		failUnsupportedSpecBodyParallel(t, ctx, subtestName)
 	}
+	// Only reached once the subtest has finished: failUnsupportedSpecBodyParallel above ends this
+	// goroutine through t.Fatalf, so a parked body keeps everything it was handed. Both values have
+	// been read by now, and leaving them set would keep this spec's program (and through it its
+	// suite's plan) and its finished *testing.T alive for as long as ctx sits in contextPool (#304).
+	// isoRun stays: reusing it is the allocation saving #244 exists for.
+	ctx.isoProgram, ctx.isoSub = nil, nil
 	failed = failed || ctx.hasFailed()
-	// skipped is folded against this final failed, not the raw subtest failed runSubtestGuardingParallel
-	// returned, so it always agrees with the Failed value this function actually reports: a body that
+	// skipped is folded against this final failed, not the raw subtest failed the guard above
+	// computed, so it always agrees with the Failed value this function actually reports: a body that
 	// fails and then calls SkipNow must be reported Failed, not Skipped (#254), whichever of the
 	// subtest or the Context recorded that failure.
 	skipped = skipped && !failed
+	// message stays "" here exactly when the body returned via runtime.Goexit (a real Fatalf/FailNow)
+	// with nothing recovered, so ctx.assertionMessage falls back to the built-in assertion text failf
+	// recorded on ctx before that Goexit — the only way this function can still report it (#272).
+	message = ctx.assertionMessage(message, failed)
 	if ran {
 		putTestBackend(ctx.backend)
 	}
@@ -889,11 +1049,20 @@ func runProgram(program []Instruction, ctx *Context) (message, output string) {
 	}
 	defer func() {
 		message, output = recoverSpecFailure(ctx, recover(), "panic")
+		// ctx.Go tasks finish before AfterEach runs (#318); a task panic ranks after the body's own
+		// panic and before an after-hook's, matching the order they happened in.
+		if m, o := ctx.settleTasks(false); message == "" {
+			message, output = m, o
+		}
 		for _, inst := range after {
 			m, o := runAfterInstructionRecovered(ctx, inst)
 			if message == "" {
 				message, output = m, o
 			}
+		}
+		// Tasks an after hook started are awaited too, and then the spec is closed to new ones.
+		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
 		}
 	}()
 	for _, inst := range program {

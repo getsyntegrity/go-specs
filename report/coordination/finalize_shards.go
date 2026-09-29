@@ -316,7 +316,14 @@ func readConfigErrorIfPresent(baseDir string, runID RunID) (*ConfigErrorRecord, 
 	}
 	var rec ConfigErrorRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
-		return nil, fmt.Errorf("go-specs report: decode %s: %w", path, err)
+		// The record's presence says a package failed its pre-test checks; only its detail is
+		// unreadable. That is still a configuration failure (exit 78), not a reporting one.
+		return nil, &ConfigError{
+			Source: path,
+			Reason: ReasonMalformedConfigError,
+			Detail: fmt.Sprintf("config-error.json cannot be decoded (%v)", err),
+			Remedy: "inspect and delete the run directory, then re-run init; the package that wrote it hit a configuration failure",
+		}
 	}
 	return &rec, nil
 }

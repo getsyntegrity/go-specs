@@ -141,8 +141,8 @@ func TestNestedDescribeWhenStillWorksAfterExplicitThreading(t *testing.T) {
 			s.Describe("Mid", func(s *Spec) {
 				s.When("Sub", func(s *Spec) {
 					s.BeforeEach(func(ctx *Context) { order = append(order, "sub-before") })
-					s.It("leaf", func(ctx *Context) { order = append(order, "leaf") })
 					s.AfterEach(func(ctx *Context) { order = append(order, "sub-after") })
+					s.It("leaf", func(ctx *Context) { order = append(order, "leaf") })
 				})
 			})
 		})

@@ -173,6 +173,80 @@ func TestProgramRunnerLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 // different engine: acquireContext used to return a release closure that escaped to the heap, and
 // the Describe engine acquires a Context once per spec, so every spec cost one allocation there
 // while every existing contract stayed green.
+// Suite sizes for the real *testing.T isolation-path contract below. Real subtests spawn a goroutine
+// each, far more expensive than the flat path above, so these stay much smaller than
+// allocContractSmallSuite/allocContractLargeSuite to keep this test fast.
+const (
+	allocContractIsoSmallSuite = 20
+	allocContractIsoLargeSuite = 200
+	// allocContractIsoRuns is smaller than allocContractRuns for the same reason.
+	allocContractIsoRuns = 20
+)
+
+// isoPerSpecAllocs builds two runnable suites via build(n) — one at allocContractIsoSmallSuite specs,
+// one at allocContractIsoLargeSuite — and returns the marginal allocations per spec between the two
+// sizes: the same (large-small)/(large-small) technique assertRunnerLoopDoesNotAllocatePerSpec uses
+// above. build(n) itself runs only once per size, outside the measured loop, exactly like the
+// flat-path contracts above build their Runner/CompiledSuite once and hand back only its Run method —
+// so what AllocsPerRun actually measures is repeated execution of an already-compiled suite, not
+// suite compilation. t is the real *testing.T this test itself received, so every subtest run opens a
+// genuine t.Run child, not the flatTB stand-in the flat-path contracts above use.
+func isoPerSpecAllocs(t *testing.T, build func(n int) func(*testing.T)) float64 {
+	t.Helper()
+	small, large := build(allocContractIsoSmallSuite), build(allocContractIsoLargeSuite)
+	var smallAllocs, largeAllocs float64
+	t.Run("measure", func(t *testing.T) {
+		smallAllocs = testing.AllocsPerRun(allocContractIsoRuns, func() { small(t) })
+		largeAllocs = testing.AllocsPerRun(allocContractIsoRuns, func() { large(t) })
+	})
+	return (largeAllocs - smallAllocs) / float64(allocContractIsoLargeSuite-allocContractIsoSmallSuite)
+}
+
+// allocContractIsoOverheadBound is how much more the compiled-suite real *testing.T isolation path
+// may allocate per spec than a bare t.Run loop before this contract fails. It is not 0: unlike the
+// flat-path contracts above, a real subtest is never allocation-free — testing.T.Run itself costs
+// tens of allocations no framework can remove, and that cost trivially scales with spec count on
+// both sides of the comparison, adding noise the flat path never has to absorb. The bound only has to
+// stay well under the ~5 extra allocations per spec this contract was written to catch (#244).
+const allocContractIsoOverheadBound = 2.0
+
+// TestSequentialIsolationPathPerSpecOverheadDoesNotGrow pins #244: on the real *testing.T path,
+// runSpecProgramIsolated (execution_plan.go) must not keep paying for a fresh subtest closure, a
+// fresh escaping message/output pair, and spec_body_parallel.go's guarding-parallel bookkeeping on
+// every spec. Before the fix each spec paid about five allocations on top of whatever testing.T.Run
+// itself costs; after it, that cost is paid once per pooled Context (see Context's iso* fields),
+// which — like the fixed setup the flat-path contracts above already exclude — washes out of the
+// marginal per-spec comparison isoPerSpecAllocs computes, rather than growing with the suite size the
+// way a fresh per-spec allocation would.
+//
+// This compares against a bare t.Run loop instead of asserting a fixed allocation count outright,
+// the same technique benchmarks/e2e_test.go's baseline row uses for wall time: the claim is about
+// what go-specs adds on top of testing.T.Run, not about eliminating testing's own cost, and an
+// absolute count would be a contract on the standard library's internals, which can change out from
+// under this project on any Go release.
+func TestSequentialIsolationPathPerSpecOverheadDoesNotGrow(t *testing.T) {
+	baselinePerSpec := isoPerSpecAllocs(t, func(n int) func(*testing.T) {
+		return func(tb *testing.T) {
+			for i := 0; i < n; i++ {
+				tb.Run("spec", func(*testing.T) {})
+			}
+		}
+	})
+	goSpecsPerSpec := isoPerSpecAllocs(t, func(n int) func(*testing.T) {
+		suite := BuildSuite(nil, "suite", func(s *Spec) {
+			for i := 0; i < n; i++ {
+				s.It("spec", func(ctx *Context) { EqualTo(ctx, 1, 1) })
+			}
+		})
+		return func(tb *testing.T) { suite.Run(tb) }
+	})
+	if diff := goSpecsPerSpec - baselinePerSpec; diff > allocContractIsoOverheadBound {
+		t.Errorf("compiled-suite real *testing.T isolation path allocates %.2f more per spec than a bare "+
+			"t.Run loop (want <= %.1f) -- go-specs' own per-spec overhead should not grow with suite size "+
+			"(#244): baseline=%.2f/spec, go-specs=%.2f/spec", diff, allocContractIsoOverheadBound, baselinePerSpec, goSpecsPerSpec)
+	}
+}
+
 func TestDescribeEngineLoopAllocatesNothingPerSpecOnTheFlatPath(t *testing.T) {
 	if raceEnabled {
 		// Unlike the runners above, this engine acquires a pooled Context once per spec, so the

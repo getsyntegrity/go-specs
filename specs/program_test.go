@@ -150,8 +150,8 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 	// Each spec runs its own before/after (#109): coalescing into one group is a compile-time
 	// optimization only, not a change in how often the hooks run.
 	want := []string{
-		"beforeOuter", "beforeInner", "it1", "afterOuter", "afterInner",
-		"beforeOuter", "beforeInner", "it2", "afterOuter", "afterInner",
+		"beforeOuter", "beforeInner", "it1", "afterInner", "afterOuter",
+		"beforeOuter", "beforeInner", "it2", "afterInner", "afterOuter",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("order len=%d, want %d", len(order), len(want))
@@ -231,6 +231,8 @@ func TestProgram_SkipWithHelper(t *testing.T) {
 }
 
 func TestProgram_FocusFiltering(t *testing.T) {
+	// About the focus filter, not the fail-on-committed-focus policy (issue #273); opt out.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })
@@ -435,6 +437,8 @@ func TestProgram_FailFastStopsExecution(t *testing.T) {
 
 // TestFocusFiltersSpecs: when any spec is focused, only focused specs are in the compiled program.
 func TestFocusFiltersSpecs(t *testing.T) {
+	// About the focus filter, not the fail-on-committed-focus policy (issue #273); opt out.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })
@@ -471,6 +475,8 @@ func TestSkipRemovesSpecs(t *testing.T) {
 
 // TestFocusAndSkipInteraction: when focus is present, only focused specs are compiled; skip still removes specs.
 func TestFocusAndSkipInteraction(t *testing.T) {
+	// About the focus filter, not the fail-on-committed-focus policy (issue #273); opt out.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })
@@ -492,6 +498,8 @@ func TestFocusAndSkipInteraction(t *testing.T) {
 
 // TestFocusWrapper: It("name", Focus(fn)) behaves like FIt.
 func TestFocusWrapper(t *testing.T) {
+	// About the focus filter, not the fail-on-committed-focus policy (issue #273); opt out.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })
@@ -596,6 +604,8 @@ func TestProgramGrouping(t *testing.T) {
 
 // TestFocusFiltering verifies that when any spec is focused, only focused specs are in the program.
 func TestFocusFiltering(t *testing.T) {
+	// About the focus filter, not the fail-on-committed-focus policy (issue #273); opt out.
+	t.Setenv(allowFocusEnvVar, "1")
 	var order []string
 	b := NewBuilder()
 	b.It("A", func(*Context) { order = append(order, "A") })

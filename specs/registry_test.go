@@ -206,9 +206,11 @@ func TestRegistryStackKeepsRootAfterNestedExits(t *testing.T) {
 	if depth != 1 {
 		t.Fatalf("expected the stack to rest at the root, got depth %d", depth)
 	}
-	// The root is still writable, which is what the invariant buys.
-	r.appendBeforeHook(func(ctx *Context) {})
-	if got := len(r.arena.BeforeHooks[0]); got != 1 {
-		t.Fatalf("expected the hook to land on the root node, got %d", got)
+	// The root is still the write target, which is what the invariant buys: it already has children
+	// here, so a per-spec hook aimed at it is rejected as late (issue #307) rather than dropped or
+	// attached to an exited node.
+	msg := recoverMessage(t, func() { r.appendBeforeHook(func(ctx *Context) {}) })
+	if !strings.Contains(msg, "BeforeEach") {
+		t.Fatalf("expected the late-hook diagnostic for the root node, got %q", msg)
 	}
 }

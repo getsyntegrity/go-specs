@@ -100,11 +100,14 @@ func TestRenderJSONPendingStatus(t *testing.T) {
 	}
 }
 
-// TestRenderJSONPendingReportIsSchemaV2 pins that a report able to carry status:"pending" says
-// so: "pending" is a new value in the existing status field, not a new field, so a v1 consumer
-// with an exhaustive status switch would misread it. The literal "2" is deliberate — comparing
-// against SchemaVersion itself would pass whatever the constant held.
-func TestRenderJSONPendingReportIsSchemaV2(t *testing.T) {
+// TestRenderJSONPendingReportIsCurrentSchema pins that a report able to carry status:"pending"
+// still declares the module's current SchemaVersion. Pending itself bumped the schema from "1" to
+// "2" (#208); the schema has since moved on again to "3" for status:"unstarted" (#274), which
+// changes the same closed vocabulary a v1/v2 consumer would switch exhaustively over — so a report
+// carrying an older addition like pending must still report today's version, not linger on "2".
+// The literal "3" is deliberate — comparing against SchemaVersion itself would pass whatever the
+// constant held.
+func TestRenderJSONPendingReportIsCurrentSchema(t *testing.T) {
 	c := NewCollector()
 	c.SuiteStarted(SuiteStartEvent{Name: "S"})
 	c.SpecFinished(SpecResultEvent{SpecStartEvent: SpecStartEvent{Name: "not implemented yet"}, Pending: true})
@@ -118,11 +121,63 @@ func TestRenderJSONPendingReportIsSchemaV2(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if doc.SchemaVersion != "2" {
-		t.Fatalf("schemaVersion = %q, want %q", doc.SchemaVersion, "2")
+	if doc.SchemaVersion != "3" {
+		t.Fatalf("schemaVersion = %q, want %q", doc.SchemaVersion, "3")
 	}
 	if len(doc.Suites) != 1 || len(doc.Suites[0].Cases) != 1 || doc.Suites[0].Cases[0].Status != "pending" {
 		t.Fatalf("got %+v, want one suite with one pending case", doc.Suites)
+	}
+}
+
+// TestRenderJSONUnstartedStatus proves a spec fail-fast prevented from running (issue #274) renders
+// status:"unstarted", is counted in the totals' unstarted field (never in total, per the maintainer
+// decision), and carries its original SkipIt/PendingIt declaration in the new "declared" field when
+// it was known to be one — omitted entirely for a plain unstarted spec.
+func TestRenderJSONUnstartedStatus(t *testing.T) {
+	r := NormalizedReport{
+		SchemaVersion: SchemaVersion,
+		Execution:     Totals{Total: 0, Unstarted: 2},
+		Suites: []Suite{{
+			Name:   "S",
+			Totals: Totals{Total: 0, Unstarted: 2},
+			Cases: []Case{
+				{Name: "never reached", Status: StatusUnstarted},
+				{Name: "never reached (declared pending)", Status: StatusUnstarted, Declared: "pending"},
+			},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, r); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+
+	var doc jsonReport
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if doc.Execution.Unstarted != 2 {
+		t.Fatalf("execution.unstarted = %d, want 2", doc.Execution.Unstarted)
+	}
+	if doc.Execution.Total != 0 {
+		t.Fatalf("execution.total = %d, want 0 (an unstarted spec never counts toward total)", doc.Execution.Total)
+	}
+	if len(doc.Suites) != 1 || len(doc.Suites[0].Cases) != 2 {
+		t.Fatalf("got %+v, want one suite with two cases", doc.Suites)
+	}
+	if got := doc.Suites[0].Cases[0].Status; got != "unstarted" {
+		t.Fatalf("case status = %q, want %q", got, "unstarted")
+	}
+	if got := doc.Suites[0].Cases[1].Declared; got != "pending" {
+		t.Fatalf("case declared = %q, want %q", got, "pending")
+	}
+	if got := doc.Suites[0].Cases[0].Declared; got != "" {
+		t.Fatalf("plain unstarted case declared = %q, want empty", got)
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"declared": ""`)) {
+		t.Fatalf("expected omitempty to drop an empty \"declared\" key, got:\n%s", buf.String())
+	}
+	if doc.Suites[0].Totals.Unstarted != 2 {
+		t.Fatalf("suite totals.unstarted = %d, want 2", doc.Suites[0].Totals.Unstarted)
 	}
 }
 

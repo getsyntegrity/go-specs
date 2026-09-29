@@ -20,6 +20,14 @@ updates:
           - "minor"
           - "patch"
 
+  # SHA-pin policy: every `uses:` in .github/workflows and .github/actions is pinned to a 40-char
+  # commit SHA with a trailing `# vX.Y.Z` comment (github.com/getsyntegrity/go-specs -- resolved
+  # with `git ls-remote https://github.com/<owner>/<repo> refs/tags/vN refs/tags/vN^{}`, using the
+  # peeled `^{}` SHA for an annotated tag), never a bare `@vN` -- a re-pointed mutable tag would
+  # run inside jobs that mint the release GitHub App's installation token or read code-scanning
+  # secrets. Dependabot still understands a SHA-pinned action (it resolves the new tag's SHA
+  # itself) and opens a PR that bumps both the SHA and its version comment together, so the pin
+  # never goes stale even though it is never a moving tag.
   - package-ecosystem: "github-actions"
     directory: "/"
     target-branch: "develop"

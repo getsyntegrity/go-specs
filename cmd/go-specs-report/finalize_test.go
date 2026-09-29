@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -171,5 +172,82 @@ func TestFinalizeConfigErrorRecordExits78(t *testing.T) {
 	}, nil)
 	if code != coordination.ExitConfig {
 		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
+	}
+}
+
+func TestFinalizeCleanupWithoutTargetsExits78AndKeepsShards(t *testing.T) {
+	base := secureTempDir(t)
+	own := initRun(t, base, "run-1", validToken)
+	writeShard(t, base, own, "run-1", validToken, producerA, passingReport())
+	manifest := writeManifest(t, t.TempDir(), producerA)
+
+	_, stderr, code := runCLI(t, []string{
+		"finalize", "-run-id", "run-1", "-token", string(validToken), "-report-dir", base, "-producers", manifest, "-cleanup",
+	}, nil)
+	if code != coordination.ExitConfig {
+		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(base, "run-1")); err != nil {
+		t.Fatalf("the run directory did not survive a rejected -cleanup: %v", err)
+	}
+}
+
+func TestFinalizeMalformedConfigErrorRecordExits78WithNoOutputAndKeepsShards(t *testing.T) {
+	base := secureTempDir(t)
+	own := initRun(t, base, "run-1", validToken)
+	writeShard(t, base, own, "run-1", validToken, producerA, passingReport())
+	recordPath := filepath.Join(base, "run-1", "config-error.json")
+	if err := os.WriteFile(recordPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := writeManifest(t, t.TempDir(), producerA)
+	out := t.TempDir()
+	jsonPath, xmlPath, txtPath, htmlPath := finalizeTargets(t, out)
+
+	_, stderr, code := runCLI(t, []string{
+		"finalize", "-run-id", "run-1", "-token", string(validToken), "-report-dir", base, "-producers", manifest,
+		"-json", jsonPath, "-xml", xmlPath, "-txt", txtPath, "-html", htmlPath, "-cleanup",
+	}, nil)
+	if code != coordination.ExitConfig {
+		t.Fatalf("exit code = %d, want %d (ExitConfig); stderr=%s", code, coordination.ExitConfig, stderr)
+	}
+	if !strings.Contains(stderr, recordPath) || !strings.Contains(stderr, "invalid character") {
+		t.Fatalf("stderr must name %s and the parse failure:\n%s", recordPath, stderr)
+	}
+	for _, p := range []string{jsonPath, xmlPath, txtPath, htmlPath} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("target %s was written despite a malformed config-error.json", p)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(base, "run-1")); err != nil {
+		t.Fatalf("the run directory did not survive: %v", err)
+	}
+}
+
+func TestFinalizePublishesReportsReadableByOtherUsers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	base := secureTempDir(t)
+	own := initRun(t, base, "run-1", validToken)
+	writeShard(t, base, own, "run-1", validToken, producerA, passingReport())
+	manifest := writeManifest(t, t.TempDir(), producerA)
+	jsonPath, xmlPath, txtPath, htmlPath := finalizeTargets(t, t.TempDir())
+
+	_, stderr, code := runCLI(t, []string{
+		"finalize", "-run-id", "run-1", "-token", string(validToken), "-report-dir", base, "-producers", manifest,
+		"-json", jsonPath, "-xml", xmlPath, "-txt", txtPath, "-html", htmlPath,
+	}, nil)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
+	}
+	for _, p := range []string{jsonPath, xmlPath, txtPath, htmlPath} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o644 {
+			t.Fatalf("%s mode = %04o, want 0644", p, got)
+		}
 	}
 }

@@ -18,19 +18,23 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	bw := &errWriter{w: w}
 
 	bw.printf("go-specs report\n")
-	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d  Pending: %d\n",
+	bw.printf("Total: %d  Passed: %d  Failed: %d  Error: %d  Skipped: %d  Filtered: %d  Pending: %d  Unstarted: %d\n",
 		r.Execution.Total, r.Execution.Passed, r.Execution.Failed, r.Execution.Error,
-		r.Execution.Skipped, r.Execution.Filtered, r.Execution.Pending)
+		r.Execution.Skipped, r.Execution.Filtered, r.Execution.Pending, r.Execution.Unstarted)
 	bw.printf("Duration: %ss\n", formatSeconds(r.Duration))
 
 	for _, s := range r.Suites {
-		bw.printf("\nSuite: %s\n", s.Name)
+		if s.Package != "" {
+			bw.printf("\nSuite: %s (package %s)\n", s.Name, s.Package)
+		} else {
+			bw.printf("\nSuite: %s\n", s.Name)
+		}
 		for _, c := range s.Cases {
 			renderTXTCase(bw, c)
 		}
-		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d pending=%d\n",
+		bw.printf("  Totals: total=%d passed=%d failed=%d error=%d skipped=%d filtered=%d pending=%d unstarted=%d\n",
 			s.Totals.Total, s.Totals.Passed, s.Totals.Failed, s.Totals.Error,
-			s.Totals.Skipped, s.Totals.Filtered, s.Totals.Pending)
+			s.Totals.Skipped, s.Totals.Filtered, s.Totals.Pending, s.Totals.Unstarted)
 	}
 
 	if len(r.Coverage.Packages) > 0 {
@@ -49,16 +53,27 @@ func RenderTXT(w io.Writer, r NormalizedReport) error {
 	return bw.err
 }
 
-// caseDisplayName is the human-facing name TXT and HTML print for a case. A real spec keeps its
-// own Name, exactly as before. A synthetic group hook case is named only by its marker
-// ("[BeforeAll]"/"[AfterAll]"), which every group shares, so it is prefixed with its group Path
-// (joined with "/") — otherwise two sibling groups' hook failures would print identically. This is
-// the same identity JUnit gets from junitClassName (docs/SUITE_HOOKS_CONTRACT.md H8).
+// caseDisplayName is the human-facing name TXT and HTML print for a case. A real spec prints its
+// full scope path joined with "/" ("Checkout/when the cart is empty/fails"), so two specs with the
+// same leaf name under different When/Describe branches stay distinguishable (issues #275, #313).
+// The trailing element is the case's own Name, which for a generated candidate carries its ordinal
+// and values. A case with no enclosing scopes keeps its plain Name.
+//
+// A synthetic group hook case is named only by its marker ("[BeforeAll]"/"[AfterAll]"), which every
+// group shares, so it is prefixed with its group Path (joined with "/") and keeps the bracketed
+// marker as a readable label — the same identity JUnit gets from junitClassName
+// (docs/SUITE_HOOKS_CONTRACT.md H8).
 func caseDisplayName(c Case) string {
-	if c.Hook == "" || len(c.Path) == 0 {
+	if c.Hook != "" {
+		if len(c.Path) == 0 {
+			return c.Name
+		}
+		return strings.Join(c.Path, "/") + " " + c.Name
+	}
+	if len(c.Path) <= 1 {
 		return c.Name
 	}
-	return strings.Join(c.Path, "/") + " " + c.Name
+	return strings.Join(c.Path[:len(c.Path)-1], "/") + "/" + c.Name
 }
 
 func renderTXTCase(bw *errWriter, c Case) {

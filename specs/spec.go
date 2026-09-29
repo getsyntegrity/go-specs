@@ -2,6 +2,7 @@ package specs
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/report"
@@ -38,19 +39,34 @@ type Spec struct {
 	plan        *ExecutionPlan // set by top-level Describe when using bytecode compiler (no arena)
 	compileOnce sync.Once
 	suite       *CompiledSuite
+
+	// closed is set when the Describe/When callback that handed out this Spec returns (issue
+	// #317). The compiler behind a closed Spec is already released to a pool, so a captured handle
+	// used later (after Describe returned, or from inside a running It) must fail with a clear
+	// message instead of dereferencing a released plan or writing into another suite's compiler.
+	// Stored in the Spec itself, so it costs no allocation.
+	closed atomic.Bool
 }
 
-// Describe starts a top-level describe block. May be called inside Analyze(fn) or directly.
-// After the callback returns, the spec tree is executed automatically (if tb is non-nil).
-// When top-level (no active registry), uses bytecode compiler: no NodeArena, plan built directly.
-// tb may be *testing.T or *testing.B (e.g. for scaling benchmarks).
-func Describe(tb testing.TB, name string, fn func(*Spec)) {
+// describeTopLevel is the shared implementation behind Describe, DescribeWithReporter, DescribeFlat
+// and DescribeFlatWithReporter (issue #276): all four start a top-level describe block the same way,
+// differing only in the reporter (nil for Describe and DescribeFlat). Extracted so a future fix to
+// the registry path only needs to change one body instead of four identical copies.
+//
+// callerLocation is called with skip=3 here, one more than a call made directly from a top-level
+// entry point would use, because this shared function adds one stack frame between the public entry
+// point and callerLocation: skip walks past describeTopLevel itself, past the entry point that called
+// it (Describe/DescribeWithReporter/DescribeFlat/DescribeFlatWithReporter), and lands on the user's
+// own call site. TestDescribeEntryPointsPinCallerLocationUnderRegistry
+// (specs/describe_entrypoint_location_test.go) pins this for all four entry points against the
+// Analyze/registry path, so a wrapper-attribution regression here fails loudly instead of drifting.
+func describeTopLevel(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn)
+		describeWithCompiler(tb, name, rep, fn)
 		return
 	}
 	defer ensureRegistry()()
-	file, line := callerLocation(2)
+	file, line := callerLocation(3)
 	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
 	if rootID < 0 {
 		return
@@ -60,14 +76,23 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	if tb != nil {
 		s.Compile()
 		s.Run()
 	}
+}
+
+// Describe starts a top-level describe block. May be called inside Analyze(fn) or directly.
+// After the callback returns, the spec tree is executed automatically (if tb is non-nil).
+// When top-level (no active registry), uses bytecode compiler: no NodeArena, plan built directly.
+// tb may be *testing.T or *testing.B (e.g. for scaling benchmarks).
+func Describe(tb testing.TB, name string, fn func(*Spec)) {
+	describeTopLevel(tb, name, nil, fn)
 }
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
@@ -82,6 +107,7 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	var groups *planGroups
 	s.plan, groups = c.takePlanAndGroups()
 	validateHookGroups(s.plan, groups)
@@ -103,6 +129,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		if fn != nil {
 			fn(s)
 		}
+		s.closed.Store(true)
 		var groups *planGroups
 		s.plan, groups = c.takePlanAndGroups()
 		validateHookGroups(s.plan, groups)
@@ -121,35 +148,14 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 	if fn != nil {
 		fn(s)
 	}
+	s.closed.Store(true)
 	s.Compile()
 	return s.suite
 }
 
 // DescribeWithReporter starts a top-level describe block with a reporter.
 func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, rep, fn)
 }
 
 // DescribeFlat is an alias for Describe, kept for compatibility (#110). Its name refers to the
@@ -160,57 +166,13 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 //
 // Prefer Describe.
 func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, nil, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, nil, fn)
 }
 
 // DescribeFlatWithReporter is like DescribeFlat with a reporter: rep receives
 // SuiteStarted/SuiteFinished and SpecStarted/SpecFinished events for the run.
 func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
-	if currentRegistry() == nil {
-		describeWithCompiler(tb, name, rep, fn)
-		return
-	}
-	defer ensureRegistry()()
-	file, line := callerLocation(2)
-	rootID, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
-	if rootID < 0 {
-		return
-	}
-	defer pop()
-	var backend testBackend
-	if tb != nil {
-		backend = asTestBackend(tb)
-	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
-	if fn != nil {
-		fn(s)
-	}
-	if tb != nil {
-		s.Compile()
-		s.Run()
-	}
+	describeTopLevel(tb, name, rep, fn)
 }
 
 // DescribeFast is an alias for DescribeFlat, and therefore for Describe (#110). It does not skip
@@ -265,10 +227,14 @@ func (s *Spec) Compile() {
 // requireBuildTarget panics when s has neither a compiler nor a registry to write into. Every Spec
 // handed out by an entry point carries exactly one of the two; a Spec with neither was constructed
 // directly by external code, so there is no destination for the registration being made and no
-// outcome other than discarding it silently.
+// outcome other than discarding it silently. It also panics when s is closed (issue #317): the
+// Describe/When callback that handed it out already returned, so its build target is finished.
 func (s *Spec) requireBuildTarget(method string) {
 	if s.compiler == nil && s.registry == nil {
 		panic("specs: Spec." + method + " called on a Spec with no build target; obtain a *Spec from Describe/BuildSuite instead of constructing one")
+	}
+	if s.closed.Load() {
+		panic("specs: Spec." + method + " called after its Describe/When scope closed; register specs and hooks only while the enclosing Describe/When callback is running, not from a captured *Spec after it returned or from inside an It body")
 	}
 }
 
@@ -277,14 +243,17 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("Describe")
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
+		child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c}
+		defer child.closed.Store(true)
+		fn(child)
 		return
 	}
-	s.requireBuildTarget("Describe")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
+	defer child.closed.Store(true)
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
@@ -296,14 +265,17 @@ func (s *Spec) When(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("When")
 	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c})
+		child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, compiler: c}
+		defer child.closed.Store(true)
+		fn(child)
 		return
 	}
-	s.requireBuildTarget("When")
 	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, registry: s.registry}
+	defer child.closed.Store(true)
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
 	defer pop()
@@ -315,12 +287,12 @@ func (s *Spec) It(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("It")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitIt(name, fn)
 		return
 	}
-	s.requireBuildTarget("It")
 	file, line := callerLocation(2)
 	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	pop()
@@ -329,18 +301,19 @@ func (s *Spec) It(name string, fn func(*Context)) {
 // SkipIt registers a spec that is skipped at compile time (issue #245): fn is never compiled or
 // run — it may be nil — but name is kept so the suite still reports it, as StatusSkipped
 // (report/model.go), the same way Builder.SkipIt already does (specs/builder.go). If this
-// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is dropped
-// entirely instead, exactly like an unfocused It (see FIt).
+// Describe/BuildSuite call also registers an FIt anywhere in its tree, this SkipIt is reported as
+// StatusFiltered instead — exactly like an unfocused It — not run, and not reported Skipped
+// (issue #273; see FIt).
 func (s *Spec) SkipIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("SkipIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitSkip(name)
 		return
 	}
-	s.requireBuildTarget("SkipIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itSkip)
@@ -350,18 +323,18 @@ func (s *Spec) SkipIt(name string, fn func(*Context)) {
 // PendingIt registers a spec that is pending at compile time (issue #245): the specification
 // exists but fn — which may be nil, and is never compiled or run either way — does not, or is not
 // wired up yet. name is kept so the suite still reports it, as StatusPending (report/model.go),
-// distinct from Skipped, the same way Builder.PendingIt already does. Dropped entirely by a
-// suite-wide FIt, exactly like SkipIt.
+// distinct from Skipped, the same way Builder.PendingIt already does. Reported StatusFiltered
+// instead by a suite-wide FIt, exactly like SkipIt (issue #273).
 func (s *Spec) PendingIt(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("PendingIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitPending(name)
 		return
 	}
-	s.requireBuildTarget("PendingIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itPending)
@@ -370,21 +343,28 @@ func (s *Spec) PendingIt(name string, fn func(*Context)) {
 
 // FIt registers a focused spec (issue #245): a nil fn is a no-op, exactly like Builder.FIt. If this
 // Describe/BuildSuite call registers at least one FIt anywhere in its tree, only focused specs
-// compile — every other It, SkipIt and PendingIt in the same call is dropped, never reported, the
-// same way Builder.finalize's focus filter already works. Hooks (BeforeEach/AfterEach,
+// compile — every other It, SkipIt and PendingIt in the same call is excluded from execution, the
+// same way Builder.finalize's focus filter already works, but (issue #273) is still reported, as
+// StatusFiltered, rather than vanishing without a trace. Hooks (BeforeEach/AfterEach,
 // BeforeAll/AfterAll) around a focused spec still run; a BeforeAll/AfterAll group left with zero
 // runnable specs after focus filtering is never entered, the same H3 rule that already applies to
 // a group declaring no It at all (docs/SUITE_HOOKS_CONTRACT.md).
+//
+// Since issue #273, an active focus is also a policy decision, not just a filter: unless
+// GO_SPECS_ALLOW_FOCUS=1 opts out, it fails the enclosing test (via tb.Errorf, so this focused spec
+// still runs and reports its own result) — a forgotten debugging FIt must not silently turn a
+// partial suite green. See reportFocusPolicy (runner.go, execution_plan.go) and docs/DSL.md's
+// "Committed focus fails the enclosing test".
 func (s *Spec) FIt(name string, fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("FIt")
 	if c := s.compiler; c != nil {
 		c.closeOpenParallelRun()
 		c.EmitFocusedIt(name, fn)
 		return
 	}
-	s.requireBuildTarget("FIt")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itFocus)
@@ -409,11 +389,11 @@ func (s *Spec) ItParallel(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
+	s.requireBuildTarget("ItParallel")
 	if c := s.compiler; c != nil {
 		c.EmitItParallel(name, fn)
 		return
 	}
-	s.requireBuildTarget("ItParallel")
 	file, line := callerLocation(2)
 	id, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	s.registry.setItKind(id, itParallel)
@@ -425,11 +405,11 @@ func (s *Spec) BeforeEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("BeforeEach")
 	if c := s.compiler; c != nil {
 		c.AppendBefore(fn)
 		return
 	}
-	s.requireBuildTarget("BeforeEach")
 	s.registry.appendBeforeHook(fn)
 }
 
@@ -438,11 +418,11 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("AfterEach")
 	if c := s.compiler; c != nil {
 		c.AppendAfter(fn)
 		return
 	}
-	s.requireBuildTarget("AfterEach")
 	s.registry.appendAfterHook(fn)
 }
 
@@ -455,11 +435,11 @@ func (s *Spec) BeforeAll(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("BeforeAll")
 	if c := s.compiler; c != nil {
 		c.AppendBeforeAll(fn)
 		return
 	}
-	s.requireBuildTarget("BeforeAll")
 	s.registry.appendBeforeAllHook(fn)
 }
 
@@ -471,10 +451,10 @@ func (s *Spec) AfterAll(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
+	s.requireBuildTarget("AfterAll")
 	if c := s.compiler; c != nil {
 		c.AppendAfterAll(fn)
 		return
 	}
-	s.requireBuildTarget("AfterAll")
 	s.registry.appendAfterAllHook(fn)
 }

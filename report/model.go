@@ -9,8 +9,10 @@ import "time"
 // never for a new field.
 //
 // History: "1" — initial shape. "2" — adds StatusPending ("pending") to the status vocabulary and
-// the pending totals field (issue #208).
-const SchemaVersion = "2"
+// the pending totals field (issue #208). "3" — adds StatusUnstarted ("unstarted") to the status
+// vocabulary, the unstarted totals field, and Case.Declared, for a spec CompiledSuite/Runner
+// fail-fast prevented from ever running (issue #274).
+const SchemaVersion = "3"
 
 // Status is a case's normalized outcome. It is derived from SpecResultEvent (see
 // classifyStatus in collector.go) and is the single vocabulary every renderer maps from —
@@ -29,6 +31,16 @@ const (
 	// implementation does not, distinct from Skipped (intentionally not executed). Body never ran,
 	// exactly like Skipped and Filtered; see events.go's SpecResultEvent.Pending.
 	StatusPending Status = "pending"
+	// StatusUnstarted is a spec that CompiledSuite.SetFailFast(true) or Runner.FailFast prevented
+	// from ever being reached, after an earlier spec already failed (issue #274). It is distinct
+	// from every other "did not run" status: Skipped/Filtered/Pending are all deliberate outcomes
+	// the suite (or an external selector) reached and decided on; Unstarted means the suite never
+	// got that far at all. Body never ran, Duration is always 0, and Failed is always false — same
+	// shape as Skipped/Filtered/Pending — but an Unstarted spec never counts toward Totals.Total
+	// (see Totals.add), unlike every other status: Total keeps its pre-existing meaning of "specs
+	// that entered execution", and fail-fast-prevented specs never did. When the unreached spec was
+	// itself a compile-time SkipIt/PendingIt, its original declaration survives as Case.Declared.
+	StatusUnstarted Status = "unstarted"
 )
 
 // Case is one normalized spec result: an executed It, or a generated candidate.
@@ -60,21 +72,35 @@ type Case struct {
 	// in every shard would carry a spurious `"Hook": ""`, which is exactly the per-suite cost H10
 	// forbids for a suite that never registers a group hook.
 	Hook string `json:"Hook,omitempty"`
+	// Declared preserves an Unstarted case's original compile-time declaration — "skip" for a
+	// SkipIt/Skip spec, "pending" for a PendingIt/Pending spec — that a fail-fast stop prevented
+	// from ever being processed (issue #274). Empty for an ordinary Unstarted spec (declared as
+	// neither) and for every non-Unstarted status; it is metadata about what the spec would have
+	// been reported as, not a second status field, so renderers still switch on Status alone.
+	// Tagged omitempty for the same reason Hook is: most cases and most shards never carry one.
+	Declared string `json:"declared,omitempty"`
 }
 
-// Totals summarizes a set of cases. Total is always Passed+Failed+Error+Skipped+Filtered+Pending.
+// Totals summarizes a set of cases. Total is always
+// Passed+Failed+Error+Skipped+Filtered+Pending — deliberately excluding Unstarted, which counts
+// specs a fail-fast stop prevented from ever entering execution (issue #274); Total keeps its
+// pre-existing meaning of "specs that entered execution, plus declared SkipIt/PendingIt that were
+// actually processed".
 type Totals struct {
-	Total    int
-	Passed   int
-	Failed   int
-	Error    int
-	Skipped  int
-	Filtered int
-	Pending  int
+	Total     int
+	Passed    int
+	Failed    int
+	Error     int
+	Skipped   int
+	Filtered  int
+	Pending   int
+	Unstarted int
 }
 
 func (t *Totals) add(s Status) {
-	t.Total++
+	if s != StatusUnstarted {
+		t.Total++
+	}
 	switch s {
 	case StatusPassed:
 		t.Passed++
@@ -88,12 +114,20 @@ func (t *Totals) add(s Status) {
 		t.Filtered++
 	case StatusPending:
 		t.Pending++
+	case StatusUnstarted:
+		t.Unstarted++
 	}
 }
 
 // Suite is one top-level Describe/DescribeFlat run, in SuiteStarted order.
+//
+// Package is the Go import path of the package that produced the suite, filled in by the
+// module-wide merge from each shard's PackagePath (issue #308) so two packages declaring the same
+// suite and spec names stay distinguishable. It is empty for a single-package (non-merged) report
+// and omitted from every rendered format then. Additive: it does not bump SchemaVersion.
 type Suite struct {
 	Name     string
+	Package  string
 	Cases    []Case
 	Duration time.Duration
 	Totals   Totals

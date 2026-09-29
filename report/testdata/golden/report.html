@@ -17,6 +17,7 @@
   .status-error { background: #fde8e8; color: #b3261e; }
   .status-skipped, .status-filtered { background: #f0f0f0; color: #555; }
   .status-pending { background: #eaf1fb; color: #2b5797; }
+  .status-unstarted { background: #fff3cd; color: #8a6100; }
   .diagnostics { white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: #444; margin: 0.2rem 0 0.6rem 0; }
   .coverage-bar { display: inline-block; width: 80px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; vertical-align: middle; margin-right: 0.4rem; }
   .coverage-fill { display: block; height: 8px; background: #1a7f37; }
@@ -32,6 +33,7 @@
   <span>Skipped: <strong>1</strong></span>
   <span>Filtered: <strong>1</strong></span>
   <span>Pending: <strong>0</strong></span>
+  <span>Unstarted: <strong>0</strong></span>
   <span>Duration: <strong>0.019s</strong></span>
 </div>
 
@@ -45,6 +47,7 @@
   <span>skipped=1</span>
   <span>filtered=0</span>
   <span>pending=0</span>
+  <span>unstarted=0</span>
   <span>duration=0.015s</span>
 </div>
 <table>
@@ -53,19 +56,19 @@
 
 <tr>
   <td><span class="status status-passed">passed</span></td>
-  <td>Checkout pays with a valid card</td>
+  <td>Checkout/Checkout pays with a valid card</td>
   <td>0.005s</td>
 </tr>
 
 <tr>
   <td><span class="status status-failed">failed</span></td>
-  <td>Checkout rejects an expired card<div class="diagnostics">expected status 402, got 200</div></td>
+  <td>Checkout/Checkout rejects an expired card<div class="diagnostics">expected status 402, got 200</div></td>
   <td>0.003s</td>
 </tr>
 
 <tr>
   <td><span class="status status-error">error</span></td>
-  <td>Checkout crashes on a nil cart<div class="diagnostics">recovered panic: nil pointer dereference</div><div class="diagnostics">goroutine 1 [running]:
+  <td>Checkout/Checkout crashes on a nil cart<div class="diagnostics">recovered panic: nil pointer dereference</div><div class="diagnostics">goroutine 1 [running]:
 main.crash()
 	/x/y.go:10 &#43;0x1a</div></td>
   <td>0.002s</td>
@@ -73,7 +76,7 @@ main.crash()
 
 <tr>
   <td><span class="status status-skipped">skipped</span></td>
-  <td>Checkout skips legacy flow</td>
+  <td>Checkout/Checkout skips legacy flow</td>
   <td>0.000s</td>
 </tr>
 
@@ -89,6 +92,7 @@ main.crash()
   <span>skipped=0</span>
   <span>filtered=1</span>
   <span>pending=0</span>
+  <span>unstarted=0</span>
   <span>duration=0.004s</span>
 </div>
 <table>
@@ -97,13 +101,13 @@ main.crash()
 
 <tr>
   <td><span class="status status-passed">passed</span></td>
-  <td>Cart totals items</td>
+  <td>Cart/Cart totals items</td>
   <td>0.004s</td>
 </tr>
 
 <tr>
   <td><span class="status status-filtered">filtered</span></td>
-  <td>Cart applies a coupon</td>
+  <td>Cart/Cart applies a coupon</td>
   <td>0.000s</td>
 </tr>
 

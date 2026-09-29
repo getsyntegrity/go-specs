@@ -20,6 +20,9 @@ type scope struct {
 	id         int
 	beforeEach []step
 	afterEach  []step
+	// sealed is set once the scope registered a spec or a nested Describe; a per-spec hook declared
+	// afterwards would silently miss the earlier specs, so BeforeEach/AfterEach panic (issue #307).
+	sealed bool
 }
 
 // specKind describes how a spec was registered (normal, skip, focus, parallel, pending).
@@ -49,12 +52,21 @@ type specItem struct {
 	// (the same defect #113/#114 fixed for the ExecutionPlan model's Path). Captured at registration
 	// time as a copy, since Builder.scopeNames is a mutated stack that unwinds before finalize builds
 	// groups — sharing its backing array here would alias sibling Describes' names.
+	//
+	// Build's resolveReportPaths overwrites this in place with its disambiguated report-Path
+	// segments (issue #275, docs/DSL.md) before finalize ever reads it, using scopeIDs below — nothing
+	// else reads the literal value first, so overwriting is safe.
 	scopeNames []string
-	before     []step
-	spec       step // single spec body; nil for skip
-	after      []step
-	steps      []step // full sequence only for kindParallel (before+fn+after flattened)
-	hookKey    string // from b.hookKey() for coalescing without comparing funcs
+	// scopeIDs is scopeNames' scope-record identity chain (see Builder.reportScopeIDStack), captured
+	// the same way and at the same time as scopeNames, used only by resolveReportPaths to recover
+	// which physical Describe activation each position came from — two sibling Describes sharing a
+	// literal name are otherwise indistinguishable once captured (issue #275).
+	scopeIDs []int
+	before   []step
+	spec     step // single spec body; nil for skip
+	after    []step
+	steps    []step // full sequence only for kindParallel (before+fn+after flattened)
+	hookKey  string // from b.hookKey() for coalescing without comparing funcs
 }
 
 // Builder compiles a DSL into a Program. Use NewBuilder(), then Describe/BeforeEach/AfterEach/It, then Build().
@@ -69,6 +81,21 @@ type Builder struct {
 	// nextScopeID hands out each new scope's id (see scope.id), incremented every time a scope is
 	// pushed. Never reused, even after Describe pops the scope back off b.scopes.
 	nextScopeID int
+	// reportScopeParent/reportScopeDeclaredName log every Describe scope this builder has ever
+	// pushed, in declaration order, indexed by scope-record id (issue #275) — unlike scopeNames,
+	// which unwinds on Describe's return and describes only currently-open scopes. Build's
+	// resolveReportPaths needs every sibling of a parent scope, however deep, before it can assign a
+	// duplicate's ordinal: Describe pushes incrementally as its body runs, so a later sibling (or a
+	// literal collision declared after an earlier duplicate) is not yet known when Describe itself
+	// runs — see docs/DSL.md. reportScopeParent[id] is the enclosing scope's id, or -1 for a scope
+	// with no enclosing Describe in this build.
+	reportScopeParent       []int
+	reportScopeDeclaredName []string
+	// reportScopeIDStack mirrors scopeNames (identical push/pop timing and length) but holds each
+	// open scope's record id instead of its literal name: the identity a spec needs to recover its
+	// true enclosing scopes once every sibling's label is known (see specItem.scopeIDs,
+	// resolveReportPaths).
+	reportScopeIDStack []int
 }
 
 // NewBuilder creates a builder that will produce a new Program.
@@ -92,30 +119,33 @@ func (b *Builder) emitBefore() []step {
 	return out
 }
 
-// emitAfter returns afterEach in inner-to-outer order (innermost scope first).
-// Within each scope, hooks are in declaration order. The runner iterates the
-// result in reverse, so: flat case [after1, after2] => runs after2, after1 (LIFO);
-// nested case [afterInner, afterOuter] => runs afterOuter, afterInner.
+// emitAfter returns afterEach in outer-to-inner order (outermost scope first), each scope's hooks
+// in declaration order: the mirror of emitBefore. Every runner (runSpecWithHooks, runParallelSpec)
+// iterates the result in reverse, which yields the documented order (docs/DSL.md "AfterEach"):
+// innermost scope first, LIFO within a scope. Flat case [after1, after2] => runs after2, after1;
+// nested case [afterOuter, afterInner] => runs afterInner, afterOuter.
 func (b *Builder) emitAfter() []step {
 	var out []step
-	for i := len(b.scopes) - 1; i >= 0; i-- {
-		ae := b.scopes[i].afterEach
-		for j := 0; j < len(ae); j++ {
-			out = append(out, ae[j])
-		}
+	for i := range b.scopes {
+		out = append(out, b.scopes[i].afterEach...)
 	}
 	return out
 }
 
-// emitSpecSteps returns the full step sequence for one spec (used for parallel runAll).
+// emitSpecSteps returns the step sequence for one ItParallel spec (run by parallelStep through
+// runAll). Without AfterEach hooks that is just before + fn. With them it is a single step,
+// runParallelSpec bound to this spec's hooks, so the hooks run in a defer and therefore also when a
+// fatal assertion or a panic unwinds before/fn (#334), in the same order Builder.It runs them (see
+// emitAfter). The closure is built here, once per spec at Build time; running it allocates nothing.
 func (b *Builder) emitSpecSteps(fn func(*Context)) []step {
 	before := b.emitBefore()
 	after := b.emitAfter()
-	steps := make([]step, 0, len(before)+1+len(after))
-	steps = append(steps, before...)
-	steps = append(steps, step(fn))
-	steps = append(steps, after...)
-	return steps
+	if len(after) == 0 {
+		steps := make([]step, 0, len(before)+1)
+		steps = append(steps, before...)
+		return append(steps, step(fn))
+	}
+	return []step{func(ctx *Context) { runParallelSpec(ctx, before, fn, after) }}
 }
 
 // newScope returns a scope with a fresh, unique id (see scope.id) and advances nextScopeID.
@@ -130,14 +160,24 @@ func (b *Builder) Describe(name string, body func()) {
 	if body == nil {
 		return
 	}
+	b.sealScope()
+	parent := -1
+	if n := len(b.reportScopeIDStack); n > 0 {
+		parent = b.reportScopeIDStack[n-1]
+	}
+	id := len(b.reportScopeDeclaredName)
+	b.reportScopeParent = append(b.reportScopeParent, parent)
+	b.reportScopeDeclaredName = append(b.reportScopeDeclaredName, name)
+	b.reportScopeIDStack = append(b.reportScopeIDStack, id)
 	b.scopes = append(b.scopes, b.newScope())
 	b.scopeNames = append(b.scopeNames, name)
-	// Both stacks unwind through defer so a panic in body cannot leave them out of step with each
-	// other. A caller that recovers and keeps declaring would otherwise get breadcrumbs naming
+	// All three stacks unwind through defer so a panic in body cannot leave them out of step with
+	// each other. A caller that recovers and keeps declaring would otherwise get breadcrumbs naming
 	// scopes that already closed — silently wrong identity rather than a visible failure.
 	defer func() {
 		b.scopes = b.scopes[:len(b.scopes)-1]
 		b.scopeNames = b.scopeNames[:len(b.scopeNames)-1]
+		b.reportScopeIDStack = b.reportScopeIDStack[:len(b.reportScopeIDStack)-1]
 	}()
 	body()
 }
@@ -157,12 +197,27 @@ func (b *Builder) ensureScope() {
 	}
 }
 
+// sealScope ensures a scope exists and marks it as having registered a spec or nested scope.
+func (b *Builder) sealScope() {
+	b.ensureScope()
+	b.scopes[len(b.scopes)-1].sealed = true
+}
+
+// requireUnsealed panics when the current scope already registered a spec or nested Describe
+// (issue #307): a per-spec hook declared now would apply only to later specs.
+func (b *Builder) requireUnsealed(method string) {
+	if b.scopes[len(b.scopes)-1].sealed {
+		panic(lateHookMessage(method))
+	}
+}
+
 // BeforeEach registers a hook to run before each It in this scope (and nested scopes). Prepended before the spec.
 func (b *Builder) BeforeEach(fn func(*Context)) {
 	if fn == nil {
 		return
 	}
 	b.ensureScope()
+	b.requireUnsealed("BeforeEach")
 	idx := len(b.scopes) - 1
 	b.scopes[idx].beforeEach = append(b.scopes[idx].beforeEach, step(fn))
 }
@@ -173,6 +228,7 @@ func (b *Builder) AfterEach(fn func(*Context)) {
 		return
 	}
 	b.ensureScope()
+	b.requireUnsealed("AfterEach")
 	idx := len(b.scopes) - 1
 	b.scopes[idx].afterEach = append(b.scopes[idx].afterEach, step(fn))
 }
@@ -184,16 +240,16 @@ func (b *Builder) It(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
+	b.sealScope()
 	b.pending = append(b.pending, specItem{
 		kind:       kindNormal,
 		name:       name,
 		fullName:   b.fullName(name),
-		scopeNames: slices.Clone(b.scopeNames),
-		before:     b.emitBefore(),
-		spec:       step(fn),
-		after:      b.emitAfter(),
-		hookKey:    b.hookKey(),
+		scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack),
+		before:  b.emitBefore(),
+		spec:    step(fn),
+		after:   b.emitAfter(),
+		hookKey: b.hookKey(),
 	})
 }
 
@@ -221,8 +277,8 @@ func (b *Builder) ItWith(name string, fn SpecFn) {
 // never runs, so it doesn't need to be a valid func — see Skip), but name is preserved so the
 // compiled Program can still report the spec's identity as skipped. See finalize.
 func (b *Builder) SkipIt(name string, fn func(*Context)) {
-	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindSkip, name: name, scopeNames: slices.Clone(b.scopeNames)})
+	b.sealScope()
+	b.pending = append(b.pending, specItem{kind: kindSkip, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack)})
 }
 
 // PendingIt registers a spec that is pending at compile time: fn is never compiled into any step
@@ -230,8 +286,8 @@ func (b *Builder) SkipIt(name string, fn func(*Context)) {
 // Pending), but name is preserved so the compiled Program can still report the spec's identity as
 // pending, distinct from skipped. See finalize.
 func (b *Builder) PendingIt(name string, fn func(*Context)) {
-	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindPending, name: name, scopeNames: slices.Clone(b.scopeNames)})
+	b.sealScope()
+	b.pending = append(b.pending, specItem{kind: kindPending, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack)})
 }
 
 // FIt registers a focused spec. If any spec is focused, only focused specs are compiled into the program.
@@ -239,17 +295,17 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
+	b.sealScope()
 	b.hasFocus = true
 	b.pending = append(b.pending, specItem{
 		kind:       kindFocus,
 		name:       name,
 		fullName:   b.fullName(name),
-		scopeNames: slices.Clone(b.scopeNames),
-		before:     b.emitBefore(),
-		spec:       step(fn),
-		after:      b.emitAfter(),
-		hookKey:    b.hookKey(),
+		scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack),
+		before:  b.emitBefore(),
+		spec:    step(fn),
+		after:   b.emitAfter(),
+		hookKey: b.hookKey(),
 	})
 }
 
@@ -263,8 +319,8 @@ func (b *Builder) ItParallel(name string, fn func(*Context)) {
 	if fn == nil {
 		return
 	}
-	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, scopeNames: slices.Clone(b.scopeNames), steps: b.emitSpecSteps(fn)})
+	b.sealScope()
+	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, scopeNames: slices.Clone(b.scopeNames), scopeIDs: slices.Clone(b.reportScopeIDStack), steps: b.emitSpecSteps(fn)})
 }
 
 // hookKey returns a key that uniquely identifies the current scope stack and hook set.
@@ -306,13 +362,30 @@ func (b *Builder) hookKey() string {
 func (b *Builder) finalize() {
 	items := b.pending
 	if b.hasFocus {
+		var focusedNames []string
+		var excluded []specMark
 		filtered := items[:0]
 		for i := range items {
 			if items[i].kind == kindFocus {
 				filtered = append(filtered, items[i])
+				focusedNames = append(focusedNames, items[i].fullName)
+			} else {
+				// A dropped It/SkipIt/PendingIt/ItParallel item, recorded before it is discarded so
+				// Runner.Run can still report it — Filtered, not silently gone (issue #273). Reading
+				// items[i] here, in the same iteration that would otherwise overwrite it via the
+				// append above, is safe: that append only ever writes to index len(filtered), which
+				// by induction is <= i, and this branch (kindFocus false) never calls it this
+				// iteration, so items[i] is untouched until after this read.
+				excluded = append(excluded, specMark{name: items[i].name, path: items[i].scopeNames})
 			}
 		}
 		items = filtered
+		// Set even when excluded is empty (every registered spec happened to be an FIt): the
+		// fail-on-focus check (issue #273) is about focus being active at all, not about anything
+		// having been excluded.
+		b.program.FocusedNames = focusedNames
+		b.program.FocusExcluded = excluded
+		b.program.FocusExcludedCount = len(excluded)
 	}
 	var groups []group
 	curIdx := -1
@@ -350,6 +423,7 @@ func (b *Builder) finalize() {
 			// is populated, so it correctly stays out of the way here instead of double-reporting.
 			groups = append(groups, group{
 				specs:                 []step{parallelStep(parSteps, parNames, parScopeNames)},
+				parallelBatch:         true,
 				skipped:               pendingSkips,
 				skippedScopeNames:     pendingSkipScopeNames,
 				pendingSpecs:          bufferedPending,
@@ -410,6 +484,23 @@ func (b *Builder) finalize() {
 
 // Build returns the compiled program. Safe to call multiple times; do not modify the returned Program's Groups.
 func (b *Builder) Build() *Program {
+	b.resolveReportPaths()
 	b.finalize()
 	return b.program
+}
+
+// resolveReportPaths computes this build's sibling-group disambiguation labels (issue #275,
+// docs/DSL.md) and overwrites every pending item's scopeNames with its resolved report-Path segments
+// — once, here, before finalize ever reads scopeNames to build groups. Describe pushes incrementally
+// as its body runs (see Describe), so a duplicate's ordinal cannot be assigned any earlier than this:
+// reportScopeParent/reportScopeDeclaredName record every Describe scope ever pushed, however deep,
+// which the already-unwound b.scopeNames stack does not.
+//
+// Go subtest identity (fullName, computed by b.fullName from the literal b.scopeNames stack at
+// registration time) is untouched: nothing here reads or writes specItem.fullName.
+func (b *Builder) resolveReportPaths() {
+	labels := computeScopeLabels(b.reportScopeParent, b.reportScopeDeclaredName)
+	for i := range b.pending {
+		b.pending[i].scopeNames = resolveScopeIDs(b.pending[i].scopeIDs, labels)
+	}
 }

@@ -258,9 +258,10 @@ func TestParallelGroupFailureVisibility(t *testing.T) {
 					marker, output)
 			}
 		}
-		for _, index := range []string{"spec[0]", "spec[1]", "spec[2]"} {
-			if !strings.Contains(output, index) {
-				t.Errorf("%s is missing from the output\nfull output:\n%s", index, output)
+		// Each ItParallel spec reports on its own subtest now (no "spec[N]" replay on the parent).
+		for _, name := range []string{"first_fails", "second_fails", "third_fails"} {
+			if !strings.Contains(output, "--- FAIL: TestEveryFailingParallelSpecIsReported/a_parallel_group_where_every_spec_fails/"+name) {
+				t.Errorf("the failing subtest %s is missing from the output\nfull output:\n%s", name, output)
 			}
 		}
 	})

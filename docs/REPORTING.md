@@ -76,10 +76,10 @@ Valid formats are `xml`, `html`, `txt`, and `json`.
 
 | Format | Renderer | Notes |
 |---|---|---|
-| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. |
+| JUnit XML | `report.RenderXML` | One `<testsuite>` per `Describe`, coverage as `<properties>`. Failed → `<failure>`, Error (recovered panic) → `<error>`, Skipped/Filtered → `<skipped>`. Pending has no JUnit equivalent, so it renders as `<skipped message="pending"/>` and is counted in the `skipped` attribute, exactly like Filtered. Unstarted (#274) has no JUnit equivalent either, so it renders as `<skipped message="not run: fail-fast"/>` and also folds into `skipped`; unlike every other status it never counts toward `total`, so the `tests` attribute is `total + unstarted` rather than `total` alone — a JUnit consumer still sees the full declared suite size, not the smaller "reached" count. |
 | HTML | `report.RenderHTML` | Single self-contained file: inline CSS, no external stylesheet/script/font/image reference — safe to open offline or archive as a CI artifact. |
-| Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case with its message and output, then a coverage table. |
-| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "2"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208), because a v1 consumer switching exhaustively over `status` would misread a pending case. A new field alone never bumps it. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
+| Plain text | `report.RenderTXT` | Deterministic; never emits ANSI escape codes. Lists every failed/errored case, named by its full scope path (`Suite/when x/spec`), with its message and output, then a coverage table. |
+| JSON | `report.RenderJSON` | Schema-versioned (`schemaVersion: "3"`). The version changes when a field's meaning changes incompatibly, which includes a new value in the closed status vocabulary below: `"2"` added `"status": "pending"` and the `pending` totals field (#208); `"3"` adds `"status": "unstarted"`, the `unstarted` totals field, and `Case.declared` (#274) — a v1/v2 consumer switching exhaustively over `status` would misread an unstarted case. A new field alone never bumps it: the module-wide merge adds an optional suite-level `package` (the producing Go import path, omitted for a single-package report), and the version stays `"3"` (#308). JUnit carries it as the `package` attribute on `<testsuite>` and as a `<package>/` prefix on each `classname`; TXT prints `Suite: <name> (package <path>)`; HTML shows it beside the suite heading. The shard envelope's `shardSchemaVersion` is versioned independently and stays `"1"`. Arrays are always arrays, never `null`. A consumer decoding into a struct with only a subset of fields is unaffected by new fields — see `report/render_json_test.go`'s `TestRenderJSONUnknownFieldsIgnorable`. |
 
 Every renderer takes the same `report.NormalizedReport` and an `io.Writer`; `RenderXML` and
 `RenderHTML` escape all case names, messages, and output through `encoding/xml` and
@@ -99,6 +99,70 @@ Every case is normalized to exactly one of:
   running; a spec that fails and then calls `SkipNow` is Failed instead, matching `go test` itself
 - **Filtered** — excluded by external test selection (e.g. `go test -run`) before its body ran
 - **Pending** — a compile-time `Pending`/`PendingIt` spec ([#208](https://github.com/getsyntegrity/go-specs/issues/208)); its body never ran either, but the spec is declared and not yet implemented, distinct from a spec that is intentionally excluded (Skipped)
+- **Unstarted** — a spec `CompiledSuite.SetFailFast(true)` or `Runner.FailFast` prevented from ever being reached, after an earlier spec in the same run already failed ([#274](https://github.com/getsyntegrity/go-specs/issues/274)). Its body never ran either, but unlike every status above, an Unstarted spec never counts toward `Totals.Total` — `Total` keeps its pre-existing meaning of "specs that entered execution, plus declared Skip/Pending that were actually processed", and a fail-fast-prevented spec never did either. When the unreached spec was itself a compile-time `SkipIt`/`Skip` or `PendingIt`/`Pending`, its original declaration survives as `Case.Declared` (`"skip"` or `"pending"`), so a consumer can still tell what it *would* have been reported as.
+
+### `Unstarted` semantics and assumptions (issue #274)
+
+Example: a suite declares 3 specs and enables fail-fast; the first spec fails. The report says
+`Total: 1, Failed: 1, Unstarted: 2` — not `Total: 1` alone, and not `Total: 3`. `SkipIt`/`PendingIt`
+specs inside a group the fail-fast stop never reached are Unstarted too, keeping their original
+declaration in `Case.Declared`.
+
+Two points below are flagged assumptions (not a maintainer decision), made explicit here and in the
+PR that introduced them:
+
+- A spec after the stop point that `go test -run` would itself have filtered out is still reported
+  Unstarted, not Filtered — go-specs cannot evaluate `-run` without reimplementing `testing`'s own
+  matcher, so it cannot tell "fail-fast stopped me" from "`-run` would also have excluded me".
+- `RunShard` reports only the unstarted specs of its own shard's units: fail-fast is shard-local, so
+  a shard that never itself failed reports no Unstarted specs, even if a sibling shard's fail-fast
+  stopped early.
+
+## Consumer migration: v0.3.0 reporting semantics
+
+v0.3.0 reports carry `schemaVersion: "3"`. v0.2.0 carried `"2"`; the bump comes from #274, which
+added the `unstarted` status, the `unstarted` totals field and `Case.declared`. Every other change
+below kept the version at `"3"`. The version describes the *shape* of the document: the closed
+status vocabulary, the keys that are always present, and which fields are optional. It does not
+promise that a status or a message means what it meant in an earlier release, so the version alone
+is not evidence that your parser's assumptions still hold. Check each item below against the way you
+read reports.
+
+Meaning changes (same shape, different values):
+
+- **Assertion messages are populated.** A failed built-in `ctx.Expect(...)` or `Context.Snapshot`
+  assertion now carries its formatted text in `message` (JSON), in the `message` attribute of
+  `<failure>` (JUnit) and in the TXT/HTML diagnostics, on every execution mode ([#272](https://github.com/getsyntegrity/go-specs/issues/272)). Before, it was empty. A
+  consumer that treated an empty message as "assertion failure" must key off `status` instead.
+- **A direct `ctx.T` failure still has no message.** A spec that fails only through `ctx.T.Error`,
+  `Fatal`, `Fail`, `FailNow` or a `Cleanup` is `failed` with the `message` key omitted, and its JUnit
+  `<failure>` has no `message` attribute. Never assume a failed case has a message.
+- **A recovered panic is `error`, on every mode.** `Builder.ItParallel` used to report a panic as
+  `failed`; it is now `error` with the panic value as `message` and the stack in `output`, matching
+  the other engines ([#314](https://github.com/getsyntegrity/go-specs/issues/314)). In JUnit that is `<error>`, not `<failure>`, and it counts in `errors`,
+  not `failures`. A consumer that alerted only on `failures` will now see these under `errors`.
+- **Cases arrive in declaration order.** A parallel batch (`Spec.ItParallel` and `Builder.ItParallel`)
+  is reported in the order its specs were declared, not the order they finished ([#315](https://github.com/getsyntegrity/go-specs/issues/315)). A consumer that
+  relied on completion order, for example to approximate timing, must use `durationMs`.
+- **Package identity is part of a merged report.** A module-wide report carries `package` on each
+  suite, and JUnit prefixes each `classname` with it ([#308](https://github.com/getsyntegrity/go-specs/issues/308)). Two packages with the same suite and spec
+  names are now distinct; a consumer that keyed on `classname` and `name` alone from a merged report
+  should expect the prefix.
+- **`unstarted` cases exist.** A fail-fast stop reports the specs it prevented as `unstarted`, which
+  are excluded from `total` but included in JUnit `tests` and `skipped` ([#274](https://github.com/getsyntegrity/go-specs/issues/274)); see [Status
+  vocabulary](#status-vocabulary).
+
+Optional fields, each omitted when empty: `message`, `output`, `hook` and `declared` on a case, and
+`package` on a suite. `package` (#308) is the one added in this release without a version bump;
+`declared` arrived with the `"3"` bump (#274), and `hook` predates it. A consumer decoding only the
+fields it knows is unaffected by any of them.
+
+The contract is enforced by tests, not only described here. `specs/reporting_contract_test.go` runs
+one table of scenarios (pass, assertion failure, direct `ctx.T` failure, panic, inverted completion
+order, fail-fast, `-run` filtering) through default `Describe`, `Builder`/`Runner`, `Spec.ItParallel`
+and `Builder.ItParallel`, and checks the normalized events plus the JSON, JUnit, TXT and HTML output.
+`report/schema_v3_contract_test.go` pins the status vocabulary, the exact set of always-present keys
+(document, execution, suite, totals, coverage and case) and which keys are optional.
 
 ## Multi-package reporting: `go test ./...` across many packages
 
@@ -303,17 +367,31 @@ by both).
 | | `-producers` | — | Required: a path to the manifest file described below. There is no default and no `go list` fallback. |
 | | `-coverprofile` | — | Optional: the one combined file `go test -coverprofile=...` wrote. Omit it if the run collected no coverage. |
 | | `-json`, `-xml`, `-txt`, `-html` | — | Optional, one per format you want written; omit a flag to skip that format. At least one is normally set, or finalize does the ownership/producer bookkeeping and writes nothing. |
-| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. |
+| | `-cleanup` | — | Optional: prune the run's shard directory once the merge fully succeeds. Leave it off while you are still debugging a run; turn it on once the pipeline is trusted, so a run that hits a config error still leaves its evidence on disk. `-cleanup` requires at least one output flag, and no output path may resolve inside the run directory (relative paths and symlinks are resolved first); either mistake exits `78` before anything is rendered or deleted, and the shards stay in place. |
 | `gc` | `-report-dir` | `GO_SPECS_REPORT_DIR` | Optional, default `.go-specs/runs`, and — like `finalize` — must already be absolute. |
 | | `-retention` | — | Optional, default `24h`. Must be a positive duration; `gc` refuses `0s` or negative values with exit `78`, because a zero window would treat a run still in progress as abandoned. |
 | | `-dry-run` | — | Report what would be removed without touching the filesystem — run this first when pointing `gc` at a shared directory you do not fully trust yet. |
+
+#### How `finalize` publishes reports
+
+Each output file is written to a temporary file in its own directory, set to mode `0644` (an
+explicit `chmod`, so the process umask cannot narrow it and a runner or artifact collector under a
+different user can read it), flushed to disk with `fsync`, renamed into place, and then its
+directory is `fsync`ed so the rename survives a crash (the directory sync is skipped on Windows and
+where the filesystem does not support it). A successful `finalize` therefore promises the reports
+are durable, not just visible.
+
+Multiple outputs are published one at a time, each atomically, but **not as a group**. If a later
+output fails (for example, its directory is not writable), the earlier outputs stay published, no
+shard is cleaned up, and the error names the output that failed by path and format. Re-run
+`finalize` once the cause is fixed; it overwrites the earlier outputs.
 
 #### Exit codes
 
 | Code | Meaning | What the invoker should do |
 |---|---|---|
 | `0` | Reporting succeeded for that verb. For `finalize`, this says nothing about whether `go test` itself passed — see below. | Nothing extra; the verb did its job. |
-| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
+| `78` (`EX_CONFIG`) | Invalid configuration: a missing or malformed run id/token, an ownership mismatch against `run.json`, a missing/empty/unreadable `-producers` manifest, a `config-error.json` that exists but cannot be parsed, `-cleanup` without an output target or with one inside the run directory, or (for `gc`) a non-positive `-retention`. | Fix the invocation — this is never a flaky condition to retry. |
 | `1` | A reporting failure after configuration checked out: a missing producer, a rejected shard, or a merge/render/IO error. | Read the printed summary (`missing:` / `rejected:` lines on stderr) and fix the run — a package did not publish a valid shard, or the manifest lists a package that no longer exists. |
 | `2` | CLI usage error: no verb, an unknown verb, an unknown flag, or unexpected positional arguments (the stdlib `flag` package's own convention). | Fix the command line; this never reaches the library at all. |
 

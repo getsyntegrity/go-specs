@@ -193,9 +193,13 @@ func assertParallelRanges(t *testing.T, label string, got []parallelRange, want 
 }
 
 // TestSpecItParallel_DroppedUnderFocus pins that ItParallel is dropped whole under a suite-wide
-// FIt, exactly like an unfocused It — on both build paths.
+// FIt, exactly like an unfocused It, but — since issue #273 — is still reported, as Filtered rather
+// than dropped without a trace. Covers both build paths; each opts out of the fail-on-committed-
+// focus policy with GO_SPECS_ALLOW_FOCUS=1, since this test is about the filter/report outcome, not
+// that policy.
 func TestSpecItParallel_DroppedUnderFocus(t *testing.T) {
 	t.Run("compiler path", func(t *testing.T) {
+		t.Setenv(allowFocusEnvVar, "1")
 		var parallelRan bool
 		rep := &recordingReporter{}
 		suite := BuildSuite(nil, "suite", func(s *Spec) {
@@ -207,12 +211,19 @@ func TestSpecItParallel_DroppedUnderFocus(t *testing.T) {
 		if parallelRan {
 			t.Error("expected the unfocused ItParallel to be dropped, but it ran")
 		}
-		if len(rep.specFinished) != 1 || rep.specFinished[0].Name != "focused" {
-			t.Errorf("expected exactly [focused] reported, got %+v", rep.specFinished)
+		if len(rep.specFinished) != 2 {
+			t.Fatalf("expected exactly [focused, parallel] reported, got %+v", rep.specFinished)
+		}
+		if rep.specFinished[0].Name != "parallel" || !rep.specFinished[0].Filtered {
+			t.Errorf("parallel = %+v, want Filtered: true", rep.specFinished[0])
+		}
+		if rep.specFinished[1].Name != "focused" || rep.specFinished[1].Filtered {
+			t.Errorf("focused = %+v, want Filtered: false (it ran)", rep.specFinished[1])
 		}
 	})
 
 	t.Run("registry path", func(t *testing.T) {
+		t.Setenv(allowFocusEnvVar, "1")
 		var parallelRan bool
 		rep := &recordingReporter{}
 		var suite *CompiledSuite
@@ -227,8 +238,14 @@ func TestSpecItParallel_DroppedUnderFocus(t *testing.T) {
 		if parallelRan {
 			t.Error("expected the unfocused ItParallel to be dropped, but it ran")
 		}
-		if len(rep.specFinished) != 1 || rep.specFinished[0].Name != "focused" {
-			t.Errorf("expected exactly [focused] reported, got %+v", rep.specFinished)
+		if len(rep.specFinished) != 2 {
+			t.Fatalf("expected exactly [focused, parallel] reported, got %+v", rep.specFinished)
+		}
+		if rep.specFinished[0].Name != "parallel" || !rep.specFinished[0].Filtered {
+			t.Errorf("parallel = %+v, want Filtered: true", rep.specFinished[0])
+		}
+		if rep.specFinished[1].Name != "focused" || rep.specFinished[1].Filtered {
+			t.Errorf("focused = %+v, want Filtered: false (it ran)", rep.specFinished[1])
 		}
 	})
 }

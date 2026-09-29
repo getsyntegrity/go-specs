@@ -12,7 +12,6 @@ The repository is a **single Go module** (`github.com/getsyntegrity/go-specs`, r
 go-specs
 ├── specs        # runner + DSL (package: github.com/getsyntegrity/go-specs/specs)
 ├── assert       # core assertions / matchers (package: github.com/getsyntegrity/go-specs/assert)
-├── gen          # value generators for property testing (package: github.com/getsyntegrity/go-specs/gen)
 ├── snapshots    # snapshot storage and comparison (package: github.com/getsyntegrity/go-specs/snapshots)
 ├── mock         # mocking utilities (package: github.com/getsyntegrity/go-specs/mock)
 ├── report/      # event types and reporter (package: github.com/getsyntegrity/go-specs/report)
@@ -29,14 +28,13 @@ go-specs
 - **specs** → assert, report, snapshots
 - **assert** → (none)
 - **report** → (none)
-- **gen** → (none)
 - **snapshots** → (none)
 - **mock** → (none)
 - **benchmarks** → specs
 - **examples** → specs, mock
 - **tools/specs-cli** → specs
 
-No cycles: assert, gen, snapshots, and mock do not depend on specs or runner.
+No cycles: assert, snapshots, and mock do not depend on specs or runner.
 
 ---
 
@@ -48,7 +46,6 @@ Public import paths are unchanged for compatibility:
 - `github.com/getsyntegrity/go-specs/assert`
 - `github.com/getsyntegrity/go-specs/report`
 - `github.com/getsyntegrity/go-specs/mock`
-- `github.com/getsyntegrity/go-specs/gen/generators`
 - `github.com/getsyntegrity/go-specs/snapshots`
 
 ---

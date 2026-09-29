@@ -243,6 +243,44 @@ func TestFinalizeMergesCoverageThroughTheBlockDeduplicatingParser(t *testing.T) 
 	}
 }
 
+// TestFinalizeSurfacesInvalidCoverageAsReportingFailure proves a malformed coverage profile (bogus
+// mode, negative count, conflicting statement counts) fails Finalize with an error mapped to
+// ExitReportingFailure, never a silent success with corrupted totals (issue #310).
+func TestFinalizeSurfacesInvalidCoverageAsReportingFailure(t *testing.T) {
+	bodies := map[string]string{
+		"bogus mode":         "mode: bogus\nexample.com/m/alpha/x.go:10.1,12.2 3 1\n",
+		"negative count":     "mode: count\nexample.com/m/alpha/x.go:10.1,12.2 3 -5\n",
+		"conflicting stmt n": "mode: count\nexample.com/m/alpha/x.go:10.1,12.2 3 1\nexample.com/m/alpha/x.go:10.1,12.2 4 1\n",
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			base := secureTempDir(t)
+			own := mustInitRun(t, base, "run-1", validToken)
+			publishShard(t, base, own, "run-1", validToken, "example.com/m/alpha", sampleReport())
+
+			profile := filepath.Join(t.TempDir(), "cover.out")
+			if err := os.WriteFile(profile, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Finalize(context.Background(), FinalizeOptions{
+				RunID: "run-1", Token: validToken, BaseDir: base,
+				ExpectedProducers: []string{"example.com/m/alpha"},
+				CoverProfile:      profile,
+				Targets:           targetPaths(t, t.TempDir()),
+			})
+			if err == nil {
+				t.Fatal("Finalize succeeded on an invalid coverage profile")
+			}
+			if !strings.Contains(err.Error(), "parse coverage profile") {
+				t.Fatalf("err = %v, want it to name the coverage parse failure", err)
+			}
+			if ec := ExitCode(res, err); ec != ExitReportingFailure {
+				t.Fatalf("ExitCode = %d, want %d", ec, ExitReportingFailure)
+			}
+		})
+	}
+}
+
 func TestFinalizeSkipsCoverageWhenNoProfileIsGiven(t *testing.T) {
 	base := secureTempDir(t)
 	own := mustInitRun(t, base, "run-1", validToken)

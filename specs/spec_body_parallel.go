@@ -33,10 +33,19 @@ import (
 // # The supported alternative
 //
 // Concurrency is a first-class feature here, it just does not go through testing's parallel
-// subtests: ItParallel (Builder) and RunParallel/RunParallelBatched (MinimalRunner) give every spec
-// its own Context backed by a parallelBackend, which deliberately never exposes a live *testing.T
-// (see program.go's parallelStep and scheduler.go). That model owns spec identity and failure
-// attribution itself, which is precisely what testing's parallel subtests would take away.
+// subtests (t.Parallel()): Builder.ItParallel and RunParallel/RunParallelBatched (MinimalRunner)
+// give every spec its own Context backed by a parallelBackend, which deliberately never exposes a
+// live *testing.T (see program.go's parallelStep and scheduler.go). That model owns spec identity
+// and failure attribution itself, which is precisely what testing's parallel subtests would take
+// away.
+//
+// Spec.ItParallel (the *Spec/Describe/ExecutionPlan equivalent, issue #245) is different: against a
+// real *testing.T it does give each of its specs a real Go subtest and a live ctx.T, launched
+// concurrently via its own goroutine and t.Run — never t.Parallel() — so this guard's reasoning
+// still applies to a spec body calling t.Parallel() from inside one (see group_hooks.go's
+// runParallelGroup/runParallelSpec). A real Fatalf/FailNow there ends only that spec's own subtest
+// goroutine with runtime.Goexit, exactly like the sequential real-subtest paths above, which is why
+// it needs the same built-in-assertion-message fallback they do (Context.assertionMessage, #272).
 //
 // # How the guard works
 //
@@ -92,6 +101,13 @@ import (
 // sub is written before started is stored and read only after started loads true, so the atomic
 // orders it too. The three live in one struct because the closure's capture moves them to the heap:
 // as separate variables that is one allocation each, per spec, on the real *testing.T path.
+//
+// This general-purpose version still allocates its bookkeeping struct and wrapping closure fresh on
+// every call, because it exists to wrap an arbitrary body — runner.go's runSpecIsolated and both
+// group_hooks.go call sites use it exactly that way. execution_plan.go's runSpecProgramIsolated does
+// not: it reuses the same *Context spec to spec, so it inlines this same guarding logic against
+// fields on ctx instead and builds its subtest closure only once per Context rather than once per
+// spec (#244) — see that function's doc comment.
 func runSubtestGuardingParallel(t *testing.T, name string, body func(subT *testing.T)) (ran, failed, skipped, parked bool) {
 	var st struct {
 		started, done atomic.Bool

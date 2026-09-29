@@ -1,6 +1,9 @@
 package specs
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // bytecodeCompiler emits instructions directly into an ExecutionPlan during Describe.
 // No NodeArena is allocated; BeforeEach/AfterEach/It append instructions immediately.
@@ -9,6 +12,11 @@ type bytecodeCompiler struct {
 	nameStack   []string
 	beforeStack [][]func(*Context)
 	afterStack  [][]func(*Context)
+	// sealedStack mirrors nameStack: sealedStack[i] is true once scope i has registered a spec or a
+	// nested scope. A BeforeEach/AfterEach captured by EmitIt only reaches the specs registered after
+	// it, so registering one on a sealed scope would silently skip the earlier specs (issue #307);
+	// AppendBefore/AppendAfter panic instead. Pooled, so it costs nothing per suite.
+	sealedStack []bool
 	// groupScopes holds each open scope's own once-per-group hooks (issue #207), nil until the
 	// first BeforeAll/AfterAll this pooled compiler ever sees, and kept (emptied) across reuse after
 	// that. Unlike beforeStack/afterStack these are never flattened via flattenHooks: a
@@ -40,6 +48,28 @@ type bytecodeCompiler struct {
 	// closeOpenParallelRun for why ending at every scope transition — not just a hooked one — is
 	// still correct.
 	openParallelStart int
+	// scopeParent/scopeDeclaredName log every scope this compiler has ever pushed (PushScope), in
+	// declaration order, indexed by scope-record id — unlike nameStack/groupStartStack, which unwind
+	// on PopScope and describe only currently-open scopes. finalizeReportPaths needs every sibling of
+	// a parent scope, however deep, before it can assign a duplicate's ordinal (issue #275): the
+	// bytecode compiler emits siblings incrementally as PushScope/PopScope run, so a later sibling
+	// (or a literal collision declared after an earlier duplicate) is not yet known at PushScope time
+	// — see docs/DSL.md. scopeParent[id] is the enclosing scope's id, or -1 for this compile's own
+	// root scope.
+	scopeParent       []int
+	scopeDeclaredName []string
+	// scopeIDStack mirrors nameStack (identical push/pop timing and length) but holds each open
+	// scope's record id instead of its literal name: the identity a spec, skip/pending mark or hook
+	// group needs to recover its true enclosing scopes once every sibling's label is known, since two
+	// sibling scopes sharing a literal name are otherwise indistinguishable after emission.
+	scopeIDStack []int
+	// pathScopeIDs/pathScopeIDStart/pathScopeIDLen mirror ExecutionPlan.PathScopes/PathScopeStart/
+	// PathScopeLen — same adjacency-sharing scheme (see appendSpecPath) — but store scope-record ids
+	// instead of resolved strings, so a spec's report Path can be resolved once, at
+	// finalizeReportPaths, instead of guessed at EmitIt time before its scope's siblings are known.
+	pathScopeIDs     []int
+	pathScopeIDStart []int
+	pathScopeIDLen   []int
 	// scratch for flattening hooks and building program
 	beforeFlat []func(*Context)
 	afterFlat  []func(*Context)
@@ -70,11 +100,18 @@ func newBytecodeCompiler() *bytecodeCompiler {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
+	c.sealedStack = c.sealedStack[:0]
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
 	c.focusIndices = nil
 	c.openParallelStart = -1
+	c.scopeParent = c.scopeParent[:0]
+	c.scopeDeclaredName = c.scopeDeclaredName[:0]
+	c.scopeIDStack = c.scopeIDStack[:0]
+	c.pathScopeIDs = c.pathScopeIDs[:0]
+	c.pathScopeIDStart = c.pathScopeIDStart[:0]
+	c.pathScopeIDLen = c.pathScopeIDLen[:0]
 	return c
 }
 
@@ -83,20 +120,37 @@ func (c *bytecodeCompiler) reset() {
 	c.nameStack = c.nameStack[:0]
 	c.beforeStack = c.beforeStack[:0]
 	c.afterStack = c.afterStack[:0]
+	c.sealedStack = c.sealedStack[:0]
 	c.groupScopes.truncate(0)
 	c.groupStartStack = c.groupStartStack[:0]
 	c.groups = nil
 	c.focusIndices = nil
 	c.openParallelStart = -1
+	c.scopeParent = c.scopeParent[:0]
+	c.scopeDeclaredName = c.scopeDeclaredName[:0]
+	c.scopeIDStack = c.scopeIDStack[:0]
+	c.pathScopeIDs = c.pathScopeIDs[:0]
+	c.pathScopeIDStart = c.pathScopeIDStart[:0]
+	c.pathScopeIDLen = c.pathScopeIDLen[:0]
 	bytecodeCompilerPool.Put(c)
 }
 
 // PushScope enters a Describe/When block. Call PopScope when the block callback returns.
 func (c *bytecodeCompiler) PushScope(name string) {
 	c.closeOpenParallelRun()
+	c.sealTop()
+	parent := -1
+	if n := len(c.scopeIDStack); n > 0 {
+		parent = c.scopeIDStack[n-1]
+	}
+	id := len(c.scopeDeclaredName)
+	c.scopeParent = append(c.scopeParent, parent)
+	c.scopeDeclaredName = append(c.scopeDeclaredName, name)
+	c.scopeIDStack = append(c.scopeIDStack, id)
 	c.nameStack = append(c.nameStack, name)
 	c.beforeStack = append(c.beforeStack, nil)
 	c.afterStack = append(c.afterStack, nil)
+	c.sealedStack = append(c.sealedStack, false)
 	c.groupStartStack = append(c.groupStartStack, len(c.plan.Names))
 }
 
@@ -115,9 +169,15 @@ func (c *bytecodeCompiler) PopScope() {
 	if n := len(c.afterStack); n > 0 {
 		c.afterStack = c.afterStack[:n-1]
 	}
+	if n := len(c.sealedStack); n > 0 {
+		c.sealedStack = c.sealedStack[:n-1]
+	}
 	c.groupScopes.truncate(len(c.nameStack))
 	if n := len(c.groupStartStack); n > 0 {
 		c.groupStartStack = c.groupStartStack[:n-1]
+	}
+	if n := len(c.scopeIDStack); n > 0 {
+		c.scopeIDStack = c.scopeIDStack[:n-1]
 	}
 }
 
@@ -137,7 +197,11 @@ func (c *bytecodeCompiler) closeGroupHooksAtTop() {
 	}
 	start := c.groupStartStack[n-1]
 	end := len(c.plan.Names) - 1
-	registerHookGroup(&c.groups, c.nameStack, c.nameStack[n-1], before, after, start, end)
+	// reportPath is nil here: this compiler discovers siblings incrementally (see PushScope), so this
+	// group's disambiguated ReportPath cannot be known until finalizeReportPaths, at TakePlan, has
+	// seen every sibling of its parent. scopeIDStack (copied by registerHookGroup) is what lets it be
+	// resolved there.
+	registerHookGroup(&c.groups, c.nameStack, c.nameStack[n-1], nil, c.scopeIDStack, before, after, start, end)
 }
 
 // closeOpenParallelRun ends the compiler's currently open ItParallel run, if any (issue #245's
@@ -156,6 +220,30 @@ func (c *bytecodeCompiler) closeOpenParallelRun() {
 	c.openParallelStart = -1
 }
 
+// sealTop records that the innermost open scope has registered a spec or a nested scope.
+func (c *bytecodeCompiler) sealTop() {
+	if n := len(c.sealedStack); n > 0 {
+		c.sealedStack[n-1] = true
+	}
+}
+
+// requireUnsealed panics when the innermost scope already registered a spec or nested scope (issue
+// #307): a per-spec hook declared now would apply only to later specs while BeforeAll/AfterAll
+// cover the whole scope, so a teardown assertion could silently never run for earlier specs.
+func (c *bytecodeCompiler) requireUnsealed(method string) {
+	if n := len(c.sealedStack); n > 0 && c.sealedStack[n-1] {
+		panic(lateHookMessage(method))
+	}
+}
+
+// lateHookMessage is the shared build-time diagnostic for a per-spec hook registered after the
+// first spec or nested scope of its scope (issue #307), used by every build path.
+func lateHookMessage(method string) string {
+	return "specs: " + method + " registered after a spec or nested scope in the same scope; " +
+		"per-spec hooks apply only to specs declared after them, so declare " + method +
+		" before the first It/When/Describe of its scope"
+}
+
 // AppendBefore adds a before-each hook to the current scope.
 func (c *bytecodeCompiler) AppendBefore(fn func(*Context)) {
 	if fn == nil {
@@ -164,6 +252,7 @@ func (c *bytecodeCompiler) AppendBefore(fn func(*Context)) {
 	if len(c.beforeStack) == 0 {
 		return
 	}
+	c.requireUnsealed("BeforeEach")
 	i := len(c.beforeStack) - 1
 	c.beforeStack[i] = append(c.beforeStack[i], fn)
 }
@@ -176,6 +265,7 @@ func (c *bytecodeCompiler) AppendAfter(fn func(*Context)) {
 	if len(c.afterStack) == 0 {
 		return
 	}
+	c.requireUnsealed("AfterEach")
 	i := len(c.afterStack) - 1
 	c.afterStack[i] = append(c.afterStack[i], fn)
 }
@@ -278,6 +368,7 @@ func (c *bytecodeCompiler) flattenHooks() {
 
 // EmitIt appends one spec program with specialized opcodes: OpBeforeHook, OpBody, OpAfterHook.
 func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
+	c.sealTop()
 	c.flattenHooks()
 	c.program = c.program[:0]
 	for _, h := range c.beforeFlat {
@@ -300,10 +391,26 @@ func (c *bytecodeCompiler) EmitIt(name string, body func(*Context)) {
 	c.plan.ProgramLen = append(c.plan.ProgramLen, len(c.program))
 	c.plan.Names = append(c.plan.Names, name)
 	c.plan.FullNames = append(c.plan.FullNames, c.fullName(name))
-	// Record the enclosing scopes themselves: fullName's join is not injective, so a name containing
-	// "/" cannot be recovered from the breadcrumb afterwards. Only the scopes are stored — the plan
-	// already holds name in Names — and nameStack is passed as-is, never pushed to and popped from.
-	appendSpecPath(c.plan, c.nameStack)
+	// Record the enclosing scopes' identity, not yet their resolved report-Path strings: this
+	// compiler discovers siblings incrementally (see PushScope), so a duplicate's disambiguated label
+	// cannot be assigned until finalizeReportPaths, at TakePlan, has seen every sibling of its parent
+	// (docs/DSL.md). scopeIDStack mirrors nameStack exactly, so it can be resolved through the labels
+	// finalizeReportPaths computes without losing which physical scope activation each position came
+	// from — the same distinction the shared literal name c.nameStack alone).
+	c.appendSpecScopeIDs(c.scopeIDStack)
+}
+
+// appendSpecScopeIDs records the scope-record ids enclosing one spec, applying the same
+// adjacency-sharing scheme appendSpecPath uses for resolved strings (see pathScopeIDs): consecutive
+// specs declared in the same block share one window instead of each storing a copy.
+func (c *bytecodeCompiler) appendSpecScopeIDs(ids []int) {
+	start := len(c.pathScopeIDs) - len(ids)
+	if start < 0 || !slices.Equal(c.pathScopeIDs[start:], ids) {
+		start = len(c.pathScopeIDs)
+		c.pathScopeIDs = append(c.pathScopeIDs, ids...)
+	}
+	c.pathScopeIDStart = append(c.pathScopeIDStart, start)
+	c.pathScopeIDLen = append(c.pathScopeIDLen, len(ids))
 }
 
 // EmitItParallel appends one ItParallel spec (issue #245's second spec): the exact same instruction
@@ -326,12 +433,14 @@ func (c *bytecodeCompiler) EmitItParallel(name string, body func(*Context)) {
 // later turns out to have a focus, applyFocusFilter drops every buffered skip/pending mark
 // wholesale, the same as Builder drops every unfocused It/SkipIt/PendingIt.
 func (c *bytecodeCompiler) EmitSkip(name string) {
-	registerSkipMark(&c.groups, name, c.nameStack)
+	c.sealTop()
+	registerSkipMark(&c.groups, name, c.nameStack, c.scopeIDStack)
 }
 
 // EmitPending is EmitSkip for PendingIt.
 func (c *bytecodeCompiler) EmitPending(name string) {
-	registerPendingMark(&c.groups, name, c.nameStack)
+	c.sealTop()
+	registerPendingMark(&c.groups, name, c.nameStack, c.scopeIDStack)
 }
 
 // EmitFocusedIt is EmitIt for FIt (issue #245): compiles the same instruction stream as a regular
@@ -354,6 +463,12 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 	if len(c.focusIndices) == 0 {
 		return
 	}
+	// Allocated unconditionally, even if nothing below ends up excluded (every registered spec
+	// happened to be an FIt): focusedCount must be set so the fail-on-focus check (issue #273) still
+	// fires — that check is about focus being active at all, not about anything being excluded.
+	if c.groups == nil {
+		c.groups = &planGroups{}
+	}
 	plan := c.plan
 	n := len(plan.Names)
 	oldToNew := make([]int, n)
@@ -365,8 +480,8 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 	fullNames := make([]string, 0, len(keep))
 	programStart := make([]int, 0, len(keep))
 	programLen := make([]int, 0, len(keep))
-	pathScopeStart := make([]int, 0, len(keep))
-	pathScopeLen := make([]int, 0, len(keep))
+	pathScopeIDStart := make([]int, 0, len(keep))
+	pathScopeIDLen := make([]int, 0, len(keep))
 	for newIdx, oldIdx := range keep {
 		if oldIdx < 0 || oldIdx >= n {
 			continue
@@ -376,19 +491,56 @@ func (c *bytecodeCompiler) applyFocusFilter() {
 		fullNames = append(fullNames, plan.FullNames[oldIdx])
 		programStart = append(programStart, plan.ProgramStart[oldIdx])
 		programLen = append(programLen, plan.ProgramLen[oldIdx])
-		pathScopeStart = append(pathScopeStart, plan.PathScopeStart[oldIdx])
-		pathScopeLen = append(pathScopeLen, plan.PathScopeLen[oldIdx])
+		// The plan's own PathScope{Start,Len} are not populated yet — finalizeReportPaths builds them
+		// after this filter runs, from the compiler's still-unresolved scope-id windows (see
+		// pathScopeIDs) — so this filters those instead, the same way it filters every other
+		// per-spec slice above.
+		pathScopeIDStart = append(pathScopeIDStart, c.pathScopeIDStart[oldIdx])
+		pathScopeIDLen = append(pathScopeIDLen, c.pathScopeIDLen[oldIdx])
 	}
+	// Every dropped index — a plain It, or a spec belonging to a dropped ItParallel run: this
+	// compiler never emits ItParallel any differently from It (see EmitItParallel), so both look
+	// identical here — is recorded before plan.Names/FullNames are overwritten below, so it can
+	// still be reported, as Filtered, instead of vanishing without a trace (issue #273).
+	for oldIdx := 0; oldIdx < n; oldIdx++ {
+		if oldToNew[oldIdx] == -1 {
+			// scopesFromPlan cannot be used here: plan.PathScopes/PathScopeStart/PathScopeLen are not
+			// populated yet (finalizeReportPaths, called after applyFocusFilter returns, builds them) —
+			// reading them now would silently capture an empty path. scopeIDWindow instead captures
+			// oldIdx's still-unresolved scope-id window from the compiler's own bookkeeping, exactly as
+			// EmitSkip/EmitPending already do for a skip/pending mark, so finalizeReportPaths can resolve
+			// it later, once every sibling scope is known (issue #275 regression).
+			ids := scopeIDWindow(c.pathScopeIDs, c.pathScopeIDStart[oldIdx], c.pathScopeIDLen[oldIdx])
+			registerFocusExcludedMark(&c.groups, plan.Names[oldIdx], nil, ids)
+		}
+	}
+	c.groups.focusedCount = len(fullNames)
+	c.groups.focusedNames = append([]string(nil), fullNames...)
+
 	plan.Names, plan.FullNames = names, fullNames
 	plan.ProgramStart, plan.ProgramLen = programStart, programLen
-	plan.PathScopeStart, plan.PathScopeLen = pathScopeStart, pathScopeLen
+	c.pathScopeIDStart, c.pathScopeIDLen = pathScopeIDStart, pathScopeIDLen
 
-	if c.groups != nil {
-		// Every unfocused SkipIt/PendingIt is dropped too, the same as every unfocused It.
-		c.groups.skipped = nil
-		c.groups.pending = nil
-		c.groups = remapHookGroups(c.groups, oldToNew)
+	// Every unfocused SkipIt/PendingIt mark is excluded too, the same as every unfocused It (issue
+	// #245) — but, since issue #273, moved into focusExcluded rather than dropped, so it is still
+	// reported, as Filtered rather than Skipped/Pending.
+	c.groups.focusExcluded = append(c.groups.focusExcluded, c.groups.skipped...)
+	c.groups.focusExcluded = append(c.groups.focusExcluded, c.groups.pending...)
+	c.groups.skipped = nil
+	c.groups.pending = nil
+	c.groups = remapHookGroups(c.groups, oldToNew)
+}
+
+// scopeIDWindow returns the scope-record id window [start, start+length) of ids, a fresh copy — the
+// still-unresolved counterpart of appendSpecPath/scopesFromPlan's resolved-string window, used by
+// applyFocusFilter to capture a focus-excluded spec's enclosing scopes before finalizeReportPaths has
+// populated plan.PathScopes (issue #275 regression): the ids are captured now, labels are resolved
+// from them later, once every sibling scope is known (see resolveGroupReportPaths).
+func scopeIDWindow(ids []int, start, length int) []int {
+	if start < 0 || length < 0 || start+length > len(ids) {
+		return nil
 	}
+	return append([]int(nil), ids[start:start+length]...)
 }
 
 // Plan returns the built ExecutionPlan. Caller owns it after TakePlan; compiler is reset.
@@ -410,7 +562,32 @@ func (c *bytecodeCompiler) takePlanAndGroups() (*ExecutionPlan, *planGroups) {
 	c.closeOpenParallelRun()
 	c.closeGroupHooksAtTop()
 	c.applyFocusFilter()
+	c.finalizeReportPaths()
 	plan, groups := c.plan, c.groups
 	c.reset()
 	return plan, groups
+}
+
+// finalizeReportPaths computes this suite's sibling-group disambiguation labels (issue #275,
+// docs/DSL.md) and applies them to the plan's report Path and to every buffered skip/pending mark and
+// hook group's ReportPath — once, here, after applyFocusFilter has already trimmed
+// pathScopeID{Start,Len} down to the specs that survive focus filtering. This compiler discovers
+// siblings incrementally as PushScope/PopScope run, so a duplicate's ordinal cannot be assigned any
+// earlier than this: scopeParent/scopeDeclaredName record every scope ever pushed, however deep,
+// which PushScope's own nameStack/groupStartStack (already unwound by now) do not.
+//
+// Go subtest identity (plan.FullNames, computed by fullName from the literal nameStack at EmitIt
+// time) is untouched: nothing here reads or writes it.
+func (c *bytecodeCompiler) finalizeReportPaths() {
+	labels := computeScopeLabels(c.scopeParent, c.scopeDeclaredName)
+	plan := c.plan
+	plan.PathScopes = make([]string, len(c.pathScopeIDs))
+	for i, id := range c.pathScopeIDs {
+		if id >= 0 && id < len(labels) {
+			plan.PathScopes[i] = labels[id]
+		}
+	}
+	plan.PathScopeStart = c.pathScopeIDStart
+	plan.PathScopeLen = c.pathScopeIDLen
+	resolveGroupReportPaths(c.groups, labels)
 }

@@ -1,17 +1,24 @@
 // spec_focus_test.go pins issue #245's T2: FIt on *Spec must filter the whole Describe/BuildSuite
 // tree the way Builder.FIt/finalize already does (builder.go): once any FIt is registered, only
-// focused specs compile, every other It/SkipIt/PendingIt in the same call is dropped, and hooks
-// (BeforeEach/AfterEach, BeforeAll/AfterAll) around a focused spec still run. Both Spec build paths
-// are covered: the bytecode compiler and the Analyze/registry path.
+// focused specs compile, every other It/SkipIt/PendingIt in the same call is dropped from
+// execution, and hooks (BeforeEach/AfterEach, BeforeAll/AfterAll) around a focused spec still run.
+// Both Spec build paths are covered: the bytecode compiler and the Analyze/registry path.
+//
+// Every test below that registers an FIt opts out of the fail-on-committed-focus policy (issue
+// #273, see focus_fail_test.go for that policy's own tests) via GO_SPECS_ALLOW_FOCUS=1: this file is
+// about the filter itself, not that separate policy decision.
 package specs
 
 import (
 	"testing"
+
+	"github.com/getsyntegrity/go-specs/report"
 )
 
 // TestSpecFItOnlyFocusedRuns_CompilerPath pins the core filter on the bytecode-compiler path: with
 // one FIt present, only it runs; a plain It and a SkipIt/PendingIt in the same tree are dropped.
 func TestSpecFItOnlyFocusedRuns_CompilerPath(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
 	var ran []string
 	suite := BuildSuite(nil, "suite", func(s *Spec) {
 		s.It("plain", func(*Context) { ran = append(ran, "plain") })
@@ -27,6 +34,7 @@ func TestSpecFItOnlyFocusedRuns_CompilerPath(t *testing.T) {
 
 // TestSpecFItOnlyFocusedRuns_RegistryPath is the Analyze/registry-path equivalent.
 func TestSpecFItOnlyFocusedRuns_RegistryPath(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
 	var ran []string
 	var suite *CompiledSuite
 	Analyze(func() {
@@ -43,10 +51,10 @@ func TestSpecFItOnlyFocusedRuns_RegistryPath(t *testing.T) {
 	}
 }
 
-// TestSpecFItDropsUnfocusedFromReport pins that an unfocused spec is not just unrun but never
-// reported at all — matching Builder's finalize (which removes it from items before groups are
-// built), not merely skipped.
+// TestSpecFItDropsUnfocusedFromReport pins that an unfocused spec is not run, but — since issue
+// #273 — is still reported, as Filtered, rather than vanishing without a trace the way it used to.
 func TestSpecFItDropsUnfocusedFromReport(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
 	rep := &recordingReporter{}
 	suite := BuildSuite(nil, "suite", func(s *Spec) {
 		s.It("plain", func(*Context) {})
@@ -55,11 +63,20 @@ func TestSpecFItDropsUnfocusedFromReport(t *testing.T) {
 	suite.Reporter = rep
 	suite.Run(t)
 
-	if len(rep.specFinished) != 1 {
-		t.Fatalf("expected exactly one reported spec, got %d: %+v", len(rep.specFinished), rep.specFinished)
+	if len(rep.specFinished) != 2 {
+		t.Fatalf("expected exactly two reported specs (focused ran, plain filtered), got %d: %+v", len(rep.specFinished), rep.specFinished)
 	}
-	if rep.specFinished[0].Name != "focused" {
-		t.Errorf("Name = %q, want %q", rep.specFinished[0].Name, "focused")
+	byName := map[string]report.SpecResultEvent{}
+	for _, e := range rep.specFinished {
+		byName[e.Name] = e
+	}
+	focused, ok := byName["focused"]
+	if !ok || focused.Filtered || focused.Failed {
+		t.Errorf("focused = %+v, want ran (not Filtered, not Failed)", focused)
+	}
+	plain, ok := byName["plain"]
+	if !ok || !plain.Filtered {
+		t.Errorf("plain = %+v, want Filtered: true", plain)
 	}
 }
 
@@ -95,6 +112,7 @@ func TestSpecFItNilFnIsNoOp(t *testing.T) {
 func TestSpecFItHooksAroundFocusedSpecStillRun(t *testing.T) {
 	run := func(t *testing.T, build func(fn func(*Spec)) *CompiledSuite) {
 		t.Helper()
+		t.Setenv(allowFocusEnvVar, "1")
 		var order []string
 		suite := build(func(s *Spec) {
 			s.BeforeAll(func(*Context) { order = append(order, "beforeAll") })
@@ -136,6 +154,7 @@ func TestSpecFItHooksAroundFocusedSpecStillRun(t *testing.T) {
 func TestSpecFItGroupWithZeroSpecsAfterFocusIsNeverEntered(t *testing.T) {
 	run := func(t *testing.T, build func(fn func(*Spec)) *CompiledSuite) {
 		t.Helper()
+		t.Setenv(allowFocusEnvVar, "1")
 		hookRan := false
 		var focusedRan bool
 		suite := build(func(s *Spec) {
@@ -173,6 +192,7 @@ func TestSpecFItGroupWithZeroSpecsAfterFocusIsNeverEntered(t *testing.T) {
 func TestSpecFItGroupSurvivingFocusIsStillEntered(t *testing.T) {
 	run := func(t *testing.T, build func(fn func(*Spec)) *CompiledSuite) {
 		t.Helper()
+		t.Setenv(allowFocusEnvVar, "1")
 		var order []string
 		suite := build(func(s *Spec) {
 			s.When("partially focused", func(w *Spec) {
@@ -210,6 +230,7 @@ func TestSpecFItGroupSurvivingFocusIsStillEntered(t *testing.T) {
 // call, not process-wide: a focus registered in one suite must not filter an unrelated suite built
 // separately, on both build paths.
 func TestSpecFItScopedToOneDescribeCall(t *testing.T) {
+	t.Setenv(allowFocusEnvVar, "1")
 	var otherRan bool
 	unrelated := BuildSuite(nil, "unrelated", func(s *Spec) {
 		s.It("runs regardless", func(*Context) { otherRan = true })
