@@ -263,6 +263,12 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		"ContainAnyOf":             {ContainAnyOf(1, 2), []int{2}, []int{3}, "expected [3] to contain any of [1 2]"},
 		"ContainTheSameElementsAs": {ContainTheSameElementsAs([]int{1, 2}), []int{2, 1}, []int{1}, "expected [1] to contain the same elements as [1 2] — missing [2]"},
 		"BeOneOf":                  {BeOneOf(1, 2), 2, 3, "expected 3 to be one of [1 2]"},
+		"BeGreaterThan":            {BeGreaterThan(1), 2, 1, "expected 1 to be greater than 1"},
+		"BeGreaterThanOrEqual":     {BeGreaterThanOrEqual(2), 2, 1, "expected 1 to be greater than or equal to 2"},
+		"BeLessThan":               {BeLessThan(2), 1, 2, "expected 2 to be less than 2"},
+		"BeLessThanOrEqual":        {BeLessThanOrEqual(1), 1, 2, "expected 2 to be less than or equal to 1"},
+		"BeBetween":                {BeBetween(1, 3), 3, 4, "expected 4 to be between 1 and 3 (inclusive)"},
+		"BeCloseTo":                {BeCloseTo(3, 0.5), 3.25, 4.0, "expected 4 to be within 0.5 of 3, difference is 1"},
 		"MatchRegex":               {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
@@ -319,6 +325,15 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect([]int{3, 1, 2}).To(ContainTheSameElementsAs([]int{1, 2, 3}))
 			ctx.Expect(2).To(BeOneOf(1, 2, 3))
 			ctx.Expect([]int{1}).To(Not(ContainAllOf(1, 2)))
+		})
+		s.It("accepts ordering and closeness", func(ctx *Context) {
+			ctx.Expect(5).To(BeGreaterThan(3))
+			ctx.Expect(uint8(5)).To(BeGreaterThanOrEqual(int64(5)))
+			ctx.Expect(2.5).To(BeLessThan(3))
+			ctx.Expect("a").To(BeLessThanOrEqual("b"))
+			ctx.Expect(5).To(BeBetween(1, 10))
+			ctx.Expect(3.14159).To(BeCloseTo(3.14, 0.01))
+			ctx.Expect(5).To(Not(BeLessThan(1)))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int

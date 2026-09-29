@@ -53,6 +53,25 @@ func ContainTheSameElementsAs(elems any) Matcher { return assert.ContainTheSameE
 // BeOneOf expects actual to equal at least one of values.
 func BeOneOf(values ...any) Matcher { return assert.BeOneOf(values...) }
 
+// BeGreaterThan expects actual > x. Numbers of any int, uint or float kind compare by exact value;
+// strings compare with strings; NaN never matches.
+func BeGreaterThan(x any) Matcher { return assert.BeGreaterThan(x) }
+
+// BeGreaterThanOrEqual expects actual >= x; see BeGreaterThan.
+func BeGreaterThanOrEqual(x any) Matcher { return assert.BeGreaterThanOrEqual(x) }
+
+// BeLessThan expects actual < x; see BeGreaterThan.
+func BeLessThan(x any) Matcher { return assert.BeLessThan(x) }
+
+// BeLessThanOrEqual expects actual <= x; see BeGreaterThan.
+func BeLessThanOrEqual(x any) Matcher { return assert.BeLessThanOrEqual(x) }
+
+// BeBetween expects lo <= actual <= hi (both bounds inclusive), for numbers or strings.
+func BeBetween(lo, hi any) Matcher { return assert.BeBetween(lo, hi) }
+
+// BeCloseTo expects |actual - target| <= delta for a number actual of any kind.
+func BeCloseTo(target, delta float64) Matcher { return assert.BeCloseTo(target, delta) }
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }
