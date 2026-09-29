@@ -31,6 +31,15 @@ func EndWith(suffix string) Matcher { return assert.EndWith(suffix) }
 // once. An invalid pattern never matches and its failure message carries the compile error.
 func MatchRegex(pattern string) Matcher { return assert.MatchRegex(pattern) }
 
+// HaveKey expects actual (a map) to contain key; a key of the wrong type is a non-match.
+func HaveKey(key any) Matcher { return assert.HaveKey(key) }
+
+// HaveValue expects actual (a map) to contain a value equal to value.
+func HaveValue(value any) Matcher { return assert.HaveValue(value) }
+
+// HavePair expects actual (a map) to map key to a value equal to value.
+func HavePair(key, value any) Matcher { return assert.HavePair(key, value) }
+
 // MatchError expects actual to be an error carrying target's identity, via errors.Is. Equal applies
 // the same semantics to errors; MatchError states the intent explicitly at the call site.
 func MatchError(target error) Matcher { return assert.MatchError(target) }

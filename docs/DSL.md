@@ -784,9 +784,26 @@ specs.StartWith("a").FailureMessage(42)    // "StartWith: int is not a string or
 
 `MatchRegex` compiles its pattern once, when the matcher is built. An invalid pattern does not panic: the matcher never matches, and its failure message carries the compile error (`MatchRegex: invalid pattern "(": error parsing regexp: ...`), so the mistake surfaces at the assertion that used it. As with `HaveLen`, `Not(StartWith("a"))` succeeds on a non-text actual, because the inner matcher fails to match it.
 
+### `HaveKey`, `HaveValue` and `HavePair`
+
+`HaveKey(key)` expects a map to contain `key`, `HaveValue(value)` expects at least one value equal to `value`, and `HavePair(key, value)` expects `key` to map to a value equal to `value` (a value that only exists under another key does not count). Values compare with `ValuesEqual`, the same comparison `Equal` uses, so `1` and `int64(1)` are different values and an error compares by identity.
+
+```go
+m := map[string]any{"name": "go-specs", "stars": 42}
+ctx.Expect(m).To(specs.HaveKey("name"))
+ctx.Expect(m).To(specs.HaveValue(42))
+ctx.Expect(m).To(specs.HavePair("name", "go-specs"))
+
+specs.HavePair("stars", 7).FailureMessage(m) // "expected map[name:go-specs stars:42] to have key stars with value 7 — key has value 42"
+specs.HaveKey(1).FailureMessage(m)           // "expected map[...] to have key 1 — map[string]interface {} keys are string, got int"
+specs.HaveKey("a").FailureMessage(42)        // "HaveKey: int is not a map"
+```
+
+`map[string]any` and `map[string]string` are the allocation-free fast paths; every other map (named map types included) goes through reflection. A key whose type cannot be assigned to the map's key type is an ordinary non-match, never a panic, and the failure says which key type the map has. That is assignability, not conversion: a plain `string` is not a key of a `map[MyString]V`, and `nil` is only a key of a map whose key type is an interface. A key present with a `nil` value is still a key. A non-map actual never matches, and, as with `HaveLen`, `Not(HaveKey("a"))` therefore succeeds on it.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation

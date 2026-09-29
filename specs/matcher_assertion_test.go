@@ -256,6 +256,9 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		"BeEmpty":    {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
 		"StartWith":  {StartWith("a"), "abc", "xbc", `expected "xbc" to start with "a"`},
 		"EndWith":    {EndWith("c"), "abc", "abx", `expected "abx" to end with "c"`},
+		"HaveKey":    {HaveKey("a"), map[string]int{"a": 1}, map[string]int{"b": 1}, "expected map[b:1] to have key a"},
+		"HaveValue":  {HaveValue(1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have value 1"},
+		"HavePair":   {HavePair("a", 1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have key a with value 1 — key has value 2"},
 		"MatchRegex": {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
@@ -297,6 +300,14 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 			ctx.Expect("id-42").To(MatchRegex(`^id-\d+$`))
 			ctx.Expect("hello").To(Not(StartWith("world")))
 			ctx.Expect("hello").To(All(StartWith("he"), EndWith("lo")))
+		})
+		s.It("accepts map keys, values and pairs", func(ctx *Context) {
+			m := map[string]any{"name": "go-specs", "stars": 42}
+			ctx.Expect(m).To(HaveKey("name"))
+			ctx.Expect(m).To(HaveValue(42))
+			ctx.Expect(m).To(HavePair("name", "go-specs"))
+			ctx.Expect(m).To(Not(HaveKey("missing")))
+			ctx.Expect(m).To(All(HaveKey("stars"), HaveLen(2)))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
