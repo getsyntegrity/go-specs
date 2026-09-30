@@ -87,19 +87,25 @@ func (m *equalMatcher) Description() string {
 // exported so the DSL's inlined comparison paths report identically to the matcher — a divergence
 // between the two wordings is exactly as confusing as a divergence between the two comparisons.
 func EqualFailureMessage(expected, actual any) string {
+	return equalFailureMessageWith(expected, actual, newFPMeter())
+}
+
+// equalFailureMessageWith builds the message with one fingerprint meter shared by the first line and
+// the structural diff, so the tie-break work of the whole message is bounded together.
+func equalFailureMessageWith(expected, actual any, meter *fpMeter) string {
 	if expectedErr, actualErr, ok := errorOperands(expected, actual); ok {
 		return errorMismatchMessage(expectedErr, actualErr)
 	}
 	var renderedActual, renderedExpected string
 	if !safeForFmt(reflect.ValueOf(actual)) || !safeForFmt(reflect.ValueOf(expected)) {
 		// %v would recurse forever through a self-containing map or slice and orders NaN keys by iteration; the diff renderer is bounded and deterministic.
-		renderedActual = renderDiffValue(reflect.ValueOf(actual), false)
-		renderedExpected = renderDiffValue(reflect.ValueOf(expected), false)
+		renderedActual = renderDiffValueWith(reflect.ValueOf(actual), false, meter)
+		renderedExpected = renderDiffValueWith(reflect.ValueOf(expected), false, meter)
 	} else {
 		renderedActual, renderedExpected = describeMismatch(actual, expected)
 	}
 	msg := fmt.Sprintf("expected %s to equal %s", renderedActual, renderedExpected)
-	if diff := structuralDiff(expected, actual); diff != "" {
+	if diff := structuralDiffWith(expected, actual, meter); diff != "" {
 		msg += "\n" + diff
 	}
 	return msg

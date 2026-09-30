@@ -1,13 +1,13 @@
 package assert
 
 import (
-	"bytes"
 	"fmt"
 	"math"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // Structural diffs explain a failed Equal / ToEqual comparison of composite values by naming the
@@ -33,6 +33,7 @@ const (
 type diffEntry struct{ path, detail string }
 
 type diffWalker struct {
+	meter   *fpMeter // the work budget of the message this walk belongs to
 	entries []diffEntry
 	limit   int  // stop once more than limit entries exist
 	depth   int  // paths deeper than this are summarised
@@ -45,11 +46,17 @@ type diffWalker struct {
 // would add nothing: neither value is a composite, or the walk finds no difference (an oriented error
 // comparison, for example, is decided elsewhere and has no structural story).
 func structuralDiff(expected, actual any) string {
+	return structuralDiffWith(expected, actual, newFPMeter())
+}
+
+// structuralDiffWith is structuralDiff spending the fingerprint budget of meter, which the caller
+// shares with every other part of the same message.
+func structuralDiffWith(expected, actual any, meter *fpMeter) string {
 	ev, av := reflect.ValueOf(expected), reflect.ValueOf(actual)
 	if !isDiffComposite(ev) && !isDiffComposite(av) {
 		return ""
 	}
-	w := &diffWalker{limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{},
+	w := &diffWalker{meter: meter, limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{},
 		methods: safeForFmt(ev) && safeForFmt(av)}
 	w.walk(ev, av, diffRootLabel(ev, av), 0)
 	if len(w.entries) == 0 {
@@ -101,7 +108,9 @@ func diffRootLabel(values ...reflect.Value) string {
 }
 
 // render renders v for one diff line with this walk's method policy.
-func (w *diffWalker) render(v reflect.Value) string { return renderDiffValue(v, w.methods) }
+func (w *diffWalker) render(v reflect.Value) string {
+	return renderDiffValueWith(v, w.methods, w.meter)
+}
 
 func (w *diffWalker) full() bool { return len(w.entries) > w.limit }
 
@@ -115,7 +124,7 @@ func (w *diffWalker) add(path, detail string) {
 // depth limit and the opaque-struct rule decide whether a subtree needs an entry, without walking
 // or rendering it in full.
 func (w *diffWalker) differs(a, b reflect.Value) bool {
-	sub := &diffWalker{limit: 0, depth: 1 << 30, opaque: true, visited: map[refPair]bool{}}
+	sub := &diffWalker{meter: w.meter, limit: 0, depth: 1 << 30, opaque: true, visited: map[refPair]bool{}}
 	sub.walk(a, b, "", 0)
 	return len(sub.entries) > 0
 }
@@ -240,7 +249,7 @@ func joinField(path, name string) string {
 func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 	if a.Kind() == reflect.Slice {
 		if a.IsNil() != b.IsNil() {
-			w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods), describeNilness(b, w.methods)))
+			w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods, w.meter), describeNilness(b, w.methods, w.meter)))
 			return
 		}
 		if a.Pointer() == b.Pointer() && a.Len() == b.Len() {
@@ -270,7 +279,7 @@ func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 
 func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	if a.IsNil() != b.IsNil() {
-		w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods), describeNilness(b, w.methods)))
+		w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods, w.meter), describeNilness(b, w.methods, w.meter)))
 		return
 	}
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
@@ -289,13 +298,13 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 			entries = append(entries, e)
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(&entries[i], &entries[j]) < 0 })
+	w.meter.sortEntries(entries)
 	units := tiedUnits(entries)
 	keys := make([]reflect.Value, len(units))
 	for i, u := range units {
 		keys[i] = entries[u.first].key
 	}
-	labels := disambiguatedKeyLabels(keys, w.methods)
+	labels := disambiguatedKeyLabels(keys, w.methods, w.meter)
 	for i, u := range units {
 		e := entries[u.first]
 		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
@@ -326,7 +335,7 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 // tiedUnit is a run of sorted entries reported as one line: a single entry, or an ambiguity group.
 type tiedUnit struct{ first, n int }
 
-// tiedUnits splits sorted entries into units. Entries with the same key whose value fingerprints tie
+// tiedUnits splits sorted entries (fpMeter.sortEntries) into units. Entries with the same key whose value fingerprints tie
 // while truncated cannot be told apart within the budget and form one group; every other entry is a
 // unit of its own (entries with equal complete fingerprints are identical, so each keeps its own
 // ordinal and the text does not depend on which comes first).
@@ -369,15 +378,23 @@ func ambiguityDetail(group []mapEntry) string {
 type mapEntry struct {
 	key, val reflect.Value
 	fromA    bool
-	fp       *valueFingerprint // computed on first need, only for entries whose key ties
+	fp       *valueFingerprint // set by fpMeter for entries whose key ties; built on first need otherwise
 	// ambiguous is set by a renderer's selection when another entry with the same key has a
 	// value it cannot tell apart from this one, so this entry's value is not printed.
 	ambiguous bool
 }
 
-// fingerprint returns the entry's value fingerprint, computing it once.
+// unmeteredFingerprints counts the fingerprints built by mapEntry.fingerprint outside any message
+// meter. Production code never does: tests read it to prove that every path resolves tied entries
+// through an fpMeter first.
+var unmeteredFingerprints atomic.Int64
+
+// fingerprint returns the entry's value fingerprint. Every renderer and walker resolves the entries
+// of a map through an fpMeter first, which bounds the work of the whole message; building one here,
+// with the per-entry allowance and no meter, is only the fallback for an entry nobody resolved.
 func (e *mapEntry) fingerprint() *valueFingerprint {
 	if e.fp == nil {
+		unmeteredFingerprints.Add(1)
 		e.fp = newValueFingerprint(e.val)
 	}
 	return e.fp
@@ -418,11 +435,11 @@ func compareMapEntries(x, y *mapEntry) int {
 // two or more distinct keys (long strings with a common prefix, structs differing past the rendered
 // fields) gets its 1-based ordinal among the colliding keys appended after a space, inside the
 // brackets: `["kkkk… #1]`, `["kkkk… #2]`. Labels that are unique are left exactly as rendered.
-func disambiguatedKeyLabels(keys []reflect.Value, methods bool) []string {
+func disambiguatedKeyLabels(keys []reflect.Value, methods bool, meter *fpMeter) []string {
 	labels := make([]string, len(keys))
 	count := make(map[string]int, len(keys))
 	for i, k := range keys {
-		labels[i] = renderDiffValue(k, methods)
+		labels[i] = renderDiffValueWith(k, methods, meter)
 		count[labels[i]]++
 	}
 	seen := make(map[string]int)
@@ -436,80 +453,167 @@ func disambiguatedKeyLabels(keys []reflect.Value, methods bool) []string {
 }
 
 // smallestMapEntries returns the k first entries of m in compareMapEntries order, and the number of
-// entries m holds. It makes one MapRange pass and keeps a sorted window of k, so a huge map costs one
-// comparison per entry (plus a few for the entries that enter the window) instead of a full sort, and
-// the same two maps always give the same window whatever order the runtime iterates them in.
+// entries m holds, with a fingerprint budget of its own.
 func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
-	top = make([]mapEntry, 0, min(m.Len(), k))
-	// Iterating with it.Key and it.Value copies every entry, so a huge map would still allocate in
-	// proportion to its size. When the map may be read through Set (it was not reached through an
-	// unexported field), each key and value is loaded into one reusable slot instead, and only the
-	// entries that enter the window are copied out.
-	reuse := m.CanInterface()
-	var keySlot, valSlot reflect.Value
-	if reuse {
-		keySlot = reflect.New(m.Type().Key()).Elem()
-		valSlot = reflect.New(m.Type().Elem()).Elem()
+	return smallestMapEntriesWith(m, k, newFPMeter())
+}
+
+// mapScan walks a map with MapRange. Iterating with it.Key and it.Value copies every entry, so a huge
+// map would still allocate in proportion to its size. When the map may be read through Set (it was
+// not reached through an unexported field), each key and value is loaded into one reusable slot
+// instead, and only the entries that are kept are copied out with detach.
+type mapScan struct {
+	it               *reflect.MapIter
+	reuse            bool
+	keySlot, valSlot reflect.Value
+	key, val         reflect.Value
+	valLoaded        bool
+}
+
+func newMapScan(m reflect.Value) *mapScan {
+	s := &mapScan{it: m.MapRange(), reuse: m.CanInterface()}
+	if s.reuse {
+		s.keySlot = reflect.New(m.Type().Key()).Elem()
+		s.valSlot = reflect.New(m.Type().Elem()).Elem()
 	}
-	// Ties on the key are broken by the fingerprint of the value (tiebreak.go). It is built in one
-	// reusable scratch buffer, so an entry that ties but stays out of the window allocates nothing;
-	// only an entry that enters the window keeps a copy. An entry that ties a window entry while
-	// truncated cannot be told apart from it: both are flagged ambiguous and print no value.
-	var scratch fpBuilder
-	var scratchFP valueFingerprint
-	for it := m.MapRange(); it.Next(); {
-		total++
-		key, valLoaded := keySlot, false
-		if reuse {
-			keySlot.SetIterKey(it)
+	return s
+}
+
+func (s *mapScan) next() bool {
+	if !s.it.Next() {
+		return false
+	}
+	s.valLoaded = false
+	if s.reuse {
+		s.keySlot.SetIterKey(s.it)
+		s.key = s.keySlot
+	} else {
+		s.key = s.it.Key()
+	}
+	return true
+}
+
+// value loads the current value on first use, so an entry that is clearly out costs one key comparison
+// and no value copy.
+func (s *mapScan) value() reflect.Value {
+	if !s.valLoaded {
+		if s.reuse {
+			s.valSlot.SetIterValue(s.it)
+			s.val = s.valSlot
 		} else {
-			key = it.Key()
+			s.val = s.it.Value()
 		}
-		value := func() reflect.Value {
-			if !reuse {
-				return it.Value()
-			}
-			if !valLoaded {
-				valSlot.SetIterValue(it)
-				valLoaded = true
-			}
-			return valSlot
-		}
-		var fp *valueFingerprint
-		ambiguous := false
-		// The value is only fetched when the key ties or the entry enters the window, so an entry
-		// that is clearly out costs one key comparison and no value copy.
-		pos := len(top)
+		s.valLoaded = true
+	}
+	return s.val
+}
+
+func (s *mapScan) entry() mapEntry {
+	return mapEntry{key: detached(s.key, s.reuse), val: detached(s.value(), s.reuse), fromA: true}
+}
+
+// smallestMapEntriesWith returns the k first entries of m in compareMapEntries order, and the number
+// of entries m holds. It never sorts the map and never keeps more than k entries, so a huge map costs
+// a few key comparisons per entry instead of a full sort, and the same two maps always give the same
+// window whatever order the runtime iterates them in.
+//
+// Pass one keeps the k smallest distinct keys, each with the number of entries that share it: the k
+// first entries in order all belong to those classes, and the class sizes do not depend on iteration
+// order. When no class of the window ties, that window is the answer. Otherwise the entries of the
+// tied classes are fingerprinted in a second pass, all with the same allowance (fpMeter.tieAllowance
+// over the tied entries of the window), and each class keeps its first entries by fingerprint, only
+// as many as the window still has room for. An entry that ties a kept entry while truncated cannot be
+// told apart from it: both are flagged ambiguous and print no value.
+func smallestMapEntriesWith(m reflect.Value, k int, meter *fpMeter) (top []mapEntry, total int) {
+	top = make([]mapEntry, 0, min(m.Len(), k))
+	counts := make([]int, 0, cap(top))
+	scan := newMapScan(m)
+	for scan.next() {
+		total++
+		pos, seen := len(top), false
 		for pos > 0 {
-			c := compareMapKeys(key, top[pos-1].key)
+			c := compareMapKeys(scan.key, top[pos-1].key)
 			if c == 0 {
-				if fp == nil {
-					scratchFP = scratch.compute(value())
-					fp = &scratchFP
-				}
-				c = compareFingerprints(fp, top[pos-1].fingerprint())
-				if c == 0 && !fp.complete {
-					top[pos-1].ambiguous, ambiguous = true, true
-				}
+				counts[pos-1]++
+				seen = true
+				break
+			}
+			if c > 0 {
+				break
+			}
+			pos--
+		}
+		if seen || pos >= k {
+			continue
+		}
+		if len(top) < k {
+			top, counts = append(top, mapEntry{}), append(counts, 0)
+		}
+		copy(top[pos+1:], top[pos:])
+		copy(counts[pos+1:], counts[pos:])
+		top[pos], counts[pos] = scan.entry(), 1
+	}
+	// need[i] is how many entries of tie class i the window can still hold, before, tied the entries
+	// that get a fingerprint.
+	need := make([]int, len(top))
+	before, tied := 0, 0
+	for i, n := range counts {
+		if n >= 2 && before < k {
+			need[i] = min(n, k-before)
+			tied += n
+		}
+		before += n
+	}
+	if tied == 0 {
+		return top, total
+	}
+	allowance := meter.tieAllowance(tied)
+	kept := make([][]mapEntry, len(top))
+	var scratch fpBuilder
+	for scan := newMapScan(m); scan.next(); {
+		ci := sort.Search(len(top), func(i int) bool { return compareMapKeys(top[i].key, scan.key) >= 0 })
+		if ci == len(top) || need[ci] == 0 || compareMapKeys(top[ci].key, scan.key) != 0 {
+			continue
+		}
+		var val reflect.Value
+		if allowance > 0 {
+			val = scan.value()
+		}
+		fp, shared := meter.tieFingerprint(&scratch, val, allowance)
+		w, pos, ambiguous := kept[ci], len(kept[ci]), false
+		for pos > 0 {
+			c := compareFingerprints(&fp, w[pos-1].fp)
+			if c == 0 && !fp.complete {
+				w[pos-1].ambiguous, ambiguous = true, true
 			}
 			if c >= 0 {
 				break
 			}
 			pos--
 		}
-		if pos >= k {
+		if pos >= need[ci] {
 			continue
 		}
-		if len(top) < k {
-			top = append(top, mapEntry{})
+		if len(w) < need[ci] {
+			w = append(w, mapEntry{})
 		}
-		copy(top[pos+1:], top[pos:])
-		top[pos] = mapEntry{key: detached(key, reuse), val: detached(value(), reuse), fromA: true, ambiguous: ambiguous}
-		if fp != nil {
-			top[pos].fp = &valueFingerprint{data: bytes.Clone(fp.data), complete: fp.complete}
+		copy(w[pos+1:], w[pos:])
+		w[pos] = scan.entry()
+		w[pos].ambiguous, w[pos].fp = ambiguous, ownedFingerprint(fp, shared)
+		kept[ci] = w
+	}
+	out := make([]mapEntry, 0, k)
+	for i := range top {
+		if need[i] == 0 {
+			out = append(out, top[i])
+		} else {
+			out = append(out, kept[i]...)
+		}
+		if len(out) >= k {
+			return out[:k], total
 		}
 	}
-	return top, total
+	return out, total
 }
 
 // detached returns v itself, or a copy of it when v is a reusable slot that the next iteration
@@ -636,7 +740,7 @@ func cmpFloat(a, b float64) int {
 
 // describeNilness says which side of a nil-versus-non-nil slice or map difference a value is on,
 // because reflect.DeepEqual treats nil and empty as different and the reader needs to see why.
-func describeNilness(v reflect.Value, methods bool) string {
+func describeNilness(v reflect.Value, methods bool, meter *fpMeter) string {
 	kind := "slice"
 	if v.Kind() == reflect.Map {
 		kind = "map"
@@ -647,7 +751,7 @@ func describeNilness(v reflect.Value, methods bool) string {
 	case v.Len() == 0:
 		return "empty non-nil " + kind
 	default:
-		return "non-nil " + kind + " " + renderDiffValue(v, methods)
+		return "non-nil " + kind + " " + renderDiffValueWith(v, methods, meter)
 	}
 }
 
@@ -678,11 +782,21 @@ func diffScalarEqual(a, b reflect.Value) bool {
 // named scalar or an opaque struct may use its own String or Error text, exactly as in an ordinary
 // message. With methods false (a cyclic or oversized value) no user method is ever called.
 func renderDiffValue(v reflect.Value, methods bool) string {
-	return renderDiffLimited(v, diffRenderLimits, methods)
+	return renderDiffValueWith(v, methods, newFPMeter())
+}
+
+// renderDiffValueWith is renderDiffValue spending the fingerprint budget of meter, shared with the
+// rest of the message.
+func renderDiffValueWith(v reflect.Value, methods bool, meter *fpMeter) string {
+	return renderDiffLimitedWith(v, diffRenderLimits, methods, meter)
 }
 
 func renderDiffLimited(v reflect.Value, lim renderLimits, methods bool) string {
-	r := diffRenderer{lim: lim, methods: methods, nodes: nodeBudget{left: lim.nodeBudget}}
+	return renderDiffLimitedWith(v, lim, methods, newFPMeter())
+}
+
+func renderDiffLimitedWith(v reflect.Value, lim renderLimits, methods bool, meter *fpMeter) string {
+	r := diffRenderer{lim: lim, methods: methods, nodes: nodeBudget{left: lim.nodeBudget}, meter: meter}
 	s := r.render(v, 0)
 	if r := []rune(s); len(r) > diffMaxValueRunes {
 		return string(r[:diffMaxValueRunes]) + "…"
@@ -696,6 +810,7 @@ type diffRenderer struct {
 	lim     renderLimits
 	methods bool
 	nodes   nodeBudget
+	meter   *fpMeter
 }
 
 // usesMethods reports whether v renders itself through fmt: only on the ordinary path, and only for a
@@ -772,7 +887,7 @@ func (r *diffRenderer) render(v reflect.Value, depth int) string {
 		if depth >= r.lim.maxDepth {
 			return "map[…]"
 		}
-		entries, total := smallestMapEntries(v, r.lim.maxElems)
+		entries, total := smallestMapEntriesWith(v, r.lim.maxElems, r.meter)
 		parts := make([]string, 0, len(entries)+1)
 		for _, e := range entries {
 			parts = append(parts, r.render(e.key, depth+1)+": "+r.renderEntryValue(e, depth+1))
