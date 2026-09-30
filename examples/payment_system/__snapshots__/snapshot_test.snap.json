@@ -1,9 +1,0 @@
-{
-  "transfer_result":   {
-    "amount": 10,
-    "fromBalance": 100,
-    "newFrom": 90,
-    "newTo": 60,
-    "toBalance": 50
-  }
-}
