@@ -557,6 +557,60 @@ Edge cases:
 - This is the supported contract, not a bug awaiting a fix; a possible opt-in strict mode is
   discussed in `docs/investigations/stale-context-handles-324.md`.
 
+## Per-case cleanup and non-fatal failures: `ctx.Cleanup`, `ctx.Errorf`
+
+Two small hooks let a spec, or a package built on go-specs such as `mock`, attach teardown work to
+the case that is running and report a failure without stopping it. They work the same on every engine:
+`Spec.It`, `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel` (where `ctx.T` is nil and its backend
+silently drops `Cleanup`) and `RunParallel`.
+
+```go
+s.It("publishes an event", func(ctx *specs.Context) {
+    bus := newFakeBus()
+    ctx.Cleanup(func() { bus.Close() })
+    ctx.Cleanup(func() {
+        if n := bus.Pending(); n != 0 {
+            ctx.Errorf("%d events were never delivered", n)
+        }
+    })
+    // ... exercise the code under test ...
+})
+```
+
+`ctx.Cleanup(fn)` runs `fn` when the case ends:
+
+- **Order.** After the case's `AfterEach` hooks and after every `ctx.Go` task has finished, so `fn` sees
+  the final state. Cleanups run last registered first, like `defer`.
+- **Always.** Also when the body failed a fatal assertion (`ctx.Expect(...)`) or panicked. That is what
+  makes an automatic check such as "every expected call happened" report next to the failure that
+  caused it.
+- **A panic in `fn`** is recovered and reported as an error of that case, with its stack trace, the
+  same way a panic in the body is. The remaining cleanups still run. A failed assertion in `fn` ends
+  only that cleanup.
+- **Registered from a `ctx.Go` task** it goes onto the spec's list. In a `BeforeAll`/`AfterAll` hook it
+  runs when that hook returns.
+- **Not `t.Cleanup`.** go-specs drains its own list, so the order is identical on every engine.
+  Consequently, where a real `*testing.T` is bound, `ctx.Cleanup` functions run before anything
+  registered with `ctx.T.Cleanup`, which `testing` runs after the subtest function returns.
+- **Stale handles.** Calling it after the case ended panics with a `specs:` message, but only until the
+  pooled `Context` is reused; see the contract under `ctx.Go`. A nil `fn` panics immediately.
+- A case that never calls it pays one nil check and no allocation.
+
+`ctx.Errorf(format, args...)` is a non-fatal failure: it marks the case failed and returns, so the
+case keeps running, like `testing.T.Errorf`. It goes through the same path as a failed assertion, so
+`SpecResultEvent.Failed`, the suite's failed count and `FailFast` see it. The first message is the one
+`SpecResultEvent.Message` reports; a later `Errorf` never replaces it. The failure is attributed to the
+caller of `Errorf`: on a real `*testing.T` through helper marking, on `Builder.ItParallel` and
+`RunParallel` through the stack walk that skips go-specs' own frames (the `specs`, `snapshots` and
+`mock` packages). `ctx.Helper()` delegates to the backend's `Helper` and is a no-op where there is none.
+It marks `Context.Helper` itself rather than the calling function, so a helper package that must be
+invisible in the reported `file:line` on a real `*testing.T` calls `ctx.Testing().Helper()` from its own
+frames. `ctx.Testing()` returns the case's `testing.TB` (its `*testing.T`, or the `*testing.B` of a
+benchmark), or nil on `Builder.ItParallel`, `RunParallel` and fake backends, where no marking is needed.
+
+Together they make `*specs.Context` satisfy `interface{ Helper(); Cleanup(func()); Errorf(string, ...any) }`,
+the same shape `*testing.T` has, which is what packages like `mock` ask of a test.
+
 ## Builder.It, Skip and Focus
 
 `Builder.It` is the Builder-API counterpart of `Spec.It`: `func (b *Builder) It(name string, fn func(*Context))`. Use it directly for a plain spec body:

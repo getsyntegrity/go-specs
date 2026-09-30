@@ -29,6 +29,10 @@ import (
 var goSpecsInternalPackages = []string{
 	"github.com/getsyntegrity/go-specs/specs.",
 	"github.com/getsyntegrity/go-specs/snapshots.",
+	// mock reports through ctx.Errorf on the caller's behalf (#357): its frames sit between the user's
+	// spec and the recorded failure, exactly like this package's, and must not be reported as the
+	// failure location.
+	"github.com/getsyntegrity/go-specs/mock.",
 }
 
 // isGoSpecsInternalFrame reports whether fn (a runtime.Frame.Function value) belongs to one of

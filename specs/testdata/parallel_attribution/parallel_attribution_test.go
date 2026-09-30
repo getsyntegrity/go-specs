@@ -37,3 +37,13 @@ func TestItParallelExpectToEqual(t *testing.T) {
 	})
 	specs.NewRunner(b.Build()).Run(t)
 }
+
+func TestItParallelCtxErrorf(t *testing.T) {
+	b := specs.NewBuilder()
+	b.Describe("parallel ctx errorf", func() {
+		b.ItParallel("fails", func(ctx *specs.Context) {
+			ctx.Errorf("non-fatal %d", 1) // want:ItParallelCtxErrorf
+		})
+	})
+	specs.NewRunner(b.Build()).Run(t)
+}
