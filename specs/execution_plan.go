@@ -1068,6 +1068,10 @@ func runProgram(program []Instruction, ctx *Context) (message, output string) {
 		if m, o := ctx.settleTasks(true); message == "" {
 			message, output = m, o
 		}
+		// ctx.Cleanup functions run last, after AfterEach and the tasks (#357).
+		if m, o := ctx.runCleanups(); message == "" {
+			message, output = m, o
+		}
 	}()
 	for _, inst := range program {
 		if inst.Code == OpAfterHook {

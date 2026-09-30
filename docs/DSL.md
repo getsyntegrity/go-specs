@@ -2,6 +2,8 @@
 
 The go-specs DSL is the user-facing API for defining tests. This document describes each construct and execution order.
 
+Runnable examples of every construct are indexed in [examples/README.md](../examples/README.md).
+
 ## Describe
 
 `Describe` starts a suite or a nested block. It takes a test handle (`*testing.T` or `*testing.B`), a name, and a callback that receives a `*Spec`.
@@ -175,7 +177,7 @@ flowchart TD
 Unlike `BeforeEach`/`AfterEach`, a group's `BeforeAll`/`AfterAll` never run again for a second
 spec in the same group — the whole point is that they run once, no matter how many specs (or
 nested groups' specs) the group contains. See
-[`examples/suite_hooks`](../examples/suite_hooks) for a runnable example sharing one fixture
+[`examples/hooks_test.go`](../examples/hooks_test.go) (`TestHooks_beforeAllAfterAll`) for a runnable example sharing one fixture
 across several specs, and `docs/SUITE_HOOKS_CONTRACT.md` for the full failure-handling contract
 (a failing `BeforeAll` skips the rest of its group but never a sibling group, and a group's
 `AfterAll` is guaranteed once the group was entered, even after a failure).
@@ -207,6 +209,30 @@ s.It("adds numbers", func(ctx *specs.Context) {
 ```
 
 Each `It` is compiled into a step sequence: before hooks (outer to inner), then the spec body, then after hooks (inner to outer).
+
+## Table-driven specs: `specs.Table` and `specs.TableParallel`
+
+`Table` registers one spec per typed row. It is shorthand for a `for` loop around `It`, which stays fully supported; it is not a second execution engine.
+
+```go
+specs.Describe(t, "add", func(s *specs.Spec) {
+    specs.Table(s, cases, func(c addCase) string { return c.name },
+        func(ctx *specs.Context, c addCase) {
+            ctx.Expect(add(c.a, c.b)).ToEqual(c.want)
+        })
+})
+```
+
+Every row is an ordinary `It`: its own Go subtest (`go test -run 'TestAdd/add/negative'` runs one row), wrapped by the enclosing `BeforeEach`/`AfterEach`, reported as its own spec and failing on its own. `Table` adds no hierarchy segment (the row above is `add/negative`); wrap it in `s.When` if you want a grouping segment. [`examples/table_test.go`](../examples/table_test.go) walks through migrating a plain `t.Run` table test.
+
+Rules, all checked before any row is registered (a rejected table registers nothing, and the panic names the rows by index):
+
+- A row name must not be empty.
+- Row names must be unique. A duplicate would be disambiguated as `name#01` by `go test` and make `-run` ambiguous, so it is a registration panic. Names that differ only by whitespace versus `_` also count as duplicates, because `go test` rewrites spaces to underscores.
+- `name` and `body` must not be nil.
+- `rows` is copied when `Table` is called and each body call gets its own copy of the row; pointers, slices and maps inside a row stay shared. `name` runs once per row at registration.
+
+`TableParallel` registers rows with `ItParallel`, so consecutive rows run concurrently under the semantics described in the `ItParallel` section. Rows must not write shared state without their own synchronization.
 
 ## Shared behaviors: reusing specs across implementations
 
@@ -295,7 +321,7 @@ specs.Describe(t, "instrumented store", func(s *specs.Spec) {
 
 runs, per spec, in this order: `outer-before`, then the helper's own before hook, then the spec
 body, then the helper's own after hook (registered after `outer-after`, so LIFO runs it first), then
-`outer-after`. `examples/shared_behaviors/shared_behaviors_test.go` runs exactly this and asserts the
+`outer-after`. [`examples/shared_behaviors_test.go`](../examples/shared_behaviors_test.go) runs exactly this and asserts the
 full order for two specs, so this is verified behavior, not a claim.
 
 No new production API was needed to support this pattern — it already worked before this section was
@@ -544,6 +570,64 @@ Edge cases:
 - Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
   path. `ctx.Go` itself allocates (a task context and a goroutine).
 
+### `ctx.Eventually` and `ctx.Consistently`: asserting on asynchronous behavior
+
+Concurrent work, such as another `ctx.Go` task, a worker, or a cache being filled, does not finish on your schedule. Two assertions poll for you instead of hand-written loops:
+
+```go
+s.It("the replica catches up", func(ctx *specs.Context) {
+    ctx.Go(func(ctx *specs.Context) { primary.Put("k", "v") })
+    ctx.Go(func(ctx *specs.Context) {
+        // Becomes true: passes on the first attempt that matches.
+        ctx.Eventually(func() any { return replica.Get("k") }, specs.Equal("v"),
+            specs.WithTimeout(2*time.Second), specs.WithInterval(5*time.Millisecond))
+    })
+})
+
+s.It("nothing is evicted while the cache is warm", func(ctx *specs.Context) {
+    // Stays true: passes only if it matches on every attempt for the whole timeout.
+    ctx.Consistently(func() any { return cache.Len() }, specs.Equal(100), specs.WithTimeout(500*time.Millisecond))
+})
+```
+
+Signatures (`assert.Eventually` and `assert.Consistently` take the same arguments and return the verdict as an `assert.PollResult` instead of failing a spec):
+
+```go
+func (c *Context) Eventually(fn func() any, m Matcher, opts ...PollOption)
+func (c *Context) Consistently(fn func() any, m Matcher, opts ...PollOption)
+
+WithTimeout(d time.Duration)   // default 1s; how long Eventually tries / Consistently must hold
+WithInterval(d time.Duration)  // default 10ms; time between attempts
+WithContext(ctx context.Context)
+WithClock(c Clock)             // default: the real clock; NewManualClock() for tests
+```
+
+The contract:
+
+- **The callback runs on every attempt.** `fn` is called again each time, so it reads the live state. Passing a value captured once would poll a constant. The first attempt is immediate.
+- **Only the final verdict fails the spec.** The matcher is evaluated once per attempt without recording anything; an attempt that does not match is remembered, not reported. A failing verdict is reported once, with the termination reason, the elapsed time, the number of attempts, the last observed value and the matcher's failure message, for example `Eventually: timed out after 2s (400 attempts)`.
+- **Termination.** `Eventually` passes at the first match and otherwise ends on timeout, cancellation, panic or invalid options. `Consistently` fails at the first mismatch, without waiting out the interval, and passes when the timeout elapses with every attempt matching.
+- **Timeout and interval.** The interval is measured from the start of one attempt to the start of the next, so a slow callback is followed at once by the next attempt. The timeout is checked between attempts: an attempt that finishes after the deadline still counts (a late match passes `Eventually`), and no further attempt runs. If the interval and the timeout come due together, the timeout wins. An interval longer than the timeout means a single attempt.
+- **Cancellation.** The context is checked before every attempt and while waiting, so an already cancelled context runs no attempt. A cancelled context fails `Eventually`, and fails `Consistently` too, because the condition was not observed for the whole interval. The failure carries `context.Canceled` or `context.DeadlineExceeded`.
+- **Blocking callbacks.** The callback runs on the calling goroutine and go-specs never interrupts it, because Go cannot forcibly stop arbitrary code. The helpers start no goroutines, so none survive them. A callback that blocks blocks its spec, so a callback that can wait must watch the context it hands to `WithContext` (or its own deadline).
+- **Panics.** A panic in the callback or in the matcher is recovered and becomes the final verdict, a spec failure with the panic value and stack, and polling stops. It is not retried. `runtime.Goexit` (for example `ctx.T.FailNow()` inside the callback) is not recoverable and ends the calling goroutine as it always does.
+- **Invalid arguments** (a non-positive timeout or interval, a nil context, clock, option, callback or matcher) fail the spec with an `invalid arguments` message and run no attempt. All problems are listed.
+- **Inside `ctx.Go`.** Both methods work on a task's own `*Context`, so a task can poll while another task produces. The failure is charged to the spec that started the task.
+
+To test polling without sleeping, drive a `NewManualClock()` from the callback: time passes only when `Advance` is called, so the outcome is deterministic.
+
+```go
+clock := specs.NewManualClock()
+attempts := 0
+ctx.Eventually(func() any {
+    attempts++
+    clock.Advance(10 * time.Millisecond) // one interval passes per attempt
+    return attempts
+}, specs.Equal(3), specs.WithClock(clock))
+```
+
+Existing assertions are unchanged, and specs that never call these methods pay nothing.
+
 ### Context lifecycle at a glance
 
 - A spec's `ctx` is valid while its body, its `BeforeEach`/`AfterEach` hooks and its `ctx.Go` tasks
@@ -556,6 +640,271 @@ Edge cases:
   (`sync.WaitGroup` or a channel) before the body returns, and assert on the result in the spec.
 - This is the supported contract, not a bug awaiting a fix; a possible opt-in strict mode is
   discussed in `docs/investigations/stale-context-handles-324.md`.
+
+## Per-case cleanup and non-fatal failures: `ctx.Cleanup`, `ctx.Errorf`
+
+Two small hooks let a spec, or a package built on go-specs such as `mock`, attach teardown work to
+the case that is running and report a failure without stopping it. They work the same on every engine:
+`Spec.It`, `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel` (where `ctx.T` is nil and its backend
+silently drops `Cleanup`) and `RunParallel`.
+
+```go
+s.It("publishes an event", func(ctx *specs.Context) {
+    bus := newFakeBus()
+    ctx.Cleanup(func() { bus.Close() })
+    ctx.Cleanup(func() {
+        if n := bus.Pending(); n != 0 {
+            ctx.Errorf("%d events were never delivered", n)
+        }
+    })
+    // ... exercise the code under test ...
+})
+```
+
+`ctx.Cleanup(fn)` runs `fn` when the case ends:
+
+- **Order.** After the case's `AfterEach` hooks and after every `ctx.Go` task has finished, so `fn` sees
+  the final state. Cleanups run last registered first, like `defer`.
+- **Always.** Also when the body failed a fatal assertion (`ctx.Expect(...)`) or panicked. That is what
+  makes an automatic check such as "every expected call happened" report next to the failure that
+  caused it.
+- **A panic in `fn`** is recovered and reported as an error of that case, with its stack trace, the
+  same way a panic in the body is. The remaining cleanups still run. A failed assertion in `fn` ends
+  only that cleanup.
+- **Registered from a `ctx.Go` task** it goes onto the spec's list. A failure such as `task.Errorf` that
+  the cleanup reports through that (already finished) task's `Context` still fails the owning spec, on
+  every engine: the spec goroutine folds it after the cleanups ran and before the case is reported.
+  In a `BeforeAll`/`AfterAll` hook the cleanups run when that hook returns.
+- **Not `t.Cleanup`.** go-specs drains its own list, so the order is identical on every engine.
+  Consequently, where a real `*testing.T` is bound, `ctx.Cleanup` functions run before anything
+  registered with `ctx.T.Cleanup`, which `testing` runs after the subtest function returns.
+- **Stale handles.** Calling it after the case ended panics with a `specs:` message, but only until the
+  pooled `Context` is reused; see the contract under `ctx.Go`. A nil `fn` panics immediately.
+- A case that never calls it pays one nil check and no allocation.
+
+`ctx.Errorf(format, args...)` is a non-fatal failure: it marks the case failed and returns, so the
+case keeps running, like `testing.T.Errorf`. It goes through the same path as a failed assertion, so
+`SpecResultEvent.Failed`, the suite's failed count and `FailFast` see it. The first message is the one
+`SpecResultEvent.Message` reports; a later `Errorf` never replaces it.
+
+`Errorf` is safe to call from `ctx.Go` tasks, from the spec goroutine and from cleanups at the same time,
+on the spec's `Context` or on a task's, and on a task `Context` after its task ended (a
+`mock.Controller` created with a task's `Context` does exactly that from its cleanup). A case that never
+used `ctx.Go` or `ctx.Cleanup` records the failure immediately. Once it has task or cleanup state,
+`Errorf` only appends the failure to a mutex-protected list; the spec goroutine folds that list at the
+settle points where task failures are folded (after the body, after `AfterEach`, after the cleanups).
+On a real `*testing.T` the report itself still goes straight to the test, so its `file:line` is
+unchanged; elsewhere the caller's location is captured at the call. The reported message is then: a
+failure the spec goroutine already recorded (a failed assertion in the body), else a task's failed
+assertion, else the first deferred `Errorf` in the order the calls reached the list. `Errorf` calls from
+different goroutines have no defined order, so with concurrent callers the message is one of theirs.
+`FailFast` sees a deferred `Errorf` at the end of the case, not right after the call. The failure is attributed to the
+caller of `Errorf`: on a real `*testing.T` through helper marking, on `Builder.ItParallel` and
+`RunParallel` through the stack walk that skips go-specs' own frames (the `specs`, `snapshots` and
+`mock` packages). `ctx.Helper()` delegates to the backend's `Helper` and is a no-op where there is none.
+It marks `Context.Helper` itself rather than the calling function, so a helper package that must be
+invisible in the reported `file:line` on a real `*testing.T` calls `ctx.Testing().Helper()` from its own
+frames. `ctx.Testing()` returns the case's `testing.TB` (its `*testing.T`, or the `*testing.B` of a
+benchmark), or nil on `Builder.ItParallel`, `RunParallel` and fake backends, where no marking is needed.
+
+Together they make `*specs.Context` satisfy `interface{ Helper(); Cleanup(func()); Errorf(string, ...any) }`,
+the same shape `*testing.T` has, which is what packages like `mock` ask of a test.
+
+## Mocking interfaces with `mock.Controller`
+
+A test double for an interface (a repository, an HTTP client, a publisher) has two jobs: return what
+the test configured, and prove how it was called. `mock.Controller` does both from one place, and
+because `*specs.Context` satisfies `mock.TB`, it works the same on every engine (`Spec.It`,
+`Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`). The `mock` package still does not import
+`specs`; `NewController` takes a small interface (`Helper`, `Cleanup`, `Errorf`) that `*testing.T`,
+`*testing.B` and `*specs.Context` all satisfy. Runnable versions of everything below are in
+[`examples/mocks_test.go`](../examples/mocks_test.go) and [`examples/spies_test.go`](../examples/spies_test.go).
+
+### The typed adapter pattern
+
+There is no code generation. For each interface, write a small struct that implements it by forwarding
+every method to `Controller.Method(name).Call(args...)` and turning the stubbed `Result` back into typed
+return values:
+
+```go
+type userRepoMock struct{ c *mock.Controller }
+
+func (m userRepoMock) Find(ctx context.Context, id string) (*User, error) {
+    r := m.c.Method("Find").Call(ctx, id)
+    return mock.Value[*User](r, 0), r.Err(1)
+}
+
+s.It("rejects a taken id", func(ctx *specs.Context) {
+    ctrl := mock.NewController(ctx)           // Verify is registered with ctx.Cleanup
+    svc := Onboarding{Repo: userRepoMock{ctrl}}
+    ctrl.Method("Find").Expect(mock.Any(), "u1").Return(&User{ID: "u1"}, nil)
+
+    _, err := svc.Register(bg, "u1", "Ada")
+
+    ctx.Expect(errors.Is(err, ErrExists)).To(specs.BeTrue())
+})
+```
+
+`Method(name)` returns the same `*Method` for the same name, so the string is the method's identity:
+use one that is unique per interface method (`"UserRepository.Find"` when two interfaces share a name).
+`Result.Get(i)`, `Result.Err(i)` and `mock.Value[T](r, i)` read the i-th stubbed value; an index that
+was never configured reads as nil or the zero `T`, and `Value` panics with a message naming the method
+when the configured value has another type. Assessing generated adapters is a separate question; the
+hand-written adapter keeps the mock API small and the call sites readable.
+
+### Expectations: which call matches, and how often
+
+`Method.Expect(args...)` declares one call shape. Each argument is an `ArgMatcher` (`mock.Any()`,
+`mock.Equal(x)`, `mock.Match`, `mock.MatchT`, a captor's matcher) or a plain value, which is wrapped in
+`Equal`. The number of arguments must match exactly.
+
+**Matching rule.** The expectations of a method are tried in declaration order; the first whose
+matchers all match and that still has capacity takes the call. So a specific expectation declared
+before a general one wins until its count is used up, then the general one takes over.
+
+**Prohibitions.** An expectation whose effective maximum is 0 (`Never()`, `Times(0)`, `AtMost(0)`, or a
+final `0..0` range such as `AtLeast(0).AtMost(0)`) is a prohibition. Prohibitions take precedence over
+permissive expectations regardless of declaration order: before any expectation can claim a call, the
+method checks whether a matching prohibition exists, so `Expect("protected").Never()` still forbids
+`"protected"` when a catch-all `Expect(mock.Any()).AnyTimes()` was declared first. A forbidden call is
+reported immediately through `ctx.Errorf` (not a panic) with the method, the arguments and the
+prohibition's declaration site, is recorded once, and runs no `Return`/`Do` and notifies no captor of
+any other expectation; the call returns a zero `Result`. Among allowed calls the rule above is
+unchanged: the first matching expectation with capacity wins.
+
+**Counts.** Without a count an expectation means `Times(1)`. `Times(n)` is exact, `AtLeast(n)` has no
+upper bound, `AtMost(n)` allows none up to `n`, `AnyTimes()` allows any number, and `Never()` (`Times(0)`)
+turns any matching call into a failure (see Prohibitions above). They combine by this rule:
+
+- `Times(n)`, `Never()` and `AnyTimes()` set a complete configuration (both bounds) and replace
+  whatever count was set before.
+- `AtLeast(n)` sets only the minimum and `AtMost(n)` only the maximum. If the current configuration is
+  a range built by earlier `AtLeast`/`AtMost` calls, the other bound is kept: `AtLeast(2).AtMost(5).AtLeast(3)`
+  is 3..5 and `AtMost(5).AtLeast(2).AtMost(3)` is 2..3. If the previous configuration came from
+  `Times`/`Never`/`AnyTimes`, or nothing was set (the default of exactly 1), `AtLeast`/`AtMost` start a
+  new range and the other bound resets to its default (minimum 0, maximum unbounded), so
+  `Times(2).AtLeast(1)` is "1 or more".
+- Every `AtLeast`/`AtMost` validates the resulting range, zero bounds included, and panics when the
+  minimum exceeds the maximum (`AtMost(0).AtLeast(1)`: "AtLeast(1) exceeds the maximum of 0"). A
+  negative `n` panics. A panicking call leaves the expectation unchanged.
+
+**Return values.** `Return(values...)` configures one response. Calling it repeatedly builds a
+sequence: the n-th matched call gets the n-th response, and once the sequence is used up the last
+response repeats for the remaining calls the count allows. `Do(fn)` computes the results from a copy
+of the call's arguments (`fn(args []any) []any`), runs outside the controller's lock so it may call
+other mocked methods, and wins over `Return` when both are set. A panic inside `Do` propagates to the
+code under test that made the call.
+
+### Matchers and captors
+
+`mock.MatchT[T](desc, pred)` matches an argument of type `T` with a predicate; `mock.Match(desc, pred)`
+takes `any`. Write `desc` as what is wanted, because it appears in diagnostics
+(`argument 1: got "b", want an adult age`). A `mock.Captor[T]` (`NewCaptor`, then `Matcher()` in
+`Expect`, then `Values()` and `Last()`) records the arguments of the calls its expectation
+**claimed**. A call rejected because another argument did not match, because the expectation was at
+capacity, or because an earlier expectation took it leaves the captor untouched.
+
+### Order across methods and spies
+
+Every call to any method of a controller, and to any spy obtained from `Controller.Spy(name)`, gets
+one global sequence number. `ctrl.InOrder(e1, e2, e3)` requires that the first call matched by `e1`
+came before the first call matched by `e2`, and so on, whichever adapter made them. `ctrl.Calls()` returns the
+whole log, in sequence order, as copies.
+
+### Automatic verification
+
+`NewController(ctx)` registers `Verify` with `ctx.Cleanup`, so no spec calls it. It runs when the case
+ends: after `AfterEach` and after every `ctx.Go` task settled, and **also when the body failed a fatal
+assertion or panicked**, so the unmet expectation is reported next to the failure that caused it. It
+reports one line per problem through `ctx.Errorf`: an expectation with fewer calls than its minimum
+(`mock: unmet expectation Put(equal to "k", any value) declared at store_test.go:42: want 1, got 0`),
+and each `InOrder` violation with the observed sequence. `Verify` is idempotent, so calling it
+yourself earlier is allowed and does not duplicate the report. Because it goes through `ctx.Errorf`,
+the message reaches `SpecResultEvent.Message` on every engine. On `Builder.ItParallel` a spec records
+only its first failure (that engine's contract), so when the body fails before `Verify` runs, the case
+still fails but the unmet-expectation text is not the message; fix the first failure and it appears.
+
+### Controllers and `ctx.Go` tasks
+
+On every engine (`Spec.It`, `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`) a controller can be
+used in either of two ways from concurrent code:
+
+- **Created with the spec's `ctx`** (`mock.NewController(ctx)`) and called from `ctx.Go` tasks. Its
+  reports go through `ctx.Errorf`, which is safe from tasks and is folded into the spec (see the
+  message rule under `ctx.Errorf`), so many tasks can make unexpected calls at once.
+- **Created inside a task** with the task's `Context`
+  (`ctx.Go(func(task *specs.Context) { ctrl := mock.NewController(task); ... })`). Its cleanup
+  verification runs when the task's spec ends and still fails the spec: an expectation never met
+  inside the task is reported with the method, matcher and declaration site.
+
+### Unexpected calls
+
+A call that no expectation accepts (no match, or every match is at capacity) is reported immediately
+through `ctx.Errorf`, attributed to the line that made the call, and does not panic: the call returns a
+zero `Result` so the code under test keeps running and later problems are still reported. The message
+names the method, the formatted arguments, and for each expectation of that method where it was
+declared and why it did not take the call:
+
+```
+mock: unexpected call Get(context.Background, "b"):
+  expectation 1 Get(any value, equal to "a") declared at users_test.go:31: argument 1: got "b", want equal to "a"
+```
+
+On a real `*testing.T` the reported `file:line` is the adapter's call to `Method.Call`, not a line in
+`mock`: every reporting function of the package marks itself as a helper through `ctx.Testing()`, and on
+`Builder.ItParallel` the stack walk that attributes failures skips `mock` frames. A failure at cleanup
+time (unmet expectations, order violations) has no user frame on the stack, so its report carries the
+declaration site of the expectation in the message instead.
+
+### Forbidden calls
+
+A call that meets a prohibition (see above) is reported once, as a forbidden call, instead of an
+unexpected one:
+
+```
+mock: forbidden call Put("protected", "v"): expectation Put(equal to "protected", any value) declared at users_test.go:42 says never
+```
+
+Later problems in the same case are still reported, and Verify has nothing to add for the prohibition
+because it was never satisfied by a call.
+
+### Reset
+
+`ctrl.Reset()` drops all expectations, the recorded calls (including the ones of controller spies),
+and the order constraints, and re-arms `Verify`; the controller stays registered for cleanup. Captors
+keep the values they already hold, because they are not owned by the controller. Do not call `Reset`
+while calls are in flight.
+
+### Concurrency
+
+`Controller`, `Method`, `Expectation` and `Captor` are safe for concurrent use: calls from `ctx.Go`
+tasks, from `ItParallel` cases, or from goroutines of the code under test can share one controller.
+Sequence numbers are assigned under the controller's lock, so they are unique and dense; counts are
+never over-claimed, so `Times(n)` accepts exactly `n` matching calls however they interleave. Matchers
+and `Do` callbacks run outside the lock. The order in which concurrent calls receive their sequence
+numbers, and the recording order of a captor, follow the interleaving and are not deterministic.
+
+### Ownership of recorded arguments
+
+The argument slice of a call is copied when it is recorded, but its elements are not deep-copied. A
+pointer, slice or map passed to a mocked method is **shared** with the caller: if the code under test
+mutates it after the call, `Calls()`, `Method.Calls()` and a captor report the mutated value. A test
+that needs a snapshot takes it inside `Do`, which runs during the call:
+
+```go
+var snapshot []string
+ctrl.Method("Publish").Expect(mock.Any()).AnyTimes().Do(func(args []any) []any {
+    snapshot = append([]string(nil), args[0].([]string)...) // copy now, the caller may reuse it
+    return nil
+})
+```
+
+### Compatibility
+
+`Mock`, `Spy`, `Call`, `ArgMatcher`, `Any` and `Equal` behave exactly as before; nothing has to migrate.
+`Controller.Spy(name)` returns a regular `*mock.Spy` whose calls also join the controller's global
+order, without taking part in expectations, so an existing spy can be added to an `InOrder`-checked flow
+by getting it from the controller.
 
 ## Builder.It, Skip and Focus
 
@@ -689,6 +1038,38 @@ reflect.DeepEqual(x, y)   // true  — same pointed-to value
 
 So `EqualTo(ctx, x, y)` fails while `ctx.Expect(x).ToEqual(y)` passes, for the exact same `x`/`y`. This is the tradeoff: pick `EqualTo`/`ExpectT` for the zero-allocation, no-reflection fast path when your type's `==` already means what you want (primitives, or plain value structs with no pointer fields); pick `ctx.Expect(...).ToEqual(...)` when you need value-based deep equality for structs, slices, or maps.
 
+### Equality failures show a structural diff
+
+When `ctx.Expect(x).ToEqual(y)`, `ctx.Expect(x).To(Equal(y))` or `assert.EqualFailureMessage` reports a mismatch between composite values, the familiar first line is followed by a `differences:` section that names each mismatch by path, with the expected and the actual value found there:
+
+```
+expected {1 [{a 1} {b 2} {c 12.5}] map[] <nil>} to equal {1 [{a 1} {b 2} {c 9.99}] map[] <nil>}
+differences:
+  Order.Items[2].Price: expected 9.99, actual 12.5
+```
+
+The diff only explains a verdict that was already reached: it is built after the comparison failed, so a passing assertion allocates nothing extra, and it never changes what passes. `ValuesEqual`, typed `==` and `errors.Is` decide exactly as before.
+
+- **Supported types.** Structs (unexported fields included), slices, arrays, maps, pointers and interfaces, nested to any depth. A scalar mismatch (`42` versus `43`) and an error mismatch keep their single-line messages, since a diff would add nothing.
+- **Paths.** The root is named after its type (`Order`); an unnamed root such as `[]int` starts directly with the index (`[2]`). Fields are `.Field`, elements `[2]`, map entries `["key"]`.
+- **What is reported.** A differing value; a nil versus empty slice or map (Go treats them as different, and the line says which side is nil); a nil pointer versus a non-nil one; a type mismatch (`type mismatch: expected int (1), actual string ("1")`); a slice length difference plus each `missing in actual` or `unexpected in actual` element; a map key present on one side only.
+- **Determinism.** Map keys are visited in sorted order, so the same two maps always produce the same diff.
+- **Cycles.** A pointer, map or slice pair already being compared is treated as equal, as `reflect.DeepEqual` does, so a self-referencing value terminates. A cyclic value is rendered in the first line with the bounded renderer instead of `%v` (see [Failure messages render values safely](#failure-messages-render-values-safely)).
+- **Opaque structs.** A struct that implements `fmt.Stringer` or `error` and has unexported fields (`time.Time`, for one) is reported as a single value using its `String()`, not field by field.
+- **Limits.** At most 10 differences are listed, followed by `... more differences not shown (limit 10)`. Paths are followed 8 segments deep; below that a single line says `differs below this point (depth limit 8 reached)`. Each rendered value shows at most 80 characters (`…` marks a cut), 4 elements or fields per container, and 3 levels of nesting. The walk stops as soon as the 10 differences are found, so comparing a huge slice or map with an empty one costs a handful of renders, not one per element. Only the keys on the printed lines are rendered: keys of one map that render alike get `#1`, `#2` counted among the colliding keys shown in the message (at that map level, in key order), so a colliding key that is not shown (equal on both sides, or past the limit) does not affect the ordinals of the shown ones.
+- **Not covered.** `EqualTo` and `ExpectT(...).ToEqual` compare with `==` and keep their one-line message. Map keys are ordered by their full value (every struct field, the whole string), never by the bounded rendering; pointer and channel keys order by address. When several distinct keys would show the same truncated path, each shown one gets its ordinal appended inside the brackets (`["kkkk… #1]`, `["kkkk… #2]`), in key order and the same on every line below that key; other paths are unchanged. A key that is not equal to itself (a NaN, or a struct or array holding one) is never matched, as in `reflect.DeepEqual`: the diff lists it as `missing in actual` and `unexpected in actual` with its real values, orders such entries by NaN bit pattern and then by their values (see the next bullet), and uses the bounded renderer for the first line so the whole message is deterministic. Snapshot failures keep their own diff.
+- **Entries whose keys tie.** Entries with the same key (NaN keys with the same bit pattern) can only be told apart by their values, so each gets one bounded fingerprint of its value: at most 4,096 bytes and 4,096 visited values (nodes; the work budget below can lower that) covering kinds, integer and float bits (a NaN keeps its payload, `-0` differs from `+0`), strings, struct fields in order, an interface's dynamic type, pointers followed to their target (never their address), nested maps in a canonical order that does not depend on iteration, and a pointer, map or slice met again on the current path as a back-reference (so cycles end and identical cycles agree). It goes at most 64 levels deep and records a nested map of more than 256 entries, or one whose entries do not fit the nodes the fingerprint has left (visiting them and sorting them costs about n + n·log2(n) nodes), by its length only. Entries are ordered by key, then fingerprint, then complete before cut off, so repeating a comparison always gives the same answer. Two entries with the same complete fingerprint are identical, so their order cannot show. Two entries with the same cut-off fingerprint agree on everything the budget saw and are **never called equal**: the diff prints one line for the whole group, `[NaN #1]: 3 entries indistinguishable within the diagnostic budget: all 3 missing in actual` (or `2 missing in actual, 1 unexpected in actual`), with no per-entry ordinal and no value, and the value renderers print `<ambiguous>` for such an entry. Ordinals stay per group and are assigned in fingerprint order. Cost: at most one fingerprint per tied entry (up to 4 KiB of memory each, none for entries whose key is unique), computed only when a key ties, never by calling a method on your values; when the fingerprint budget cuts a value, differences past the cut cannot be shown, and that is now said instead of guessed. Pointer, channel and unsafe-pointer keys still order by address, so two such keys that render alike keep an order that is stable within a run but not across runs.
+- **Work per message.** One diagnostic message spends at most 32,768 nodes (values visited, including the work of sorting nested maps) on all the tie-break fingerprints together, however many tied entries it holds and however often the same map is printed. About 150 ns a node, that is a few milliseconds. `EqualFailureMessage` shares one budget between its first line and its `differences:` section; the poll, `Satisfy` and matcher renderers spend one budget per printed value (a matcher message prints at most four). The budget is split without looking at iteration order: a map takes its tie classes first, by key alone, so their sizes are known whatever order the runtime iterates in; then every tied entry of that map gets the same allowance of nodes, `min(4,096, half of what the message has left ÷ tied entries)` rounded down to a power of two. Half, so one map cannot starve the maps after it, which spend what is left in the order the message visits them (for a window of the 4 or 16 smallest entries of a large map, only the tied entries of the window count). A class is fingerprinted as a whole, never split by the budget: entries that cannot be told apart within their allowance are an ambiguity group, exactly as for the byte limit, and a message with no budget left reports `indistinguishable within the diagnostic budget`, never a claim that the entries are equal. A value that is a pointer, map or slice and is held by several tied entries is fingerprinted once and recalled for the others. So a map of 1,000 tied entries gets at most 16 nodes per entry, 13 tied entries 1,024 each, and two or three the full 4,096; a map of 64 or more entries met again in the same message (shared by several parents, or containing itself) is scanned for its smallest entries once, and prints the same everywhere in the message; the verdict, the number of matcher evaluations and ordinary messages are unchanged.
+
+### Failure messages render values safely
+
+A failure message prints the values you passed in, and `fmt` cannot print a map or slice that contains itself: it recurses until the stack overflows, which no `recover` can catch. Every message the `assert` matchers build (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, the ordering matchers, `BeZero`, `Satisfy`, `MatchError`, `MatchErrorAs`, and `Not`, `All` and `Any` around any of them) and the poll result of `Eventually` and `Consistently` therefore checks each value before printing it.
+
+- **Ordinary values read as before.** A value with no reference cycle, no map key that differs from itself (NaN) and at most 10,000 nodes is printed by `fmt` with the same verb as always, so a `String` or `Error` method still shapes the text (`1s` for a `time.Duration`). The check runs only while the message is built, which happens on failure; passing assertions allocate nothing extra.
+- **Other values use a bounded renderer.** A cyclic, NaN-keyed or oversized value is printed by a renderer that marks a reference already being printed as `<cycle>`, stops after 8 levels and 16 elements or fields per container, and never calls a `String`, `Error`, `Format` or `GoString` method on your value. It visits at most 10,000 nodes; when that budget runs out it prints `<truncated>` where it stopped instead of dropping content. Strings are cut at 256 bytes, and a map with more than 1,024 entries prints its 16 smallest keys. The structural diff of `Equal` keeps its own tighter limits (4 elements, 3 levels, 80 characters) and format.
+- **Deterministic.** The renderer orders map entries by their rendered key and then by the full key and a bounded fingerprint of the value, so keys that render alike (NaNs) never come out in iteration order. An entry whose value cannot be told apart from another entry with the same key within its fingerprint budget (4,096 bytes, and the nodes of its share of the message budget) prints `<ambiguous>` instead of a value. See *Entries whose keys tie* and *Work per message* under the structural diff.
+- **What changed for ordinary messages.** Nothing, except that a value over the 10,000-node budget (a `[]int` of more than 10,000 elements counts as that many nodes) is now printed by the bounded renderer (the first 16 elements, then `... N more`) instead of in full. `HaveLen(1)` on a 400 by 400 grid used to print all 160,000 numbers.
+
 ### Errors compare by identity, and the comparison is oriented
 
 Structural equality is the wrong question to ask about an error. `reflect.DeepEqual` dereferences two `*errorString` pointers and compares the structs, so two errors built independently from the same message compare as equal — and a wrapped error fails against the very sentinel it wraps. Both halves are wrong, and the first one is silent.
@@ -755,9 +1136,198 @@ specs.Contain("x").FailureMessage([]int{1, 2, 3})
 
 `Match` itself is unchanged: it already returned `false` for an unsupported actual or an incompatible `expected`, and still does. Only `FailureMessage` gained the extra reason, appended after an em dash so the original `expected X to contain Y` wording stays intact for the genuine-miss case that was always correct.
 
+### `HaveLen` and `BeEmpty`
+
+`HaveLen(n)` expects the actual's length to equal `n`; `BeEmpty()` expects it to be zero. Both support a string (byte length), slice, array, map and chan (buffered element count); a nil slice, map or chan is empty. Pointers to arrays are not supported. An actual with no length (an `int`, a struct, `nil`) never matches, and the failure names the cause instead of a length:
+
+```go
+ctx.Expect([]int{1, 2, 3}).To(specs.HaveLen(3))
+ctx.Expect(map[string]int{}).To(specs.BeEmpty())
+
+specs.HaveLen(3).FailureMessage([]int{1, 2}) // "expected [1 2] to have length 3, got length 2"
+specs.BeEmpty().FailureMessage([]int{1})     // "expected [1] to be empty, got length 1"
+specs.HaveLen(3).FailureMessage(42)          // "HaveLen: int has no length"
+```
+
+Because an unsupported actual simply fails to match, `Not(HaveLen(3))` and `Not(BeEmpty())` succeed on a value that has no length; pair them with a type-specific matcher if that matters.
+
+### `StartWith`, `EndWith` and `MatchRegex`
+
+`StartWith(prefix)` and `EndWith(suffix)` expect the actual to begin or end with the given string; `MatchRegex(pattern)` expects it to contain a match for an [RE2](https://pkg.go.dev/regexp/syntax) pattern (unanchored, so write `^...$` to match the whole text). The actual may be a `string`, a `[]byte` (compared in place, without converting it to a string) or a named type whose kind is `string`. Any other actual never matches and the failure says so:
+
+```go
+ctx.Expect("hello world").To(specs.StartWith("hello"))
+ctx.Expect([]byte("id-42")).To(specs.MatchRegex(`^id-\d+$`))
+
+specs.EndWith("x").FailureMessage("abc")   // `expected "abc" to end with "x"`
+specs.StartWith("a").FailureMessage(42)    // "StartWith: int is not a string or []byte"
+```
+
+`MatchRegex` compiles its pattern once, when the matcher is built. An invalid pattern does not panic: the matcher never matches, and its failure message carries the compile error (`MatchRegex: invalid pattern "(": error parsing regexp: ...`), so the mistake surfaces at the assertion that used it. As with `HaveLen`, `Not(StartWith("a"))` succeeds on a non-text actual, because the inner matcher fails to match it.
+
+### `HaveKey`, `HaveValue` and `HavePair`
+
+`HaveKey(key)` expects a map to contain `key`, `HaveValue(value)` expects at least one value equal to `value`, and `HavePair(key, value)` expects `key` to map to a value equal to `value` (a value that only exists under another key does not count). Values compare with `ValuesEqual`, the same comparison `Equal` uses, so `1` and `int64(1)` are different values and an error compares by identity.
+
+```go
+m := map[string]any{"name": "go-specs", "stars": 42}
+ctx.Expect(m).To(specs.HaveKey("name"))
+ctx.Expect(m).To(specs.HaveValue(42))
+ctx.Expect(m).To(specs.HavePair("name", "go-specs"))
+
+specs.HavePair("stars", 7).FailureMessage(m) // "expected map[name:go-specs stars:42] to have key stars with value 7 — key has value 42"
+specs.HaveKey(1).FailureMessage(m)           // "expected map[...] to have key 1 — map[string]interface {} keys are string, got int"
+specs.HaveKey("a").FailureMessage(42)        // "HaveKey: int is not a map"
+```
+
+`map[string]any` and `map[string]string` are the allocation-free fast paths; every other map (named map types included) goes through reflection. A key whose type cannot be assigned to the map's key type is an ordinary non-match, never a panic, and the failure says which key type the map has. That is assignability, not conversion: a plain `string` is not a key of a `map[MyString]V`, and `nil` is only a key of a map whose key type is an interface. A key present with a `nil` value is still a key. A non-map actual never matches, and, as with `HaveLen`, `Not(HaveKey("a"))` therefore succeeds on it.
+
+### `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs` and `BeOneOf`
+
+These extend `Contain` to several elements. `ContainAllOf(a, b)` needs every listed element, `ContainAnyOf(a, b)` needs at least one, `ContainTheSameElementsAs(other)` needs the same elements as `other` in any order, and `BeOneOf(a, b)` checks that the actual itself equals one of the listed values.
+
+```go
+ctx.Expect([]int{1, 2, 3}).To(specs.ContainAllOf(3, 1))
+ctx.Expect([]string{"a", "b"}).To(specs.ContainAnyOf("z", "b"))
+ctx.Expect([]int{3, 1, 2}).To(specs.ContainTheSameElementsAs([]int{1, 2, 3}))
+ctx.Expect(2).To(specs.BeOneOf(1, 2, 3))
+
+specs.ContainAllOf(1, 3, 4).FailureMessage([]int{1, 2})
+// "expected [1 2] to contain all of [1 3 4], missing [3 4]"
+specs.ContainTheSameElementsAs([]int{1, 1, 2}).FailureMessage([]int{1, 2, 2})
+// "expected [1 2 2] to contain the same elements as [1 1 2] — missing [1], unexpected [2]"
+```
+
+Elements compare with `ValuesEqual`, the comparison `Equal` and `Contain` use: `1` is not `int64(1)`, an error matches by identity, and everything else is structural. A collection is a slice or an array; `ContainAllOf` and `ContainAnyOf` also accept a string, where each element must be a string and is looked up as a substring (a non-string element is just never found). `ContainTheSameElementsAs` does not accept a string, and its two sides may have different types (`[]int` against `[]any` works when the elements are equal). It is multiset equality, so duplicates count, and elements are paired greedily one to one: exact for ordinary equality, best-effort for exotic equality such as errors matching through wrapping. With no elements, `ContainAllOf()` matches any collection (nothing is required) while `ContainAnyOf()` and `BeOneOf()` never match. An actual that is not a collection fails with a `ContainAllOf: int is not a string, slice or array` style message, and, as with `HaveLen`, `Not(ContainAllOf(1))` succeeds on it. `[]int`, `[]string`, `[]float64` and `[]any` are allocation-free fast paths.
+
+### Quantified and ordered collection matchers
+
+`ContainAllOf` and friends compare elements with values. When the expectation is a condition on the elements (every order line shipped, exactly two lines backordered, the events in this order), use a quantified matcher: it judges each element with a child matcher and, on failure, names the failing elements by index.
+
+`EveryElement(m)`, `AnyElement(m)` and `NoElement(m)` need all, at least one, or none of the elements to match `m`. `ExactlyNElements(n, m)`, `AtLeastNElements(n, m)` and `AtMostNElements(n, m)` count the matching elements. `HaveElementsInOrder(m1, m2, ...)` matches an **exact sequence**: the collection has as many elements as there are matchers and element `i` matches `mi`. `ContainElementsInOrder(m1, m2, ...)` matches a **subsequence**: the matchers match elements in that order, with anything, or nothing, in between.
+
+```go
+type Line struct {
+    SKU     string
+    Shipped bool
+}
+
+shipped := specs.Satisfy("a shipped line", func(v any) bool { l, ok := v.(Line); return ok && l.Shipped })
+lines := []Line{{"pen", true}, {"ink", false}, {"pad", true}}
+
+ctx.Expect(lines).To(specs.AnyElement(shipped))
+ctx.Expect(lines).To(specs.ExactlyNElements(2, shipped))
+ctx.Expect(lines).To(specs.Not(specs.EveryElement(shipped)))
+ctx.Expect([]string{"created", "paid", "packed", "shipped"}).To(specs.ContainElementsInOrder(specs.Equal("paid"), specs.Equal("shipped")))
+
+specs.EveryElement(shipped).FailureMessage(lines)
+// `EveryElement: 1 of 3 elements failed — [1] {ink false}: "expected {ink false} to satisfy \"a shipped line\""`
+specs.ExactlyNElements(1, shipped).FailureMessage(lines)
+// "ExactlyNElements: expected exactly 1 of 3 elements to match, 2 did — matching indices [0 2]"
+specs.HaveElementsInOrder(specs.Equal("a"), specs.Equal("c")).FailureMessage([]string{"a", "b", "c"})
+// `HaveElementsInOrder: expected 2 elements, got 3 — unexpected [2] c; 1 of 2 positions failed — [1] b: "expected b to equal c"`
+```
+
+Semantics, the same for every matcher in this family:
+
+- **Supported values.** A slice or array of any element type; a nil slice is an empty collection. Anything else (untyped `nil`, a string, a map, a pointer to a slice, a number) never matches and fails with an `EveryElement: int is not a slice or array` style message. As with `HaveLen`, `Not(EveryElement(m))` therefore succeeds on an unsupported value.
+- **Empty and nil input** follows logic. `EveryElement` and `NoElement` hold vacuously, `AnyElement` does not, `ExactlyNElements(0, m)`, `AtLeastNElements(0, m)` and every `AtMostNElements(n, m)` with `n >= 0` hold, `HaveElementsInOrder()` matches only an empty collection and `ContainElementsInOrder()` matches any supported collection.
+- **Nil child matchers and negative counts** never match, on an empty collection too: a nil child is a mistake that vacuous truth must not hide. A nil child is never called.
+- **Duplicates.** Each element is judged on its own, so a value that appears three times counts three times. In `ContainElementsInOrder` each element is consumed by at most one matcher, so `ContainElementsInOrder(m, m)` needs two matching elements. The matchers are consumed greedily from the left, which is exact because each matcher judges a single element.
+- **Single pass.** The child is asked about each element at most once per evaluation, through `assert.Evaluate`, so a child with a side effect (`MatchErrorAs`) is not run again to build the message, and a composite child stays single-pass too. A verdict that is already a success stops early (`AnyElement` at its first match, `AtLeastNElements` at its n-th); a failure judges every element, because the message names every culprit. Like `Not`, `All` and `Any`, the `Match` and `FailureMessage` methods of the public interface are built on the same evaluation, and the DSL calls `assert.Evaluate`.
+- **Diagnostics** list at most 10 elements and summarise the rest (`... 90 more not shown`). Indices are zero-based.
+- **Composition.** They are ordinary matchers, so they nest with `Not`, `All`, `Any` and each other (`EveryElement(Satisfy(..., order has items))`).
+
+### `BeGreaterThan`, `BeLessThan`, `BeBetween` and `BeCloseTo`
+
+`BeGreaterThan(x)`, `BeGreaterThanOrEqual(x)`, `BeLessThan(x)` and `BeLessThanOrEqual(x)` compare the actual with `x`. `BeBetween(lo, hi)` expects `lo <= actual <= hi`, **inclusive on both ends**. `BeCloseTo(target, delta)` expects `|actual - target| <= delta` (also inclusive).
+
+```go
+ctx.Expect(5).To(specs.BeGreaterThan(3))
+ctx.Expect(uint8(5)).To(specs.BeGreaterThanOrEqual(int64(5)))
+ctx.Expect(elapsed).To(specs.BeLessThan(time.Second))
+ctx.Expect("b").To(specs.BeBetween("a", "c"))
+ctx.Expect(3.14159).To(specs.BeCloseTo(3.14, 0.01))
+
+specs.BeGreaterThan(5).FailureMessage(3)  // "expected 3 to be greater than 5"
+specs.BeBetween(1, 10).FailureMessage(11) // "expected 11 to be between 1 and 10 (inclusive)"
+specs.BeGreaterThan("a").FailureMessage(5) // "BeGreaterThan: cannot compare int with string"
+```
+
+The rules, in one place:
+
+- **Numbers** are any `int`, `uint` or `float` kind, named types included, so a `time.Duration` (an `int64`) works. Different kinds compare by exact value rather than by converting one side: a negative `int` is below every `uint`, a `uint64` above `math.MaxInt64` is above every `int64`, and an `int64` beyond 2^53 is not rounded to a `float64` before it meets a float.
+- **Strings** compare with strings, byte-wise, like Go's `<`. A number never compares with a string; the failure says `cannot compare int with string`.
+- **NaN** is not ordered, so it never matches, as the actual or as the expected value, and `BeCloseTo` never matches a NaN either. The failure says so.
+- **Not supported**: bools, `nil`, structs, slices and `time.Time` (compare `t.UnixNano()` or a `Sub` result instead). They fail with `BeGreaterThan: time.Time is not a number or string`, never a panic.
+- **`BeBetween`** needs both bounds and the actual to be numbers, or all strings. A range with `lo` above `hi` never matches and the failure says so.
+- **`BeCloseTo`** converts the actual to a `float64`, so it is exactly as precise as a `float64`: use the comparison matchers when exactness beyond 2^53 matters. A negative or NaN `delta` never matches, and the failure names it. Equal infinities count as close.
+
+As with `HaveLen`, an unsupported actual simply fails to match, so `Not(BeGreaterThan(1))` succeeds on a NaN or a non-number. Builtin numeric types compare without reflection or allocation.
+
+### `BeZero` and `Satisfy`
+
+`BeZero()` expects the actual to be the zero value of its type, and `Satisfy(description, pred)` runs your own check when no built-in matcher says what you mean.
+
+```go
+var err error
+ctx.Expect(err).To(specs.BeZero())
+ctx.Expect(cfg.Timeout).To(specs.Not(specs.BeZero()))
+ctx.Expect(n).To(specs.Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }))
+
+specs.BeZero().FailureMessage(5)                    // "expected 5 to be the zero value of int"
+specs.Satisfy("is even", isEven).FailureMessage(3)  // `expected 3 to satisfy "is even"`
+specs.Satisfy("is even", nil).FailureMessage(3)     // `Satisfy: no predicate given for "is even"`
+```
+
+`BeZero` follows `reflect.Value.IsZero`: `0`, `""`, `false`, a nil pointer, slice, map, chan or func, and a struct or array whose every field or element is zero. `nil` itself (an untyped nil, or a nil `error`) is zero. An empty but non-nil slice or map is **not** zero (use `BeEmpty` for that), a float `-0.0` is zero (it equals `0`), and a zero `time.Time{}` is zero.
+
+`Satisfy`'s description names the expectation in its own failure message and in the messages `Not`, `All` and `Any` build from it, so make it read as a phrase (`"is even"`, not `"even check"`); an empty description falls back to "the given predicate". The predicate receives the actual as is (including `nil`) and is called once per assertion. A panic inside it propagates: swallowing it would hide the bug in the predicate. A `nil` predicate does not panic; the matcher never matches and its failure says no predicate was given.
+
+### Checking a field: `Project`
+
+`Satisfy` can check a field of a domain object, but it turns the check into a boolean, so a failure can only say `expected {...} to satisfy "status is paid"`. `Project(name, project, child)` ([#362](https://github.com/getsyntegrity/go-specs/issues/362)) maps the actual to a field or a derived value with `project` and applies an ordinary matcher to it, so the failure keeps the child's own explanation and starts with the path of the field.
+
+```go
+type Item struct{ SKU string; Quantity int }
+type Order struct {
+    Status string
+    Items  []Item
+}
+
+status := specs.Project("Status", func(o Order) string { return o.Status }, specs.Equal("paid"))
+ctx.Expect(order).To(status)
+// Status: expected open to equal paid
+
+// every item, without a hand-written boolean: one projection per index, nested one level
+checks := []specs.Matcher{status}
+for i := range order.Items {
+    checks = append(checks, specs.Project(fmt.Sprintf("Items[%d]", i),
+        func(o Order) Item { return o.Items[i] },
+        specs.Project("Quantity", func(it Item) int { return it.Quantity }, specs.BeGreaterThan(0))))
+}
+ctx.Expect(order).To(specs.All(checks...))
+// All: #1: "Status: expected open to equal paid"; #3: "Items[1].Quantity: expected 0 to be greater than 0"
+```
+
+`Project` returns a plain `Matcher`, so it composes with `Not`, `All`, `Any` and with any matcher that takes a matcher, such as a quantified collection matcher once one exists; nothing in `Project` depends on it. Projections nest, and the names join into one path (`Items[1].Quantity`). `name` is shown in every failure; an empty name reads as `projection`.
+
+Every input that is not a plain match is defined:
+
+| Input | Result |
+| --- | --- |
+| actual is not a `T`, or is an untyped `nil` | never matches; projection and child are not called; `Status: expected input of type assert.Order, got string` (or `got nil`) |
+| a typed nil, such as a `nil` `*Order` for `T = *Order` | it is a `T`, so it reaches the projection; if that dereferences it, the panic is reported as below |
+| `project` is `nil` | never matches; `Status: no projection function given` |
+| `child` is `nil` (untyped or typed) | never matches; `Status: nil matcher (never matches)` |
+| `project` panics | recovered and reported: `Status: projection panicked: <value>`; the suite keeps running |
+| `child` panics | not recovered, like `Satisfy` |
+
+Under `ctx.Expect(...).To(...)` and `assert.Evaluate`, the projection and the child matcher each run once per assertion. The projected value reaches the child as an `any`, so an interface-typed projection that returns `nil` reaches it as an untyped `nil`. Calling `FailureMessage` on its own, as any matcher allows, projects again.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
-`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
+`assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `BeZero`, `Satisfy`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
 
 ```go
 ctx.Expect(5).To(specs.Not(specs.Equal(1)))                          // negation

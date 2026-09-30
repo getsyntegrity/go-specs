@@ -1,0 +1,56 @@
+# Composite action: install the Go toolchain pinned in .go-version, enforce that every go.mod's
+# floor still matches it, and restore the Go build cache.
+#
+# Every Go job of ci.yml, security.yml, fuzz.yml and the benchmark workflows runs on its own fresh
+# runner, so each needs this same setup. Collecting it here means the toolchain pin (.go-version),
+# the drift check (check-go-version.sh) and the cache policy are defined once.
+#
+# IMPORTANT: a local composite action is resolved from the already-checked-out working tree, not
+# fetched from GitHub, so every job that does `uses: ./.github/actions/go-setup` MUST run
+# `actions/checkout` first -- otherwise this action's own files, .go-version, go.mod and
+# check-go-version.sh do not exist on the runner yet and the job fails before reaching this step.
+name: go-setup
+description: >-
+  Go (version read from .go-version), fail fast if any go.mod's `go` directive has drifted from
+  that pin, then restore the Go build cache.
+
+inputs:
+  cache-key:
+    description: >-
+      Which build-cache flavour this job produces: jobs that compile differently (plain vs -race,
+      test binaries vs vet) must not share a key, or each run overwrites the others' entries with
+      objects they cannot reuse.
+    default: default
+
+runs:
+  using: composite
+  steps:
+    # The toolchain CI installs is pinned in .go-version, never inline here: go.mod declares the
+    # *minimum* the code needs (the floor every consumer inherits), .go-version the *exact*
+    # patched toolchain we build and test with. One file per role, one place to bump each.
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: .go-version
+        cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+
+    # Catches go.mod's `go` directive drifting from the MAJOR.MINOR.0 floor derived from
+    # .go-version. A patch-only bump to .go-version needs no go.mod change; minor-level drift
+    # between the two fails.
+    - name: Check Go version pin
+      shell: bash
+      run: ./.github/scripts/check-go-version.sh
+
+    # Only the build cache (GOCACHE), never setup-go's own cache: setup-go's cache also restores
+    # the toolchain/module tree and failed with tar "File exists" when doing so, which is why
+    # `cache: false` stays above. The key ends in github.sha so each run saves a fresh entry;
+    # restore-keys falls back to the newest entry for the same toolchain, go.sum and flavour, and
+    # the Go build cache itself decides per package what is still valid, so a stale entry costs a
+    # recompile, never a wrong result.
+    - name: Restore Go build cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/go-build
+        key: go-build-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('.go-version', '**/go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('.go-version', '**/go.sum') }}-

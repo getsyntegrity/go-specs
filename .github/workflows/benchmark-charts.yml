@@ -19,10 +19,10 @@
 # Three jobs, one concern each, chained with `needs:` since each stage's input is the previous
 # stage's output: `bench` (run the suite, upload the raw text) -> `chart` (download the text,
 # render PNGs, upload them) -> `publish` (download the PNGs, open/update the rolling PR). Splitting
-# buys no wall time -- the chain is inherently sequential -- but it does mean the release GitHub
-# App's installation token exists only in `publish`, the one job that actually pushes anything;
-# `bench` and `chart` never see a secret at all. Artifacts between jobs use a 1-day retention:
-# nothing downstream of `publish` ever needs last week's intermediate benchmark text or PNGs.
+# buys no wall time -- the chain is inherently sequential -- but it does mean the PR token is only
+# read in `publish`, the one job that actually pushes anything; `bench` and `chart` never see a
+# secret at all. Artifacts between jobs use a 1-day retention: nothing downstream of `publish` ever
+# needs last week's intermediate benchmark text or PNGs.
 name: Benchmark charts
 
 on:
@@ -33,11 +33,9 @@ on:
   workflow_dispatch:
 
 # Least-privilege: `bench` and `chart` only read. `publish`'s only write (the rolling PR branch
-# and the PR itself) goes through the release GitHub App's installation token via
-# peter-evans/create-pull-request's `token:` input, not GITHUB_TOKEN -- the same reasoning as
-# release-prep.yml's header (Decision 3 of native-ci-pipeline.md): a GITHUB_TOKEN push/PR would
-# not retrigger this PR's own required checks, and only the App can bypass the protect-develop /
-# protect-main rulesets in the first place.
+# and the PR itself) goes through peter-evans/create-pull-request's `token:` input, which is
+# ORG_CHECKOUT_TOKEN when the secret exists and github.token otherwise (see the step). No bot
+# bypasses the branch rulesets any more: this is an ordinary pull request.
 permissions:
   contents: read
 
@@ -65,10 +63,9 @@ jobs:
       # Benchmark numbers are only comparable across runs when the toolchain is, so this job
       # installs the same pinned version as CI rather than a floating minor.
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: ./.github/actions/go-setup
         with:
-          go-version-file: .go-version
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+          cache-key: bench-charts
 
       - name: Create results directory
         run: mkdir -p benchmarks/results
@@ -124,37 +121,14 @@ jobs:
   publish:
     needs: chart
     runs-on: ubuntu-latest
-    # 20 minutes: minting the App token, checking out, downloading, and opening/updating one PR --
-    # lighter than bench or chart, but still in the release/release-prep/goreleaser band since it
-    # mints and uses the release App token.
+    # 20 minutes: checking out, downloading, and opening/updating one PR -- lighter than bench
+    # or chart.
     timeout-minutes: 20
+    # Needed only when the token falls back to github.token; a PAT carries its own scopes.
+    permissions:
+      contents: write        # push the chore/benchmark-charts branch
+      pull-requests: write   # open or update the rolling PR and label it
     steps:
-      # Checked before anything else, so a missing token fails in seconds with an actionable
-      # message instead of peter-evans/create-pull-request failing deep inside a push with an
-      # opaque authentication error.
-      - name: Verify the release GitHub App is configured
-        env:
-          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
-            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
-            exit 1
-          fi
-
-      # Minted once, ahead of the PR step that needs it below -- only the App can bypass the
-      # protect-develop / protect-main rulesets (see CONTRIBUTING.md's Prerequisite section), and a
-      # GITHUB_TOKEN-authored PR would not retrigger this PR's own required checks. This is now
-      # the only job in the workflow that ever mints it.
-      - name: Mint a release GitHub App installation token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
       # peter-evans/create-pull-request below commits from this working tree, so it needs one
       # checked out -- it authenticates its own push and PR with the `token:` input passed to it
       # directly, never with credentials left behind by this checkout, so nothing here needs them
@@ -180,12 +154,25 @@ jobs:
       - name: Open or update the rolling benchmark-charts PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          # ego's token convention: the org PAT when the secret exists (so CI runs on the PR),
+          # else github.token (the PR opens, but GitHub does not start workflows from it: close
+          # and reopen the PR to run CI).
+          token: ${{ secrets.ORG_CHECKOUT_TOKEN || github.token }}
           add-paths: benchmarks/results/*.png
           commit-message: "chore: update benchmark charts"
           branch: chore/benchmark-charts
           delete-branch: true
           base: develop
+          # Commit through the GitHub API so the commit is signed and attributed to the token's
+          # identity. Without it the commit is authored as github.actor (whoever pushed to
+          # develop) and unsigned, which develop's `require_extra_approval_for_unattributed_changes`
+          # ruleset setting treats as unattributable and blocks for an extra approval (see #368).
+          # Signing only works with github.token or a GitHub App token: with a PAT the PR still
+          # opens but the commit stays unsigned.
+          sign-commits: true
+          # `kind/chore` satisfies pr-meta (which only exempts `sync/*` branches), and
+          # `skip-changelog` keeps the PR out of the release notes.
+          labels: skip-changelog,kind/chore
           title: "chore: update benchmark charts"
           body: >-
             Regenerated benchmark charts from the latest push to `develop`

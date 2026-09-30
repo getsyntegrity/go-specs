@@ -15,7 +15,10 @@
 // spec's own Context at a settle point, after wg.Wait — a happens-before edge, so folding needs no
 // further synchronisation. Settle points are exactly where the engines already finish a spec: after
 // the body and before AfterEach hooks (awaitTasks/settleTasks(false)), and once more after the hooks,
-// which also closes the spec to new tasks (settleTasks(true)).
+// which also closes the spec to new tasks (settleTasks(true)). ctx.Errorf failures (context_errorf.go)
+// travel the same way: while the case has this state they are queued under the mutex from any
+// goroutine and folded here, and once more when the cleanups have run (drainCleanups), so a failure
+// reported through a finished task's Context still reaches the spec.
 //
 // Two backends, two reporting routes. When the spec runs on a real testing.TB (a *testing.T subtest),
 // the task context shares that TB: it is safe for concurrent use, and reporting straight through it
@@ -66,6 +69,15 @@ type goState struct {
 	// closed is set by the final settle; a ctx.Go after it panics. Atomic because a task may read it
 	// while the spec goroutine sets it.
 	closed atomic.Bool
+	// cleanups is the ctx.Cleanup list, in registration order, drained last first by the engines at
+	// the end of the case (context_cleanup.go). cleanupsDone is set when a drain finished, so a
+	// Cleanup on a finished case panics. Both are guarded by mu: a task may register a cleanup.
+	cleanups     []func()
+	cleanupsDone bool
+	// pending holds the failures ctx.Errorf recorded while the case had task or cleanup state, in the
+	// order they reached the list. Errorf appends from any goroutine (a task, a cleanup, the spec's own
+	// body); the spec goroutine drains it in fold (context_errorf.go documents the message rule).
+	pending []failureRecord
 }
 
 func (gs *goState) reset() {
@@ -73,6 +85,9 @@ func (gs *goState) reset() {
 	gs.rec = failureRecord{}
 	gs.panicMsg, gs.panicOut = "", ""
 	gs.panicReported, gs.replayed = false, false
+	clear(gs.cleanups) // drop the closures, keep the backing array for the pooled Context
+	gs.cleanups, gs.cleanupsDone = gs.cleanups[:0], false
+	gs.pending = nil
 	gs.mu.Unlock()
 	gs.closed.Store(false)
 }
@@ -250,6 +265,8 @@ func (gs *goState) fold(c *Context) (message, output string) {
 		gs.replayed = true
 	}
 	message, output = gs.panicMsg, gs.panicOut
+	pending := gs.pending
+	gs.pending = nil
 	gs.mu.Unlock()
 	if rec.Failed {
 		if !c.failure.Failed {
@@ -259,6 +276,18 @@ func (gs *goState) fold(c *Context) (message, output string) {
 		// With a real testing.TB the task already reported through it; nothing to replay.
 		if replay && c.tb == nil {
 			c.replayTaskFailure(rec)
+		}
+	}
+	// ctx.Errorf failures rank after the spec goroutine's own and after a task's assertion failure, in
+	// arrival order. With a real testing.TB each was already reported by its caller; otherwise every
+	// one is replayed onto the spec's backend (the parallelBackend keeps only the first).
+	for _, f := range pending {
+		if !c.failure.Failed {
+			c.failure.Message = f.Message
+		}
+		c.failure.Failed = true
+		if c.tb == nil {
+			c.replayTaskFailure(f)
 		}
 	}
 	return message, output
@@ -288,6 +317,10 @@ func (c *Context) replayTaskFailure(rec failureRecord) {
 // the report classify it as an error, not a failure).
 func settleParallelTasks(ctx *Context, results *[]failureRecord, idx int) (output string) {
 	message, out := ctx.awaitTasks()
+	// ctx.Cleanup functions run last, after the tasks; a cleanup panic ranks after a task panic (#357).
+	if m, o := ctx.runCleanupsQuiet(); message == "" {
+		message, out = m, o
+	}
 	// Worker engines reuse one Context across the specs of a chunk, so recycle rather than close.
 	ctx.recycleTasks()
 	if message != "" && !(*results)[idx].Failed {

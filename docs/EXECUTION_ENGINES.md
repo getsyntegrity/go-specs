@@ -49,7 +49,7 @@ as part of this work — a reader currently learns the wrong engine.
 | Non-test consumers | `specs/spec.go`, `specs/path_builder.go` |
 | Tests | `execution_plan_test.go`, `_isolation_test.go`, `_recovery_test.go`, `_reporter_test.go`, `compiled_runner_test.go`, `lifecycle_hooks_test.go`, `spec_event_path_test.go`, `subtest_identity_test.go` |
 | Benchmarks | `minimal_and_buildsuite_bench_test.go`, `describe_variants_bench_test.go`, `e2e_test.go` (`*testing.T` path) |
-| Docs | README, `ARCHITECTURE.md`, `EXECUTION_MODEL.md`, every `examples/*` |
+| Docs | README, `ARCHITECTURE.md`, `EXECUTION_MODEL.md`, every file under `examples/` |
 | Reason to exist | It is the product. |
 
 ### 1.2 `Builder` / `Program` / `Runner`
@@ -60,7 +60,7 @@ as part of this work — a reader currently learns the wrong engine.
 | Public surface | `Builder`, `NewBuilder`, `BuildProgram`, `Program`, `Runner`, `NewRunner`, `NewRunnerWithReporter` |
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
-| Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
+| Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/builder_test.go` |
 | **Unique capabilities** | **None left.** `RunShard` was the last one: it existed only here until [#251](https://github.com/getsyntegrity/go-specs/issues/251) spec 2 added `CompiledSuite.RunShard`, the canonical engine's own package-level `RunShard`'s equivalent — see Stage 4 item 4 below. `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. `ItParallel` is likewise Builder-only as a `SpecFn`-free direct method, but `Spec.ItParallel` has the same capability with a stronger guarantee — a real per-spec `*testing.T` and `-run` addressing — since #245's second spec; see Stage 4 item 2 below. `FailFast` was Builder-only too, but `CompiledSuite.SetFailFast` gives the canonical engine the same contract since #251 spec 1; see Stage 4 item 3 below. |
 
 This engine is no longer load-bearing the way it was: removing it no longer removes any capability
@@ -89,7 +89,7 @@ removal question itself.
 | Reachable from `Describe` | **No** |
 | Non-test consumers | `ShardBCProgram` only (`specs/sharding.go:180`) |
 | Benchmarks | **None** |
-| Docs | **None** in README, `docs/`, or `examples/` — only a `CHANGELOG.md:182` migration-table mention |
+| Docs | **None** in README, `docs/`, or `examples/` — only a `CHANGELOG/CHANGELOG-0.1.md` migration-table mention |
 | Reason to exist | It flattens hooks at build time like the canonical compiler does, but reports nothing and isolates nothing. It duplicates `ExecutionPlan`'s model with strictly fewer capabilities. **No performance claim backs it: it has no benchmark.** |
 
 ### 1.5 `BlockRunner`
@@ -112,7 +112,7 @@ removal question itself.
 | Files | `specs/scheduler.go`, `specs/scheduler_batch.go` |
 | Public surface | `RunShard`, `RunShardWithReporter`, `DefaultChunkSize` — core is unexported |
 | Role | The shared worker pool behind `MinimalRunner.RunParallel*`, `BytecodeRunner.RunParallel`, and (via `parallelStep`) Builder's `ItParallel`. `RunShard` is unrelated: it shards a `*Program` and delegates to `Runner`. |
-| Note | `CHANGELOG.md:184` already states the worker pool was "never part of the supported public surface". |
+| Note | `CHANGELOG/CHANGELOG-0.1.md` already states the worker pool was "never part of the supported public surface". |
 
 **Conclusion:** there are **two** engines with full semantics (ExecutionPlan, Builder/Runner), **three**
 flat spec-list executors (Minimal, Block, Bytecode), and **one** shared parallel substrate. The three flat
@@ -156,9 +156,9 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 | Engine | Class | Rationale |
 |---|---|---|
 | `ExecutionPlan` + `CompiledSuite` | **Canonical** | The `Describe` path. Every invariant lands here first. |
-| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/parallel`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
+| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/builder_test.go`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
 | `MinimalRunner` | **Compatibility surface (narrow)** | Named in README, benchmarked, and the documented partner of `ShardSpecs`. Keep `Run`/`RunParallel`/`RunParallelBatched`; do not grow it. |
-| Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG.md:184`. Keep unexported. |
+| Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG/CHANGELOG-0.1.md`. Keep unexported. |
 | `BytecodeRunner` / `BCProgram` / `BCBuilder` | **Experimental → deprecate** | Zero documentation, zero benchmarks, zero consumers beyond `ShardBCProgram`. A strictly weaker duplicate of the canonical model with no measured justification. |
 | `BlockRunner` | **Removable** | Zero documentation, zero benchmarks, zero callers, and an unusable exported signature (`specBlock`). |
 

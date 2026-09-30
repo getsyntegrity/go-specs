@@ -1,0 +1,54 @@
+name: Feature or API change
+description: Propose something new or a change to go-specs' public API
+labels: ["kind/feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        In a library, every API change is paid for by all the projects that use it.
+        Describe the **problem** first; we discuss the solution here before writing code.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem do you want to solve?
+      description: The concrete use case, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Signature of the new or modified functions or types, and a usage example.
+      render: go
+      placeholder: |
+        // New
+        func BeWithinDuration(d time.Duration) Matcher
+
+        // Usage
+        ctx.Expect(elapsed).To(specs.BeWithinDuration(time.Second))
+
+  - type: dropdown
+    id: compat
+    attributes:
+      label: Does it break compatibility?
+      description: "If it does, it is a breaking release for every consumer (go-specs is pre-1.0, so a minor bump)."
+      options:
+        - "No: it only adds API"
+        - "Yes: it changes or removes existing API"
+        - "I don't know"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Can it be solved without changing go-specs? Why is that not enough?
+
+  - type: input
+    id: consumers
+    attributes:
+      label: Interested projects
+      placeholder: my-project, ...

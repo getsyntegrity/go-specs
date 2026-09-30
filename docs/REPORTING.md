@@ -2,6 +2,8 @@
 
 `report` package: `github.com/getsyntegrity/go-specs/report`
 
+Runnable examples of the collector and renderers: [examples/reporting_test.go](../examples/reporting_test.go), indexed in [examples/README.md](../examples/README.md).
+
 go-specs can render a suite's results as JUnit-compatible XML, a self-contained HTML page,
 deterministic plain text, or versioned JSON, and can fold in Go coverage-profile data alongside
 the execution results. This is opt-in, per test binary, via the existing `report.EventReporter`

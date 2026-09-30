@@ -6,7 +6,7 @@
 
 ## Project status
 
-go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
+go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG](CHANGELOG/README.md) before upgrading.
 
 ## Description
 
@@ -18,14 +18,18 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
   `BeforeAll`/`AfterAll` (once per group) for structured specs
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
-- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, etc.), composable with `Not`/`All`/`Any`, and snapshot testing
-- **Lightweight mocking** — Spies and argument matchers without heavy code generation
+- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, `ContainAllOf`, `BeOneOf`, `BeGreaterThan`, `BeBetween`, `BeZero`, `Satisfy`, etc.), composable with `Not`/`All`/`Any`, `ctx.Eventually`/`ctx.Consistently` polling assertions, and snapshot testing
+- **Lightweight mocking** — Spies, argument matchers and `mock.Controller` (stubbing, counts, captors, call order, automatic verification at cleanup) for hand-written typed adapters, without code generation; see [docs/DSL.md](docs/DSL.md#mocking-interfaces-with-mockcontroller)
 
 ## Installation
 
 ```bash
 go get github.com/getsyntegrity/go-specs
 ```
+
+## Usage reference
+
+[examples/README.md](examples/README.md) is the usage reference: an index of every feature (DSL, hooks, tables, matchers, polling, mocks and spies, snapshots, reporting, property testing) with a runnable example file for each. Run them all with `go test ./examples/...`.
 
 ## Basic example
 
@@ -78,14 +82,14 @@ unless `GO_SPECS_ALLOW_FOCUS=1` opts out. `s.SkipIt` and `s.PendingIt` keep a sp
 report as skipped or pending without running its body. See
 [docs/DSL.md](docs/DSL.md#committed-focus-fails-the-enclosing-test).
 
-See [examples/basic](examples/basic), [examples/hooks](examples/hooks) and
-[examples/suite_hooks](examples/suite_hooks) for runnable examples.
+See [examples/dsl_test.go](examples/dsl_test.go), [examples/hooks_test.go](examples/hooks_test.go)
+for runnable examples, and the [examples index](examples/README.md) for every feature.
 
 A reusable set of specs applied to several implementations of one interface — a "shared
 behavior" — needs no DSL primitive of its own: it is an ordinary `func(*specs.Spec, ...)` that
 registers on the `*Spec` it is handed, called from each `Describe` that needs it. See
 [docs/DSL.md](docs/DSL.md#shared-behaviors-reusing-specs-across-implementations) and
-[examples/shared_behaviors](examples/shared_behaviors).
+[examples/shared_behaviors_test.go](examples/shared_behaviors_test.go).
 
 ## Benchmarks
 
@@ -221,14 +225,15 @@ Reproducible benchmark suite: [benchmarks/](benchmarks). From the repository roo
 
 ## Architecture overview
 
-go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel`, on both the `Describe`/`Spec` path and the Builder) are grouped and run concurrently, then execution continues sequentially — `Spec.ItParallel` launches each parallel spec as its own real Go subtest with a live `ctx.T`, while `Builder.ItParallel` shares one worker-style step with `ctx.T == nil`; see [docs/DSL.md](docs/DSL.md#itparallel). `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The repository is a single Go module; packages include:
+go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel`, on both the `Describe`/`Spec` path and the Builder) are grouped and run concurrently, then execution continues sequentially — `Spec.ItParallel` launches each parallel spec as its own real Go subtest with a live `ctx.T`, while `Builder.ItParallel` shares one worker-style step with `ctx.T == nil`; see [docs/DSL.md](docs/DSL.md#itparallel). `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The core is a single Go module (the property-testing package is a nested one, so the core has no extra dependency); packages include:
 
 - **specs** — Core DSL, runner, context, and execution plan
-- **assert** — Matcher implementations (Equal, BeTrue, BeNil, etc.) and composition (Not, All, Any)
+- **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, ContainAllOf, BeOneOf, BeGreaterThan, BeBetween, BeZero, Satisfy, etc.) and composition (Not, All, Any)
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
-- **mock** — Spies and argument matchers
+- **mock** — Spies, argument matchers and `Controller` expectations for interface mocks ([examples/mocks_test.go](examples/mocks_test.go), [examples/spies_test.go](examples/spies_test.go))
 - **snapshots** — Snapshot testing support
-- **examples** — Example tests (basic, hooks, parallel, and more)
+- **property** — Property testing with shrinking and replay, a separate Go module that depends on `pgregory.net/rapid` ([docs/PROPERTY_TESTING.md](docs/PROPERTY_TESTING.md))
+- **examples** — The usage reference: one runnable file per feature, indexed in [examples/README.md](examples/README.md). Property testing examples are in [property/examples](property/examples)
 
 ## Running benchmarks
 

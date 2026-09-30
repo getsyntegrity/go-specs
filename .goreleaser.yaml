@@ -10,6 +10,8 @@ project_name: go-specs
 builds:
   - skip: true
 
+# Only used when .github/scripts/changelog.sh finds no PR entry for a release (release.yml then does not
+# pass --release-notes); otherwise the release body is that script's section of CHANGELOG/.
 changelog:
   use: git
   sort: asc

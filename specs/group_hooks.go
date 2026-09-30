@@ -1197,6 +1197,10 @@ func runGroupHookOnce(ctx *Context, fn func(*Context)) (message, output string) 
 		if m, o := ctx.settleTasks(true); message == "" {
 			message, output = m, o
 		}
+		// A cleanup registered by a hook runs when the hook returns (#357).
+		if m, o := ctx.runCleanups(); message == "" {
+			message, output = m, o
+		}
 	}()
 	fn(ctx)
 	return

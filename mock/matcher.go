@@ -34,3 +34,9 @@ type equalMatcher struct {
 func (m *equalMatcher) Match(v any) bool {
 	return assert.ValuesEqual(m.expected, v)
 }
+
+// String describes the matcher in diagnostics.
+func (anyMatcher) String() string { return "any value" }
+
+// String describes the matcher in diagnostics.
+func (m *equalMatcher) String() string { return "equal to " + formatValue(m.expected) }

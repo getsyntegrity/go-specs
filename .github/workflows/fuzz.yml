@@ -1,0 +1,93 @@
+# Fuzz: search for panics, stack overflows, runaway traversal and unstable output in the assertion
+# diagnostics (assert/fuzz_diagnostics_test.go).
+#
+# Each fuzz target decodes a byte recipe into a small value graph (maps, slices, pointers, structs,
+# cycles, shared references, NaN keys, slice views, values at the render limits) and builds
+# EqualFailureMessage, matcher messages or PollResult.Message for it, checking that the build
+# terminates, that the text is bounded and stable, and that verdicts and matcher evaluation counts
+# do not change. See the header of assert/fuzz_diagnostics_test.go for the five invariants.
+#
+# Deliberately NOT part of ci.yml and never a PR gate: a fuzz run is open-ended by nature, so a fixed
+# time budget on every pull request would lengthen each one and still find nothing new most of the
+# time. What every pull request does run is the seed corpus: `go test ./...` replays the f.Add seeds
+# and the committed assert/testdata/fuzz corpus, and TestFuzz*Subprocess replays them again in child
+# processes so a stack overflow fails one subtest instead of killing the suite.
+#
+# This workflow runs weekly, and on demand with a chosen duration per target:
+#
+#   gh workflow run fuzz.yml -f duration=10m
+#
+# Weekly: Wednesdays at 04:41 UTC, an off-the-hour time like security.yml's, so it does not compete with
+# every other repository's queued "top of the hour" scheduled workflows for runner capacity.
+#
+# When a target fails, Go writes the failing input under assert/testdata/fuzz/<Target>/ in the runner's
+# checkout and this workflow uploads that directory as an artifact. Turn the file into a regression:
+# commit it under the same path with a descriptive name, and add a named test that replays it through
+# fzReplayInChild (assert/fuzz_subprocess_test.go).
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "41 4 * * 3"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Time to fuzz each target for: a whole number and s, m or h (5m, 90s, 1h)"
+        required: false
+        default: "5m"
+        type: string
+
+# Least-privilege: the jobs only read the checked-out repository.
+permissions:
+  contents: read
+
+# One run per ref, queued and never cancelled: a scheduled run is the record of what was searched.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    # The targets run in parallel, one job each, so this bounds one target: the default 5 minutes plus
+    # the build, with room for a manual run of up to about half an hour.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzEqualFailureMessage, FuzzMatcherDiagnostics, FuzzPollMessage]
+    env:
+      GOTOOLCHAIN: local
+      # Through the environment, never interpolated into the script: the input is user-supplied text.
+      FUZZ_TIME: ${{ inputs.duration || '5m' }}
+      FUZZ_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # See ci.yml's verify job: Checkout must run first for a local composite action to resolve.
+      - name: Set up Go
+        uses: ./.github/actions/go-setup
+        with:
+          cache-key: fuzz-${{ matrix.target }}
+
+      - name: Check the duration
+        run: |
+          if ! [[ "$FUZZ_TIME" =~ ^[1-9][0-9]*[smh]$ ]]; then
+            echo "::error::duration must be a whole number followed by s, m or h, got '$FUZZ_TIME'"
+            exit 1
+          fi
+
+      # -run '^$' skips the ordinary tests (ci.yml runs them); -fuzz names exactly one target.
+      - name: Fuzz
+        run: go test ./assert -run '^$' -fuzz "^${FUZZ_TARGET}\$" -fuzztime "$FUZZ_TIME"
+
+      - name: Upload the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-failures-${{ matrix.target }}
+          path: assert/testdata/fuzz/${{ matrix.target }}/
+          if-no-files-found: ignore

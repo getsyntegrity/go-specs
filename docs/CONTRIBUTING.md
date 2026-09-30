@@ -32,6 +32,18 @@ Thank you for considering contributing to go-specs. This document covers develop
 
 All of the above should pass before submitting a change.
 
+## Fuzzing the assertion diagnostics
+
+The diagnostics of `assert` (`EqualFailureMessage`, matcher failure messages, `PollResult.Message`) print arbitrary user values, so three fuzz targets in `assert/fuzz_diagnostics_test.go` search for a panic, a stack overflow, runaway traversal or unstable text. Each one decodes a `[]byte` recipe (at most 512 bytes, at most 64 nodes; the format is documented in `assert/fuzz_recipe_test.go`) into a small graph with cycles, shared references, NaN keys, slice views and values at the render limits.
+
+Plain `go test ./...` replays the seed recipes and every file committed under `assert/testdata/fuzz/`, and `TestFuzz*Subprocess` replays them again in child processes, so a regression that overflows the stack fails one subtest instead of killing the suite. To fuzz for real, run one target at a time:
+
+```bash
+go test ./assert -run '^$' -fuzz '^FuzzEqualFailureMessage$' -fuzztime=60s
+```
+
+The other targets are `FuzzMatcherDiagnostics` and `FuzzPollMessage`. The weekly `fuzz.yml` workflow runs all three (`gh workflow run fuzz.yml -f duration=10m` for a manual run). When a target fails, keep the input Go wrote under `assert/testdata/fuzz/<Target>/` as a regression: commit it with a descriptive name and replay it with `fzReplayInChild`. Fuzzing is not part of `ci.yml`, so pull requests are not lengthened.
+
 ## Benchmark testing
 
 When changing performance-sensitive code (runner, assertions, context, compiler), run the benchmark suite and ensure you do not regress allocations or throughput:

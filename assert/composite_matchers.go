@@ -91,7 +91,7 @@ func (n *notMatcher) FailureMessage(actual any) string {
 	}
 	// Reached only when n.sub.Match(actual) was true, so quoting its FailureMessage would print a
 	// message about a comparison that succeeded. Description() is the only safe thing to name here.
-	return fmt.Sprintf("expected %v not to be %s", actual, describeMatcher(n.sub))
+	return fmt.Sprintf("expected %s not to be %s", userValue(actual), describeMatcher(n.sub))
 }
 
 func (n *notMatcher) Description() string {
@@ -114,7 +114,7 @@ func (n *notMatcher) Evaluate(actual any) (bool, string) {
 		return false, "Not: sub-matcher at position 1 is nil"
 	}
 	if n.sub.Match(actual) {
-		return false, fmt.Sprintf("expected %v not to be %s", actual, describeMatcher(n.sub))
+		return false, fmt.Sprintf("expected %s not to be %s", userValue(actual), describeMatcher(n.sub))
 	}
 	return true, ""
 }

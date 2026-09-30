@@ -7,13 +7,14 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version
+.PHONY: help test test-property test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version test-ci-scripts
 
 # Default target: show all tasks with short descriptions
 help:
 	@echo "go-specs Makefile targets (run from repo root):"
 	@echo ""
 	@echo "  make test          Run all tests"
+	@echo "  make test-property Run the nested property module (seed replay; see docs/PROPERTY_TESTING.md)"
 	@echo "  make test-race     Run tests with race detector"
 	@echo "  make coverage      Run tests with coverage report (coverage.out)"
 	@echo "  make bench         Quick benchmark run (terminal output)"
@@ -29,6 +30,7 @@ help:
 	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove coverage.* and benchmark results"
 	@echo "  make check-go-version  Verify every go.mod matches the MAJOR.MINOR.0 floor derived from .go-version"
+	@echo "  make test-ci-scripts   Test the release scripts in .github/scripts (next-version, changelog)"
 	@echo ""
 
 # Fail when any go.mod's `go` directive is not MAJOR.MINOR.0 of .go-version
@@ -37,9 +39,19 @@ help:
 check-go-version:
 	./.github/scripts/check-go-version.sh
 
+# Test the release scripts (next-version.sh, changelog.sh) in throwaway git
+# repositories. Same command CI's `verify` job runs.
+test-ci-scripts:
+	bash ./.github/scripts/test/run.sh
+
 # Run tests
 test:
 	go test ./...
+
+# Run the property-testing module. It is a nested Go module, so `go test ./...` at the root does not
+# reach it. Plain `go test` replays seeds and committed corpus files only; no fuzz campaign runs.
+test-property:
+	cd property && go vet ./... && go test ./...
 
 # Run tests with race detector
 test-race:

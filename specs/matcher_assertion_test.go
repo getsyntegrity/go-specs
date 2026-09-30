@@ -246,12 +246,32 @@ func TestReExportedMatchersDecideAndExplain(t *testing.T) {
 		failing     any
 		wantMessage string
 	}{
-		"Equal":    {Equal(1), 1, 2, "expected 2 to equal 1"},
-		"NotEqual": {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
-		"BeNil":    {BeNil(), nil, 1, "expected nil, got 1 (int)"},
-		"BeTrue":   {BeTrue(), true, false, "expected true, got false (bool)"},
-		"BeFalse":  {BeFalse(), false, true, "expected false, got true (bool)"},
-		"Contain":  {Contain("b"), "abc", "axc", "expected axc to contain b"},
+		"Equal":                    {Equal(1), 1, 2, "expected 2 to equal 1"},
+		"NotEqual":                 {NotEqual(1), 2, 1, "expected 1 not to equal 1"},
+		"BeNil":                    {BeNil(), nil, 1, "expected nil, got 1 (int)"},
+		"BeTrue":                   {BeTrue(), true, false, "expected true, got false (bool)"},
+		"BeFalse":                  {BeFalse(), false, true, "expected false, got true (bool)"},
+		"Contain":                  {Contain("b"), "abc", "axc", "expected axc to contain b"},
+		"HaveLen":                  {HaveLen(2), []int{1, 2}, []int{1}, "expected [1] to have length 2, got length 1"},
+		"BeEmpty":                  {BeEmpty(), []int{}, []int{1}, "expected [1] to be empty, got length 1"},
+		"StartWith":                {StartWith("a"), "abc", "xbc", `expected "xbc" to start with "a"`},
+		"EndWith":                  {EndWith("c"), "abc", "abx", `expected "abx" to end with "c"`},
+		"HaveKey":                  {HaveKey("a"), map[string]int{"a": 1}, map[string]int{"b": 1}, "expected map[b:1] to have key a"},
+		"HaveValue":                {HaveValue(1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have value 1"},
+		"HavePair":                 {HavePair("a", 1), map[string]int{"a": 1}, map[string]int{"a": 2}, "expected map[a:2] to have key a with value 1 — key has value 2"},
+		"ContainAllOf":             {ContainAllOf(1, 2), []int{2, 1}, []int{1}, "expected [1] to contain all of [1 2], missing [2]"},
+		"ContainAnyOf":             {ContainAnyOf(1, 2), []int{2}, []int{3}, "expected [3] to contain any of [1 2]"},
+		"ContainTheSameElementsAs": {ContainTheSameElementsAs([]int{1, 2}), []int{2, 1}, []int{1}, "expected [1] to contain the same elements as [1 2] — missing [2]"},
+		"BeOneOf":                  {BeOneOf(1, 2), 2, 3, "expected 3 to be one of [1 2]"},
+		"BeGreaterThan":            {BeGreaterThan(1), 2, 1, "expected 1 to be greater than 1"},
+		"BeGreaterThanOrEqual":     {BeGreaterThanOrEqual(2), 2, 1, "expected 1 to be greater than or equal to 2"},
+		"BeLessThan":               {BeLessThan(2), 1, 2, "expected 2 to be less than 2"},
+		"BeLessThanOrEqual":        {BeLessThanOrEqual(1), 1, 2, "expected 2 to be less than or equal to 1"},
+		"BeBetween":                {BeBetween(1, 3), 3, 4, "expected 4 to be between 1 and 3 (inclusive)"},
+		"BeCloseTo":                {BeCloseTo(3, 0.5), 3.25, 4.0, "expected 4 to be within 0.5 of 3, difference is 1"},
+		"BeZero":                   {BeZero(), 0, 5, "expected 5 to be the zero value of int"},
+		"Satisfy":                  {Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }), 2, 3, `expected 3 to satisfy "is even"`},
+		"MatchRegex":               {MatchRegex(`^a`), "abc", "xbc", `expected "xbc" to match regex "^a"`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -280,6 +300,49 @@ func TestMatchersRunThroughTheDescribeDSL(t *testing.T) {
 		})
 		s.It("accepts a contained element", func(ctx *Context) {
 			ctx.Expect([]string{"a", "b"}).To(Contain("b"))
+		})
+		s.It("accepts a length and emptiness", func(ctx *Context) {
+			ctx.Expect([]int{1, 2, 3}).To(HaveLen(3))
+			ctx.Expect(map[string]int{}).To(BeEmpty())
+			ctx.Expect([]int{1}).To(Not(BeEmpty()))
+		})
+		s.It("accepts string prefixes, suffixes and patterns", func(ctx *Context) {
+			ctx.Expect("hello world").To(StartWith("hello"))
+			ctx.Expect("hello world").To(EndWith("world"))
+			ctx.Expect("id-42").To(MatchRegex(`^id-\d+$`))
+			ctx.Expect("hello").To(Not(StartWith("world")))
+			ctx.Expect("hello").To(All(StartWith("he"), EndWith("lo")))
+		})
+		s.It("accepts map keys, values and pairs", func(ctx *Context) {
+			m := map[string]any{"name": "go-specs", "stars": 42}
+			ctx.Expect(m).To(HaveKey("name"))
+			ctx.Expect(m).To(HaveValue(42))
+			ctx.Expect(m).To(HavePair("name", "go-specs"))
+			ctx.Expect(m).To(Not(HaveKey("missing")))
+			ctx.Expect(m).To(All(HaveKey("stars"), HaveLen(2)))
+		})
+		s.It("accepts collection membership", func(ctx *Context) {
+			ctx.Expect([]int{1, 2, 3}).To(ContainAllOf(3, 1))
+			ctx.Expect([]string{"a", "b"}).To(ContainAnyOf("z", "b"))
+			ctx.Expect([]int{3, 1, 2}).To(ContainTheSameElementsAs([]int{1, 2, 3}))
+			ctx.Expect(2).To(BeOneOf(1, 2, 3))
+			ctx.Expect([]int{1}).To(Not(ContainAllOf(1, 2)))
+		})
+		s.It("accepts ordering and closeness", func(ctx *Context) {
+			ctx.Expect(5).To(BeGreaterThan(3))
+			ctx.Expect(uint8(5)).To(BeGreaterThanOrEqual(int64(5)))
+			ctx.Expect(2.5).To(BeLessThan(3))
+			ctx.Expect("a").To(BeLessThanOrEqual("b"))
+			ctx.Expect(5).To(BeBetween(1, 10))
+			ctx.Expect(3.14159).To(BeCloseTo(3.14, 0.01))
+			ctx.Expect(5).To(Not(BeLessThan(1)))
+		})
+		s.It("accepts zero values and custom predicates", func(ctx *Context) {
+			var p *int
+			ctx.Expect(p).To(BeZero())
+			ctx.Expect("").To(BeZero())
+			ctx.Expect(3).To(Not(BeZero()))
+			ctx.Expect(4).To(Satisfy("is even", func(v any) bool { return v.(int)%2 == 0 }))
 		})
 		s.It("accepts a nil pointer", func(ctx *Context) {
 			var p *int
