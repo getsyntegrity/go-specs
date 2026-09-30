@@ -8,14 +8,15 @@ import (
 	"strings"
 )
 
-// Rendering of arbitrary user values in failure messages: the value a poll last observed and the
-// value a poll callback panicked with (PollResult.Message), and the actual of Satisfy.
+// The bounded fallback renderer behind formatUserValue (render_safe.go): the value a poll last
+// observed, the value a poll callback panicked with (PollResult.Message), the actual of Satisfy and the
+// operands of every matcher message.
 //
 // These values are arbitrary user data, and fmt has no cycle protection: a map that contains itself
-// overflows the stack, which no recover can catch. renderBounded therefore checks the value first. An
+// overflows the stack, which no recover can catch. formatUserValue therefore checks the value first. An
 // acyclic value of ordinary size is printed with the caller's fmt verb, so common failures read as
-// before. A cyclic or oversized one is printed by a bounded renderer that marks a cycle as "<cycle>"
-// and cuts off at a depth and element limit.
+// before. A cyclic or oversized one is printed by this renderer, which marks a cycle as "<cycle>",
+// cuts off at a depth, element and node limit, and says so with "<truncated>" when the budget runs out.
 
 const (
 	cycleMarker       = "<cycle>"
@@ -25,20 +26,7 @@ const (
 )
 
 // renderObserved renders the value a poll last observed, with %#v when that is safe.
-func renderObserved(v any) string { return renderBounded(v, "%#v") }
-
-// renderBounded renders v with verb when v is acyclic and of ordinary size, and with the bounded
-// renderer otherwise.
-func renderBounded(v any, verb string) string {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return fmt.Sprintf(verb, v) // an untyped nil, spelled by fmt as before
-	}
-	if safeForFmt(rv) {
-		return fmt.Sprintf(verb, v)
-	}
-	return renderFallback(rv)
-}
+func renderObserved(v any) string { return formatUserValue(v, "%#v") }
 
 // renderFallback prints v with the bounded renderer: depth, element and node limits, a marker on a
 // cycle, and no user method ever called.

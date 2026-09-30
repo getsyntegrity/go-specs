@@ -31,7 +31,7 @@ func (m *beZeroMatcher) Match(actual any) bool {
 }
 
 func (m *beZeroMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected %v to be the zero value of %T", actual, actual)
+	return fmt.Sprintf("expected %s to be the zero value of %T", userValue(actual), actual)
 }
 
 // Description implements Describer; see equalMatcher.Description.
@@ -66,9 +66,9 @@ func (m *satisfyMatcher) FailureMessage(actual any) string {
 		}
 		return fmt.Sprintf("Satisfy: no predicate given for %q", m.description)
 	}
-	// The actual is arbitrary user data: renderBounded keeps %v for ordinary values and cannot
+	// The actual is arbitrary user data: userValue keeps %v for ordinary values and cannot
 	// overflow the stack on a self-containing map or slice.
-	return fmt.Sprintf("expected %s to satisfy %s", renderBounded(actual, "%v"), m.named())
+	return fmt.Sprintf("expected %s to satisfy %s", userValue(actual), m.named())
 }
 
 // Description implements Describer; see equalMatcher.Description.

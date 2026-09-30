@@ -46,12 +46,12 @@ func (m *containAllOfMatcher) FailureMessage(actual any) string {
 			missing = append(missing, e)
 		}
 	}
-	return fmt.Sprintf("expected %v to contain all of %v, missing %v", actual, m.elems, missing)
+	return fmt.Sprintf("expected %s to contain all of %s, missing %s", userValue(actual), userValue(m.elems), userValue(missing))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *containAllOfMatcher) Description() string {
-	return fmt.Sprintf("containing all of %v", m.elems)
+	return fmt.Sprintf("containing all of %s", userValue(m.elems))
 }
 
 // ContainAnyOf returns a matcher that expects actual (a slice, array or string) to contain at least
@@ -77,12 +77,12 @@ func (m *containAnyOfMatcher) FailureMessage(actual any) string {
 	if !isCollectionOrString(actual) {
 		return notCollectionMessage("ContainAnyOf", actual, "a string, slice or array")
 	}
-	return fmt.Sprintf("expected %v to contain any of %v", actual, m.elems)
+	return fmt.Sprintf("expected %s to contain any of %s", userValue(actual), userValue(m.elems))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *containAnyOfMatcher) Description() string {
-	return fmt.Sprintf("containing any of %v", m.elems)
+	return fmt.Sprintf("containing any of %s", userValue(m.elems))
 }
 
 // ContainTheSameElementsAs returns a matcher that expects actual (a slice or array) to hold the
@@ -134,12 +134,12 @@ func (m *sameElementsMatcher) FailureMessage(actual any) string {
 	unexpected, missing := elementDiff(actualList, expectedList)
 	var parts []string
 	if len(missing) > 0 {
-		parts = append(parts, fmt.Sprintf("missing %v", missing))
+		parts = append(parts, fmt.Sprintf("missing %s", userValue(missing)))
 	}
 	if len(unexpected) > 0 {
-		parts = append(parts, fmt.Sprintf("unexpected %v", unexpected))
+		parts = append(parts, fmt.Sprintf("unexpected %s", userValue(unexpected)))
 	}
-	message := fmt.Sprintf("expected %v to contain the same elements as %v", actual, m.expected)
+	message := fmt.Sprintf("expected %s to contain the same elements as %s", userValue(actual), userValue(m.expected))
 	if len(parts) > 0 {
 		message += " — " + strings.Join(parts, ", ")
 	}
@@ -148,7 +148,7 @@ func (m *sameElementsMatcher) FailureMessage(actual any) string {
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *sameElementsMatcher) Description() string {
-	return fmt.Sprintf("containing the same elements as %v", m.expected)
+	return fmt.Sprintf("containing the same elements as %s", userValue(m.expected))
 }
 
 func (m *sameElementsMatcher) lists(actual any) (actualList, expectedList reflect.Value, ok bool) {
@@ -176,12 +176,12 @@ func (m *beOneOfMatcher) Match(actual any) bool {
 }
 
 func (m *beOneOfMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected %v to be one of %v", actual, m.values)
+	return fmt.Sprintf("expected %s to be one of %s", userValue(actual), userValue(m.values))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *beOneOfMatcher) Description() string {
-	return fmt.Sprintf("one of %v", m.values)
+	return fmt.Sprintf("one of %s", userValue(m.values))
 }
 
 func notCollectionMessage(matcher string, actual any, want string) string {

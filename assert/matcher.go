@@ -77,7 +77,7 @@ func (m *equalMatcher) FailureMessage(actual any) string {
 // Description implements Describer so composites (Not, All, Any) can name this matcher in their own
 // failure messages without quoting a FailureMessage that may describe a comparison that succeeded.
 func (m *equalMatcher) Description() string {
-	return fmt.Sprintf("equal to %v", m.expected)
+	return fmt.Sprintf("equal to %s", userValue(m.expected))
 }
 
 // EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. When the
@@ -108,11 +108,11 @@ func EqualFailureMessage(expected, actual any) string {
 // describeMismatch renders both sides, falling back to type-qualified forms when %v alone makes
 // them indistinguishable. A failure reading "expected boom to equal boom" tells the reader nothing.
 func describeMismatch(actual, expected any) (string, string) {
-	renderedActual, renderedExpected := fmt.Sprintf("%v", actual), fmt.Sprintf("%v", expected)
+	renderedActual, renderedExpected := userValue(actual), userValue(expected)
 	if renderedActual != renderedExpected {
 		return renderedActual, renderedExpected
 	}
-	return fmt.Sprintf("%v (%T)", actual, actual), fmt.Sprintf("%v (%T)", expected, expected)
+	return fmt.Sprintf("%s (%T)", userValue(actual), actual), fmt.Sprintf("%s (%T)", userValue(expected), expected)
 }
 
 // NotEqual returns a matcher that expects actual not to equal expected.
@@ -135,12 +135,12 @@ func (m *notEqualMatcher) FailureMessage(actual any) string {
 	}
 	// No disambiguation here: a NotEqual failure means the two values matched, so rendering
 	// identically is the expected outcome rather than the confusing one.
-	return fmt.Sprintf("expected %v not to equal %v", actual, m.expected)
+	return fmt.Sprintf("expected %s not to equal %s", userValue(actual), userValue(m.expected))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *notEqualMatcher) Description() string {
-	return fmt.Sprintf("not equal to %v", m.expected)
+	return fmt.Sprintf("not equal to %s", userValue(m.expected))
 }
 
 // BeNil returns a matcher that expects actual to be nil.
@@ -155,7 +155,7 @@ func (m *beNilMatcher) Match(actual any) bool {
 }
 
 func (m *beNilMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected nil, got %v (%T)", actual, actual)
+	return fmt.Sprintf("expected nil, got %s (%T)", userValue(actual), actual)
 }
 
 // Description implements Describer; see equalMatcher.Description.
@@ -176,7 +176,7 @@ func (m *beTrueMatcher) Match(actual any) bool {
 }
 
 func (m *beTrueMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected true, got %v (%T)", actual, actual)
+	return fmt.Sprintf("expected true, got %s (%T)", userValue(actual), actual)
 }
 
 // Description implements Describer; see equalMatcher.Description.
@@ -197,7 +197,7 @@ func (m *beFalseMatcher) Match(actual any) bool {
 }
 
 func (m *beFalseMatcher) FailureMessage(actual any) string {
-	return fmt.Sprintf("expected false, got %v (%T)", actual, actual)
+	return fmt.Sprintf("expected false, got %s (%T)", userValue(actual), actual)
 }
 
 // Description implements Describer; see equalMatcher.Description.
@@ -228,9 +228,9 @@ func (m *containExpectedMatcher) Match(actual any) bool {
 func (m *containExpectedMatcher) FailureMessage(actual any) string {
 	_, reason := m.diagnose(actual, true)
 	if reason == "" {
-		return fmt.Sprintf("expected %v to contain %v", actual, m.expected)
+		return fmt.Sprintf("expected %s to contain %s", userValue(actual), userValue(m.expected))
 	}
-	return fmt.Sprintf("expected %v to contain %v — %s", actual, m.expected, reason)
+	return fmt.Sprintf("expected %s to contain %s — %s", userValue(actual), userValue(m.expected), reason)
 }
 
 // diagnose decides the match and, only when explain is true, also classifies a failure: reason
@@ -337,7 +337,7 @@ func article(typeName string) string {
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *containExpectedMatcher) Description() string {
-	return fmt.Sprintf("containing %v", m.expected)
+	return fmt.Sprintf("containing %s", userValue(m.expected))
 }
 
 // ValuesEqual reports whether actual satisfies expected (for use by other packages).

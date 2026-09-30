@@ -153,7 +153,7 @@ func TestPollFallbackStopsAtItsNodeBudgetWithAMarker(t *testing.T) {
 	}
 	var out string
 	start := time.Now()
-	out = renderBounded(leaf, "%v")
+	out = formatUserValue(leaf, "%v")
 	if !strings.Contains(out, truncationMarker) {
 		t.Fatalf("an exhausted budget must say so with %q, got %d bytes starting %.120q", truncationMarker, len(out), out)
 	}
@@ -176,7 +176,7 @@ func TestPollFallbackCapsStructFields(t *testing.T) {
 	}
 	h := &holder{}
 	h.Self = h
-	out := renderBounded(h, "%v")
+	out := formatUserValue(h, "%v")
 	if !strings.Contains(out, "<cycle>") || !strings.Contains(out, "... 2 more") || strings.Contains(out, "F17") {
 		t.Fatalf("struct fields must be capped at %d with a count of the rest, got %q", boundedMaxElems, out)
 	}
@@ -192,7 +192,7 @@ func TestPollFallbackOrdersNaNAndAlikeKeysDeterministically(t *testing.T) {
 		m["self"] = 0
 		holder := []any{m}
 		holder = append(holder, holder) // a slice that contains itself forces the fallback
-		out := renderBounded(m, "%v") + renderBounded(holder, "%v")
+		out := formatUserValue(m, "%v") + formatUserValue(holder, "%v")
 		if i == 0 {
 			first = out
 		} else if out != first {
@@ -208,8 +208,8 @@ func TestFallbackRenderersDoNotCallUserMethods(t *testing.T) {
 	n := map[string]any{"mood": mood(2), "opaque": opaqueT{hidden: 2}, "err": errorT{code: 3}}
 	n["self"] = n
 	_ = EqualFailureMessage(m, n)
-	_ = renderBounded(m, "%v")
-	_ = renderBounded(m, "%#v")
+	_ = formatUserValue(m, "%v")
+	_ = formatUserValue(m, "%#v")
 	if stringerCalls != 0 {
 		t.Fatalf("the safe fallback called user String/Error methods %d times", stringerCalls)
 	}
@@ -273,7 +273,7 @@ func TestPollFallbackRendersWideMapsWithBoundedWork(t *testing.T) {
 	}
 	m[-1] = m // a cycle forces the fallback
 	var out string
-	n := allocatedBytes(func() { out = renderBounded(m, "%v") })
+	n := allocatedBytes(func() { out = formatUserValue(m, "%v") })
 	if !strings.Contains(out, "more}") || !strings.Contains(out, "<cycle>") {
 		t.Fatalf("unexpected rendering %.200q", out)
 	}

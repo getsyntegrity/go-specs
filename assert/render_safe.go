@@ -1,6 +1,9 @@
 package assert
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Shared infrastructure for rendering user values in assertion diagnostics.
 //
@@ -52,6 +55,22 @@ func refIdentity(v reflect.Value) (refKey, bool) {
 type refPair struct{ a, b refKey }
 
 func refPairOf(a, b reflect.Value) refPair { return refPair{refKeyOf(a), refKeyOf(b)} }
+
+// formatUserValue renders a user value for a diagnostic. An ordinary value (acyclic, no NaN map key,
+// within the node budget) is printed by fmt with verb, exactly as before, so its String, Error and
+// GoString methods still apply. Any other value is printed by the bounded renderer, which marks a
+// cycle, stops at its limits, says so with truncationMarker and never calls a user method. The check
+// runs only when a message is built, which is on failure, so passing assertions pay nothing.
+func formatUserValue(v any, verb string) string {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || safeForFmt(rv) {
+		return fmt.Sprintf(verb, v) // an untyped nil is spelled by fmt as before
+	}
+	return renderFallback(rv)
+}
+
+// userValue is formatUserValue for the common %v case.
+func userValue(v any) string { return formatUserValue(v, "%v") }
 
 // safeForFmt reports whether v can be handed to fmt: no reference cycle, no map key that is not equal
 // to itself (fmt orders such keys by iteration, so the text would change from run to run), and at

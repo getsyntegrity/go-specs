@@ -29,7 +29,7 @@ func (m *haveLenMatcher) FailureMessage(actual any) string {
 	if !ok {
 		return noLengthMessage("HaveLen", actual)
 	}
-	return fmt.Sprintf("expected %v to have length %d, got length %d", actual, m.n, got)
+	return fmt.Sprintf("expected %s to have length %d, got length %d", userValue(actual), m.n, got)
 }
 
 // Description implements Describer; see equalMatcher.Description.
@@ -55,7 +55,7 @@ func (m *beEmptyMatcher) FailureMessage(actual any) string {
 	if !ok {
 		return noLengthMessage("BeEmpty", actual)
 	}
-	return fmt.Sprintf("expected %v to be empty, got length %d", actual, got)
+	return fmt.Sprintf("expected %s to be empty, got length %d", userValue(actual), got)
 }
 
 // Description implements Describer; see equalMatcher.Description.
