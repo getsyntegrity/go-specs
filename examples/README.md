@@ -42,8 +42,10 @@ go test ./examples -run 'TestHooks' -v
 go test ./examples -run TestSnapshots
 GO_SPECS_UPDATE_SNAPSHOTS=1 go test ./examples -run TestSnapshots
 
-# Property testing (nested module)
-cd property && go test ./examples/...
+# Property testing (nested module): its examples, run from the repository root
+(cd property && go test ./examples/...)
+
+# Or the whole property module (vet plus tests), also from the repository root
 make test-property
 ```
 
