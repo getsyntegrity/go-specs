@@ -93,7 +93,7 @@ func TestInterfaceMocks(t *testing.T) {
 		s.It("rejects an id that is taken without calling the profile service or saving", func(ctx *specs.Context) {
 			f := newFixture(ctx)
 			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), "u1").Return(&mocks.User{ID: "u1"}, nil)
-			// Never: a matching call is reported immediately as an unexpected call.
+			// Never: a matching call is reported immediately as a forbidden call, even when a permissive expectation also matches.
 			f.ctrl.Method("HTTPClient.Do").Expect(mock.Any()).Never()
 			f.ctrl.Method("UserRepository.Save").Expect(mock.Any(), mock.Any()).Never()
 

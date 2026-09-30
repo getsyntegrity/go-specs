@@ -678,9 +678,19 @@ hand-written adapter keeps the mock API small and the call sites readable.
 matchers all match and that still has capacity takes the call. So a specific expectation declared
 before a general one wins until its count is used up, then the general one takes over.
 
+**Prohibitions.** An expectation whose effective maximum is 0 (`Never()`, `Times(0)`, `AtMost(0)`, or a
+final `0..0` range such as `AtLeast(0).AtMost(0)`) is a prohibition. Prohibitions take precedence over
+permissive expectations regardless of declaration order: before any expectation can claim a call, the
+method checks whether a matching prohibition exists, so `Expect("protected").Never()` still forbids
+`"protected"` when a catch-all `Expect(mock.Any()).AnyTimes()` was declared first. A forbidden call is
+reported immediately through `ctx.Errorf` (not a panic) with the method, the arguments and the
+prohibition's declaration site, is recorded once, and runs no `Return`/`Do` and notifies no captor of
+any other expectation; the call returns a zero `Result`. Among allowed calls the rule above is
+unchanged: the first matching expectation with capacity wins.
+
 **Counts.** Without a count an expectation means `Times(1)`. `Times(n)` is exact, `AtLeast(n)` has no
 upper bound, `AtMost(n)` allows none up to `n`, `AnyTimes()` allows any number, and `Never()` (`Times(0)`)
-turns any matching call into a failure. They combine by this rule:
+turns any matching call into a failure (see Prohibitions above). They combine by this rule:
 
 - `Times(n)`, `Never()` and `AnyTimes()` set a complete configuration (both bounds) and replace
   whatever count was set before.
@@ -761,6 +771,18 @@ On a real `*testing.T` the reported `file:line` is the adapter's call to `Method
 `Builder.ItParallel` the stack walk that attributes failures skips `mock` frames. A failure at cleanup
 time (unmet expectations, order violations) has no user frame on the stack, so its report carries the
 declaration site of the expectation in the message instead.
+
+### Forbidden calls
+
+A call that meets a prohibition (see above) is reported once, as a forbidden call, instead of an
+unexpected one:
+
+```
+mock: forbidden call Put("protected", "v"): expectation Put(equal to "protected", any value) declared at users_test.go:42 says never
+```
+
+Later problems in the same case are still reported, and Verify has nothing to add for the prohibition
+because it was never satisfied by a call.
 
 ### Reset
 
