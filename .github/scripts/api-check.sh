@@ -9,7 +9,7 @@
 #   - breaks the API and bump != major -> ERROR (except in v0.x, where it is a warning)
 #   - adds API and bump == patch       -> warning (semver asks for a minor)
 #   - no bump                          -> report only (PRs to develop)
-# Requires apidiff in the PATH:  go install golang.org/x/exp/cmd/apidiff@latest
+# Requires apidiff in the PATH:  go install golang.org/x/exp/cmd/apidiff@v0.0.0-20260812173653-3d80eb74bc5b  (see the api job in ci.yml)
 set -euo pipefail
 
 base="${1:?missing base_git_ref}"

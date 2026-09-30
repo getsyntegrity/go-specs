@@ -553,9 +553,12 @@ jobs:
       - uses: ./.github/actions/go-setup
         with:
           cache-key: api
+      # Pinned to the newest golang.org/x/exp whose go.mod still declares go 1.25: later
+      # revisions require go >= 1.26 and fail under the .go-version toolchain (GOTOOLCHAIN=local).
+      # Revisit when .go-version moves to 1.26.
       - name: Install apidiff
         run: |
-          go install golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
+          go install golang.org/x/exp/cmd/apidiff@v0.0.0-20260812173653-3d80eb74bc5b
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Compare API
         run: |
