@@ -25,6 +25,7 @@ import (
 // so in the message instead of disappearing.
 const (
 	diffMaxEntries    = 10
+	diffLabelWindow   = 4 * diffMaxEntries // map keys labelled together, see walkMap
 	diffMaxDepth      = 8
 	diffMaxValueRunes = 80
 	renderMaxDepth    = 3
@@ -122,6 +123,10 @@ func (w *diffWalker) add(path, detail string) {
 		w.entries = append(w.entries, diffEntry{path, detail})
 	}
 }
+
+// diffRenders counts the values rendered for a diff line or a map key label: tests read it to prove
+// that a walk which has filled its entry limit stops rendering.
+var diffRenders atomic.Int64
 
 // probeWalks counts the subtrees differs walked rather than answered from its memo: tests read it to
 // prove that a shared subtree is walked once per message.
@@ -241,7 +246,7 @@ func (w *diffWalker) walkStruct(a, b reflect.Value, path string, depth int) {
 		return
 	}
 	t := a.Type()
-	for i := 0; i < a.NumField(); i++ {
+	for i := 0; i < a.NumField() && !w.full(); i++ {
 		w.walk(a.Field(i), b.Field(i), joinField(path, t.Field(i).Name), depth+1)
 	}
 }
@@ -293,13 +298,13 @@ func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 		w.add(path, fmt.Sprintf("length: expected %d, actual %d", la, lb))
 	}
 	common := min(la, lb)
-	for i := 0; i < common; i++ {
+	for i := 0; i < common && !w.full(); i++ {
 		w.walk(a.Index(i), b.Index(i), fmt.Sprintf("%s[%d]", path, i), depth+1)
 	}
-	for i := common; i < la; i++ {
+	for i := common; i < la && !w.full(); i++ {
 		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("missing in actual (expected %s)", w.render(a.Index(i))))
 	}
-	for i := common; i < lb; i++ {
+	for i := common; i < lb && !w.full(); i++ {
 		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("unexpected in actual (%s)", w.render(b.Index(i))))
 	}
 }
@@ -331,19 +336,31 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	}
 	w.meter.sortEntries(entries)
 	units := tiedUnits(entries)
-	keys := make([]reflect.Value, len(units))
-	for i, u := range units {
-		keys[i] = entries[u.first].key
+	// Only the first diffLabelWindow keys are labelled together (so colliding labels among them get
+	// their ordinals, exactly as before); a key past the window is rendered when a line needs it. A map
+	// of that many keys that already fills the entry limit never renders the rest.
+	keys := make([]reflect.Value, min(len(units), diffLabelWindow))
+	for i := range keys {
+		keys[i] = entries[units[i].first].key
 	}
 	labels := disambiguatedKeyLabels(keys, w.methods, w.meter)
+	label := func(i int) string {
+		if i < len(labels) {
+			return labels[i]
+		}
+		return w.render(entries[units[i].first].key)
+	}
 	for i, u := range units {
+		if w.full() {
+			return
+		}
 		e := entries[u.first]
-		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
-		if u.n > 1 {
-			w.add(keyPath, ambiguityDetail(entries[u.first:u.first+u.n]))
+		if u.n == 1 && !e.fromA {
 			continue
 		}
-		if !e.fromA {
+		keyPath := fmt.Sprintf("%s[%s]", path, label(i))
+		if u.n > 1 {
+			w.add(keyPath, ambiguityDetail(entries[u.first:u.first+u.n]))
 			continue
 		}
 		bv := b.MapIndex(e.key)
@@ -354,11 +371,14 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		w.walk(e.val, bv, keyPath, depth+1)
 	}
 	for i, u := range units {
+		if w.full() {
+			return
+		}
 		e := entries[u.first]
 		if u.n > 1 || e.fromA {
 			continue
 		}
-		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
+		w.add(fmt.Sprintf("%s[%s]", path, label(i)),
 			fmt.Sprintf("unexpected in actual (%s)", w.render(e.val)))
 	}
 }
@@ -893,6 +913,7 @@ func renderDiffLimited(v reflect.Value, lim renderLimits, methods bool) string {
 }
 
 func renderDiffLimitedWith(v reflect.Value, lim renderLimits, methods bool, meter *fpMeter) string {
+	diffRenders.Add(1)
 	r := diffRenderer{lim: lim, methods: methods, nodes: nodeBudget{left: lim.nodeBudget}, meter: meter}
 	s := r.render(v, 0)
 	if r := []rune(s); len(r) > diffMaxValueRunes {

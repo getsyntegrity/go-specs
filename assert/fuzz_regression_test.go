@@ -1,6 +1,7 @@
 package assert
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -202,4 +203,69 @@ func TestFuzzFindingBigMapIsScannedOncePerMessage(t *testing.T) {
 	if limit := 5 * workClockLimit(); best > limit {
 		t.Errorf("building the message took %v, want under %v", best, limit)
 	}
+}
+
+// Finding 5 (review of #372): the structural diff kept walking, building paths and rendering values
+// after its entry limit was full, so comparing a huge slice or map with an empty one rendered every
+// element even though the message shows ten differences.
+func TestStructuralDiffStopsRenderingOncePastItsLimit(t *testing.T) {
+	const n = 100_000
+	bigMap := func() map[int]int {
+		m := make(map[int]int, n)
+		for i := 0; i < n; i++ {
+			m[i] = i
+		}
+		return m
+	}
+	section := func(lines func(i int) string, first string) string {
+		var b strings.Builder
+		b.WriteString("differences:")
+		if first != "" {
+			b.WriteString("\n  " + first)
+		}
+		for i := 0; i < diffMaxEntries-btoi(first != ""); i++ {
+			b.WriteString("\n  " + lines(i))
+		}
+		return b.String() + "\n  ... more differences not shown (limit 10)"
+	}
+	cases := []struct {
+		name         string
+		expected, ac any
+		want         string
+	}{
+		{"slice missing", make([]int, n), []int{}, section(func(i int) string {
+			return fmt.Sprintf("[%d]: missing in actual (expected 0)", i)
+		}, fmt.Sprintf("<root>: length: expected %d, actual 0", n))},
+		{"slice unexpected", []int{}, make([]int, n), section(func(i int) string {
+			return fmt.Sprintf("[%d]: unexpected in actual (0)", i)
+		}, fmt.Sprintf("<root>: length: expected 0, actual %d", n))},
+		{"map missing", bigMap(), map[int]int{}, section(func(i int) string {
+			return fmt.Sprintf("[%d]: missing in actual (expected %d)", i, i)
+		}, "")},
+		{"map unexpected", map[int]int{}, bigMap(), section(func(i int) string {
+			return fmt.Sprintf("[%d]: unexpected in actual (%d)", i, i)
+		}, "")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := diffRenders.Load()
+			msg := EqualFailureMessage(tc.expected, tc.ac)
+			renders := diffRenders.Load() - before
+			t.Logf("renders=%d", renders)
+			if renders > int64(diffLabelWindow+3*diffMaxEntries) { // label window + line values + the two header renders
+				t.Errorf("rendered %d values for a message that shows %d differences", renders, diffMaxEntries)
+			}
+			i := strings.Index(msg, "differences:")
+			if i < 0 || msg[i:] != tc.want {
+				t.Fatalf("differences section changed:\n%s\nwant:\n%s", msg[max(i, 0):], tc.want)
+			}
+		})
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
