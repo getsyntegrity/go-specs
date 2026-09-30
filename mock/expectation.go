@@ -25,6 +25,9 @@ type Expectation struct {
 	countSet bool
 	min, max int
 
+	responses [][]any           // Return: one entry per response, in call order
+	do        func([]any) []any // Do: computes the results, wins over responses
+
 	got      int    // calls that claimed this expectation
 	firstSeq uint64 // global sequence of the first claiming call, 0 when none
 }
@@ -60,11 +63,6 @@ func (e *Expectation) bounds() (min, max int) {
 func (e *Expectation) hasCapacity() bool {
 	_, max := e.bounds()
 	return max < 0 || e.got < max
-}
-
-// respond builds the Result for the n-th claimed call (1-based). T3 replaces this stub.
-func (e *Expectation) respond(n int, args []any) Result {
-	return Result{}
 }
 
 // mismatch returns why args do not match, or "" when they do. It only reads immutable fields and

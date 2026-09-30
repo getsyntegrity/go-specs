@@ -1,11 +1,23 @@
 package mock
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Result carries the stubbed return values of one call. The zero Result has no values: every
 // accessor then reports "not configured" (nil or the zero value of the requested type).
 type Result struct {
 	values []any
+	method string // name of the mocked method, for panic messages; empty for the zero Result
+}
+
+// where prefixes panic messages with the method name when it is known.
+func (r Result) where(i int) string {
+	if r.method == "" {
+		return fmt.Sprintf("mock: result %d", i)
+	}
+	return fmt.Sprintf("mock: %s result %d", r.method, i)
 }
 
 // Get returns the i-th value, or nil when it is not configured or i is out of range.
@@ -25,7 +37,7 @@ func (r Result) Err(i int) error {
 	}
 	err, ok := v.(error)
 	if !ok {
-		panic(fmt.Sprintf("mock: result %d is %T, which is not an error", i, v))
+		panic(fmt.Sprintf("%s is %T, which is not an error", r.where(i), v))
 	}
 	return err
 }
@@ -40,7 +52,7 @@ func Value[T any](r Result, i int) T {
 	}
 	t, ok := v.(T)
 	if !ok {
-		panic(fmt.Sprintf("mock: result %d is %T, want %T", i, v, zero))
+		panic(fmt.Sprintf("%s is %T, want %v", r.where(i), v, reflect.TypeFor[T]()))
 	}
 	return t
 }
