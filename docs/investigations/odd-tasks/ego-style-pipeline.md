@@ -175,9 +175,13 @@ change touches no Go file; removing it can be a follow-up.
   `tidy`, `api`, `ci-ok`) with the go-specs jobs ported in. Check: actionlint.
   Commit: `2c1b83d`. actionlint clean; `go mod tidy` is clean in both modules and `api-check.sh`
   ran against `origin/develop` locally, so the new `tidy` and `api` jobs start green.
-- [ ] T3 — `release.yml` (push to `main`, notes from `CHANGELOG.md`, `sync-develop`, `notify`),
+- [x] T3 — `release.yml` (push to `main`, notes from `CHANGELOG.md`, `sync-develop`, `notify`),
   `pr-meta.yml`; delete `release-prep.yml`. Check: actionlint; local dry run of the version and
   notes scripts.
+  Commit: `7ed18a0`. actionlint clean. Dry runs in the real repo: `next-version.sh develop` gives
+  v0.4.0, `hotfix/x` gives v0.3.2 (local tags stop at v0.3.1), `release:patch` gives a patch and
+  `release:major` gives v1.0.0; `release-changelog.sh` against the real `CHANGELOG.md` produced a
+  27-line notes file from the current `[Unreleased]` section.
 - [ ] T4 — `security.yml` (CodeQL folded in, strict govulncheck, notify); delete `codeql.yml`;
   token swap in `benchmark-charts.yml`; composite switch in `benchmarks.yml` and `fuzz.yml`;
   `dependabot.yml`. Check: actionlint; no unpinned `uses:`.
