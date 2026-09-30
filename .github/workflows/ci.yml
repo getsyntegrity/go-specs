@@ -16,7 +16,7 @@
 #   modules     -> build, vet and test of the nested module (property); race on merges only
 #
 # Static and release-shape checks: flow (only develop or hotfix/* may target main, and the version
-# a merge to main would publish), verify (module path, gofmt, vet, build, CHANGELOG.md structure,
+# a merge to main would publish), verify (module path, gofmt, vet, build,
 # release script tests), lint, tidy, api (apidiff), vuln, goreleaser (config check + snapshot
 # release), dependency-review (PRs only).
 #
@@ -62,6 +62,9 @@ jobs:
   flow:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read   # the release-notes preview reads the PRs merged since the last tag
     env:
       BASE: ${{ github.base_ref }}
       HEAD: ${{ github.head_ref }}
@@ -84,10 +87,13 @@ jobs:
         with:
           cache-key: flow
       # Fails HERE (before the merge) if the bump cannot be published, e.g. a major without
-      # updating the /vN path in go.mod. Also previews the GitHub Release notes: they are the
-      # CHANGELOG.md entries of [Unreleased] that the previous tag did not already publish.
+      # updating the /vN path in go.mod. Also previews the GitHub Release notes: the same generator
+      # the release runs, over the PRs merged since the previous tag, with this PR's merge commit
+      # (HEAD) standing in for the tag that does not exist yet.
       - if: github.base_ref == 'main'
         name: Version to publish
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           out=$(.github/scripts/next-version.sh "$HEAD" "$LABELS")
           echo "$out"
@@ -95,15 +101,15 @@ jobs:
           {
             echo "### Merging this PR publishes **${v}** (previous: ${prev})"
             echo
-            echo "<details><summary>Release notes from CHANGELOG.md</summary>"
+            echo "<details><summary>Release notes</summary>"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           status=0
-          .github/scripts/release-changelog.sh "$v" "$prev" "$RUNNER_TEMP/CHANGELOG.stamped.md" "$RUNNER_TEMP/notes.md" || status=$?
+          .github/scripts/changelog.sh "$v" --ref HEAD --previous "${prev:--}" --notes "$RUNNER_TEMP/notes.md" || status=$?
           case "$status" in
             0) cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY" ;;
-            3) echo "::warning::No new CHANGELOG.md entries since ${prev}: the release will use GoReleaser's generated notes"
-               echo "_No new entries under [Unreleased]: GoReleaser's generated notes will be used._" >> "$GITHUB_STEP_SUMMARY" ;;
+            3) echo "::warning::No PR entry since ${prev}: the release will use GoReleaser's generated notes"
+               echo "_No PR entry since the previous tag: GoReleaser's generated notes will be used._" >> "$GITHUB_STEP_SUMMARY" ;;
             *) exit "$status" ;;
           esac
           printf '\n</details>\n' >> "$GITHUB_STEP_SUMMARY"
@@ -135,12 +141,7 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
-      # Read-only structure check of CHANGELOG.md's [Unreleased] section: each Keep a Changelog
-      # category at most once, in canonical order. The release reads this section for its notes
-      # (getsyntegrity/go-specs#326).
-      - name: Validate changelog structure
-        run: go run ./tools/release validate -file CHANGELOG.md
-      # next-version.sh and release-changelog.sh decide what a release publishes.
+      # next-version.sh and changelog.sh decide what a release publishes.
       - name: Release script tests
         run: make test-ci-scripts
 

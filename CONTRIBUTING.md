@@ -123,22 +123,25 @@ Merge `develop` into `main` with a merge commit, not a squash. A squash creates 
 ## Pull request checklist
 
 * Base branch follows the model above. The [PR template](.github/PULL_REQUEST_TEMPLATE.md) repeats this.
-* Add an entry under `## [Unreleased]` in `CHANGELOG.md` (see "Releasing" for why), or apply the `skip-changelog` label when the change is invisible to people who use go-specs. The `pr-meta` check fails otherwise. Dependency updates (`kind/deps`) are exempt.
+* Set exactly one `kind/*` label (`kind/feature`, `kind/bug`, `kind/breaking`, `kind/deprecation`, `kind/deps`, `kind/chore`, `kind/docs` or `kind/flake`). The `pr-meta` check fails otherwise, and the label decides which section of the release notes your PR appears in.
+* Do not edit `CHANGELOG/`: it is generated when a release is cut. Your PR title (without its `feat:`/`fix:` prefix) becomes the note; to word it differently, fill the optional `release-note` block of the PR description (see "Release notes" below). Write `NONE` in the block, or apply the `skip-changelog` label, when nobody who uses go-specs can see the change.
 * Put a `release:major`, `release:minor` or `release:patch` label on the PR that goes to `main` only when you want to override the default bump.
 
 ## Releasing
 
 A release *is* a merge into `main`. There is no release command to remember to run, and no step that must happen before the merge.
 
-1. **Write the changelog as you go.** Every PR adds its entry to `## [Unreleased]` in `CHANGELOG.md`. Within that section each of `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed` and `### Security` may appear at most once, in that order; CI runs `go run ./tools/release validate -file CHANGELOG.md` on every PR and you can run it locally. Put a **Breaking.** item under whichever category fits it.
+1. **Nothing to prepare.** The changelog is written by the release itself, from the pull requests merged since the previous tag. Check that each of them has its `kind/*` label (`pr-meta` enforces it) and, when the title is not a good note, its `release-note` block.
 2. **Open the release PR.** Base `main`, head `develop`. The `flow` job of `ci.yml` prints the version that merging will publish and a preview of the release notes in the run's summary. A version that cannot be published (for example a `v2` without the `/v2` module path) fails there, before the merge.
 3. **Merge with a merge commit, not a squash.**
 4. **`release.yml` runs on the push to `main`.** It computes the version (below), pushes the tag, runs GoReleaser to create the GitHub Release with the notes, and checks that `go get <module>@<tag>` works from a clean consumer module. Re-running it on the same commit reuses the tag.
-5. **Merge the sync pull request.** When the release finishes, the `sync-develop` job opens a pull request into `develop` from a disposable `sync/release-vX.Y.Z` branch. It contains the commit that stamps `CHANGELOG.md` (`## [Unreleased]` becomes `## [vX.Y.Z] - YYYY-MM-DD`, with a fresh empty `[Unreleased]` above it). Merge it with a merge commit; `main` receives the stamp with the next release. If you forget for a while nothing breaks, because the release notes never include an entry that the previous tag already published.
+5. **Merge the sync pull request.** When the release finishes, the `sync-develop` job opens a pull request into `develop` from a disposable `sync/release-vX.Y.Z` branch. It contains one commit that adds the release to `CHANGELOG/CHANGELOG-X.Y.md` (every patch of a minor in one file, newest first) and to the index `CHANGELOG/README.md`. Merge it with a merge commit; `main` receives it with the next release. If you forget for a while nothing breaks: the notes are always computed from the tags, never from the files.
 
 ### Release notes
 
-The GitHub Release body is the `## [Unreleased]` entries of `CHANGELOG.md` at the release commit, minus every entry that the previous tag's `CHANGELOG.md` already contained (`.github/scripts/release-changelog.sh`). The subtraction exists because `main` is not stamped until the next release: without it, a hotfix cut from `main` would republish the last release's entries. An entry is one list item with its continuation lines, compared as a whole. If nothing new is left, the release still happens and GoReleaser uses its generated git-log changelog.
+The GitHub Release body and the new section of `CHANGELOG/CHANGELOG-X.Y.md` are the same text, produced by `.github/scripts/changelog.sh` in the Kubernetes changelog layout. It lists the PRs merged between the previous tag and the new one (squash commits ending in `(#N)` and `Merge pull request #N` commits). For each PR the note is the ` ```release-note ` block of its description, or else its title without the Conventional Commit prefix; a note of `NONE` leaves the PR out. The PR's `kind/*` label picks the section under "Changes by Kind": `kind/deprecation` Deprecation, `kind/breaking` API Change, `kind/feature` Feature, `kind/bug` Bug or Regression, `kind/deps` Dependency, anything else Other. A `kind/breaking` PR, or a note containing "action required", is also listed under "Urgent Upgrade Notes". A "Dependencies" section lists the `go.mod` changes between the two tags. The release PR (`develop` to `main`), `sync/*` PRs and PRs labeled `skip-changelog` are never listed. If no PR qualifies, the release still happens and GoReleaser uses its generated git-log changelog.
+
+`CHANGELOG.md` at the root is only a pointer to `CHANGELOG/README.md`. One file, `CHANGELOG/unreleased-legacy.md`, holds the hand-written `[Unreleased]` entries that existed when the changelog became generated; the first release folds them into its section under "Hand-written entries" and the sync PR deletes the file.
 
 ### Version rules
 
@@ -156,10 +159,10 @@ go-specs is pre-1.0, so an ordinary release is a minor bump (`v0.3.2` to `v0.4.0
 
 A hotfix branches from `main` and PRs back into `main`. It is an urgent fix, so it is always a patch: nothing in the flow forces that for you, so keep a hotfix free of new API.
 
-1. **Branch and fix.** Branch `hotfix/<name>` from `main`, make the fix, and add a changelog entry under `## [Unreleased]` in `CHANGELOG.md`. (If `main`'s `[Unreleased]` still shows entries of the last release because its sync pull request has not reached `main` yet, leave them: they are excluded from the notes automatically.)
+1. **Branch and fix.** Branch `hotfix/<name>` from `main` and make the fix. Its PR needs a `kind/*` label (normally `kind/bug`) like any other.
 2. **Open the PR.** Base `main`, head `hotfix/*`. `ci.yml` runs like for any PR, and the `flow` job shows the patch version it will publish.
 3. **Merge with a merge commit.** `release.yml` tags and publishes.
-4. **Merge the sync pull request.** This one is also the "merged down into `develop`" step: `sync/release-vX.Y.Z` carries the hotfix commits and the stamp into `develop`. `CHANGELOG.md` usually conflicts, because `develop`'s own `[Unreleased]` kept growing; resolve it by keeping `develop`'s `[Unreleased]` above the new `## [vX.Y.Z]` section, not the other way around. The head is deliberately a `sync/*` branch and never `main`: `.github/settings.yml` sets `delete_branch_on_merge: true`, and a pull request headed `main` would make GitHub delete `main` when it merges.
+4. **Merge the sync pull request.** This one is also the "merged down into `develop`" step: `sync/release-vX.Y.Z` carries the hotfix commits and the changelog update into `develop`. `CHANGELOG/` files are generated, so on a conflict (for example `CHANGELOG/README.md`) keep both sides' lines. The head is deliberately a `sync/*` branch and never `main`: `.github/settings.yml` sets `delete_branch_on_merge: true`, and a pull request headed `main` would make GitHub delete `main` when it merges.
 
 If the hotfix should also ship as part of a larger release later, nothing further is needed: it is already tagged and published, and `develop` carries it once the sync pull request is merged.
 
@@ -181,7 +184,7 @@ PRs must include:
 * tests
 * benchmarks (if performance related)
 * documentation updates if APIs change
-* a `CHANGELOG.md` entry, or the `skip-changelog` label
+* a `kind/*` label (and a `release-note` block when the title is not a good note)
 
 A PR is validated by `ci.yml` (aggregated into the single required status check `ci-ok`) and `pr-meta.yml` (the required check `pr-meta`). CodeQL and the strict `govulncheck` run from `security.yml` on `develop` and nightly; they warn and are not PR checks. No workflow re-runs the PR's checks again after merge, except `ci.yml`'s `push` to `develop`, which validates the merge result and stores the test timings the next PRs use to shard. See [`docs/CI.md`](docs/CI.md) for the full pipeline reference: the workflow inventory, required checks, ruleset settings, and the SHA-pin policy every third-party action follows.
 

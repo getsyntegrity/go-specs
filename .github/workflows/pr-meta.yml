@@ -1,9 +1,11 @@
 # PR metadata. A separate workflow from ci.yml so that a label change here does not re-run the
 # tests. Required check: "pr-meta".
 #
-# go-specs' release notes are the entries of CHANGELOG.md's `## [Unreleased]` section, so the rule
-# is: a PR must change CHANGELOG.md, unless it is exempt. (ego asks for a `release-note` block in
-# the PR body instead; go-specs keeps its hand-written changelog as the single source.)
+# go-specs generates its changelog when a release is cut, from the pull requests merged since the
+# previous tag (.github/scripts/changelog.sh), so a PR does not edit CHANGELOG/. What that script
+# needs from each PR is its `kind/*` label (which section of the notes it goes to) and, optionally,
+# a ```release-note block in the body. The label is the only thing enforced here: the block is
+# optional because the PR title is the fallback note.
 name: pr-meta
 
 on:
@@ -22,14 +24,11 @@ jobs:
   pr-meta:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read   # list the files of the PR
     steps:
-      - name: CHANGELOG.md entry
+      # Labels and branch names are attacker-controlled text: they only reach the shell through
+      # env vars and are only compared, never evaluated.
+      - name: Exactly one kind/* label
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
@@ -38,17 +37,15 @@ jobs:
           if [ "$HEAD" = "develop" ] && [ "$BASE" = "main" ]; then
             echo "Release PR: its notes come from the PRs it includes"; exit 0
           fi
-          case ",$LABELS," in
-            *,skip-changelog,*|*,kind/deps,*) echo "Exempt by label ($LABELS)"; exit 0 ;;
-          esac
-          # Bot branches that never carry a user-visible change (their PRs also get the
-          # skip-changelog label, but only after they are opened).
+          # Bot branches whose PRs carry no note of their own (the sync PR after a release gets its
+          # labels only after it is opened).
           case "$HEAD" in
-            sync/*|dependabot/*|chore/benchmark-charts) echo "Exempt by branch ($HEAD)"; exit 0 ;;
+            sync/*) echo "Exempt by branch ($HEAD)"; exit 0 ;;
           esac
-          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
-          if ! grep -qxF CHANGELOG.md <<<"$files"; then
-            echo "::error::Add an entry under '## [Unreleased]' in CHANGELOG.md, or apply the skip-changelog label if the change is invisible to people who use go-specs."
+          kinds=$(tr ',' '\n' <<<"$LABELS" | grep -E '^kind/' || true)
+          count=$(grep -c . <<<"$kinds" || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Set exactly ONE kind/* label (kind/feature, kind/bug, kind/breaking, kind/deprecation, kind/deps, kind/chore, kind/docs or kind/flake); found $count: ${kinds//$'\n'/ }"
             exit 1
           fi
-          echo "CHANGELOG.md is part of this PR"
+          echo "Kind: $kinds"

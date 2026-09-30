@@ -3,15 +3,17 @@
 # resolves. GoReleaser only creates the GitHub Release (go-specs publishes no binary, see
 # .goreleaser.yaml).
 #
-# After every release `sync-develop` opens a pull request into develop that stamps CHANGELOG.md
-# (`## [Unreleased]` -> `## [vX.Y.Z] - date`) and, for a hotfix, carries the fix back down. This is
-# how the branching rule "develop and main only change through pull requests" holds for bots too:
-# nothing in this file pushes to either branch, it only pushes a tag and a `sync/*` branch.
+# After every release `sync-develop` opens a pull request into develop that adds the release to the
+# changelog (CHANGELOG/CHANGELOG-X.Y.md and the index CHANGELOG/README.md) and, for a hotfix,
+# carries the fix back down. This is how the branching rule "develop and main only change through
+# pull requests" holds for bots too: nothing in this file pushes to either branch, it only pushes a
+# tag and a `sync/*` branch.
 #
 # Version: .github/scripts/next-version.sh (release:* label on the merged PR, else hotfix/* is a
 # patch and develop is a minor).
-# Release notes: the CHANGELOG.md entries of `## [Unreleased]` that the previous tag did not already
-# publish (.github/scripts/release-changelog.sh). See docs/CI.md.
+# Release notes: generated from the PRs merged since the previous tag (their ```release-note block
+# or title, grouped by kind/* label) by .github/scripts/changelog.sh, the same section that the
+# sync PR writes into CHANGELOG/. Nobody edits the changelog by hand. See docs/CI.md.
 name: release
 
 on:
@@ -99,21 +101,20 @@ jobs:
         with:
           cache-key: release
 
-      # Notes from CHANGELOG.md. Exit 3 = no entry that the previous tag did not already publish;
-      # the release is not blocked, GoReleaser falls back to its own generated git-log changelog.
+      # Notes from the PRs merged since the previous tag. Exit 3 = no PR entry at all; the release
+      # is not blocked, GoReleaser falls back to its own generated git-log changelog.
       - name: Release notes
         id: notes
         if: steps.published.outputs.exists == 'false'
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          previous=$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-                     | grep -vxF "$VERSION" | sort -V | tail -1 || true)
           status=0
-          .github/scripts/release-changelog.sh "$VERSION" "${previous:--}" "$RUNNER_TEMP/CHANGELOG.stamped.md" "$RUNNER_TEMP/release-notes.md" || status=$?
+          .github/scripts/changelog.sh "$VERSION" --notes "$RUNNER_TEMP/release-notes.md" || status=$?
           case "$status" in
             0) echo "args=release --clean --release-notes=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT" ;;
-            3) echo "::warning::No new CHANGELOG.md entries since ${previous:-the beginning}: using GoReleaser's generated notes"
+            3) echo "::warning::No PR entry for $VERSION: using GoReleaser's generated notes"
                echo "args=release --clean" >> "$GITHUB_OUTPUT" ;;
             *) exit "$status" ;;
           esac
@@ -144,7 +145,7 @@ jobs:
           go mod init consumer-smoke-test
           GOPROXY=direct GOSUMDB=off go get "${MODULE}@${VERSION}"
 
-  # develop cannot be pushed to directly, so the changelog stamp (and, after a hotfix, the fix
+  # develop cannot be pushed to directly, so the changelog update (and, after a hotfix, the fix
   # itself) go through a pull request from a disposable sync/release-vX.Y.Z branch cut from the tag.
   # ORG_CHECKOUT_TOKEN (a PAT) is optional: without it the fallback is github.token, and the PR it
   # opens will not trigger CI by itself (GitHub does not start workflows from GITHUB_TOKEN); close
@@ -168,7 +169,7 @@ jobs:
       - uses: ./.github/actions/go-setup
         with:
           cache-key: sync
-      - name: Stamp CHANGELOG.md and open the sync PR
+      - name: Update CHANGELOG/ and open the sync PR
         env:
           GH_TOKEN: ${{ secrets.ORG_CHECKOUT_TOKEN || github.token }}
           VERSION: ${{ needs.release.outputs.version }}
@@ -176,10 +177,8 @@ jobs:
         run: |
           set -euo pipefail
           branch="sync/release-$VERSION"
-          previous=$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-                     | grep -vxF "$VERSION" | sort -V | tail -1 || true)
           # A hotfix is tagged on a commit that is not in develop: the PR is needed even when the
-          # changelog has nothing to stamp. A develop release only needs it for the stamp. A
+          # changelog has nothing to add. A develop release only needs it for the changelog. A
           # re-run or an unknown source is treated like a hotfix: an extra PR is harmless, a
           # missing one would leave a fix out of develop.
           hotfix=true
@@ -188,17 +187,18 @@ jobs:
           git switch -q -C "$branch"
           stamped=false
           status=0
-          .github/scripts/release-changelog.sh "$VERSION" "${previous:--}" "$RUNNER_TEMP/CHANGELOG.stamped.md" || status=$?
+          .github/scripts/changelog.sh "$VERSION" --write || status=$?
           case "$status" in
-            0) cp "$RUNNER_TEMP/CHANGELOG.stamped.md" CHANGELOG.md ;;
-            3) echo "::notice::Nothing to stamp in CHANGELOG.md" ;;
+            0) ;;
+            3) echo "::notice::Nothing to add to CHANGELOG/" ;;
             *) exit "$status" ;;
           esac
-          if ! git diff --quiet -- CHANGELOG.md; then
-            git add CHANGELOG.md
+          # --write also deletes CHANGELOG/unreleased-legacy.md once the first release has folded it in.
+          if [ -n "$(git status --porcelain -- CHANGELOG)" ]; then
+            git add -A -- CHANGELOG
             git -c user.name="github-actions[bot]" \
                 -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                commit -q -m "docs: CHANGELOG $VERSION"
+                commit -q -m "docs: changelog $VERSION"
             stamped=true
           fi
           if [ "$stamped" = false ] && [ "$hotfix" = false ]; then
@@ -213,14 +213,14 @@ jobs:
           fi
           if [ "$hotfix" = true ]; then
             title="chore: sync hotfix $VERSION main into develop"
-            body="Automatic PR after hotfix $VERSION: it carries the fix back into develop and stamps CHANGELOG.md. Resolve any CHANGELOG.md conflict by keeping develop's \`## [Unreleased]\` above the new \`## [$VERSION]\` section. Merge with a merge commit."
+            body="Automatic PR after hotfix $VERSION: it carries the fix back into develop and adds $VERSION to CHANGELOG/. CHANGELOG/ is generated: on a conflict keep both sides' sections. Merge with a merge commit."
           else
-            title="docs: CHANGELOG $VERSION"
-            body="Automatic PR after release $VERSION: stamps CHANGELOG.md. Merge with a merge commit."
+            title="docs: changelog $VERSION"
+            body="Automatic PR after release $VERSION: adds it to CHANGELOG/. Merge with a merge commit."
           fi
           url=$(gh pr create --base develop --head "$branch" --title "$title" --body "$body")
           echo "::notice::Sync PR: $url"
-          gh pr edit "$url" --add-label skip-changelog || echo "::warning::Could not set the skip-changelog label"
+          gh pr edit "$url" --add-label skip-changelog --add-label kind/chore || echo "::warning::Could not set the skip-changelog and kind/chore labels"
 
   notify:
     if: always()

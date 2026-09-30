@@ -2,10 +2,11 @@
 Thanks for the PR! Before submitting it:
 
 1. It targets `develop`. Only `develop` itself (a release) and `hotfix/*` branches target `main`.
-2. Set ONE `kind/*` label: it tells reviewers what kind of change this is.
+2. Set ONE `kind/*` label: it tells reviewers what kind of change this is, and it decides which
+   section of the release notes the PR appears in. The pr-meta check fails otherwise.
 3. Add or run the relevant tests (coverage shows up in the summary of the CI run).
-4. Add an entry under `## [Unreleased]` in CHANGELOG.md, or apply the `skip-changelog` label if the
-   change is invisible to people who use go-specs. The pr-meta check fails otherwise.
+4. Do not edit CHANGELOG/: it is generated at release time from the merged PRs. Write the note in
+   the `release-note` block below if the title is not enough.
 5. If it is not finished yet, open it as a Draft.
 -->
 
@@ -31,21 +32,25 @@ If there is no issue, write N/A.
 
 - [ ] Does not change the public API
 - [ ] Adds compatible API (new functions, types or fields)
-- [ ] **Breaks compatibility** → label `kind/breaking`, and say so in the CHANGELOG.md entry (go-specs is pre-1.0)
+- [ ] **Breaks compatibility** → label `kind/breaking`, and say so in the release note (go-specs is pre-1.0)
 - [ ] Deprecates API → `// Deprecated:` in the godoc, with the alternative
 
-#### CHANGELOG.md
+#### Special notes for the reviewer
+
+#### Release note (optional)
 
 <!--
-The entry under `## [Unreleased]` becomes the GitHub Release notes. Write it for whoever uses the
-library. Put each entry under the right heading (Added, Changed, Deprecated, Removed, Fixed,
-Security); `go run ./tools/release validate -file CHANGELOG.md` checks the structure.
+Optional. Without a block, the PR title (minus its `feat:`/`fix:` prefix) is the note.
+Write the note as it should appear in the release notes, for whoever uses the library
+("Adds the `WithTimeout` option.", not "fix timeout"). The `kind/*` label decides its section.
+If people must do something when upgrading, include "action required": the note is also listed
+under "Urgent Upgrade Notes" (`kind/breaking` does the same).
+Write NONE, or apply the `skip-changelog` label, for a change nobody who uses go-specs can see.
 -->
 
-- [ ] Entry added under `## [Unreleased]`
-- [ ] Not needed: `skip-changelog` label applied
+```release-note
 
-#### Special notes for the reviewer
+```
 
 #### AI usage
 

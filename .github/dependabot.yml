@@ -3,8 +3,8 @@
 # through a develop -> main release/hotfix PR, so an update PR opened against main would sit
 # outside that flow and never get released the ordinary way.
 #
-# Every PR carries `kind/deps`, which pr-meta.yml exempts from the CHANGELOG.md entry rule. (The
-# label must exist: .github/scripts/labels.sh creates it.)
+# Every PR carries `kind/deps`, which is the one label pr-meta.yml requires and puts the PR under
+# "Dependency" in the release notes. (The label must exist: .github/scripts/labels.sh creates it.)
 #
 # Both ecosystems group their own minor and patch updates into a single PR, leaving major bumps
 # ungrouped -- a major version can carry a breaking change worth reviewing (and bisecting, if it

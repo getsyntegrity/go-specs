@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests for the release scripts in .github/scripts (next-version.sh, release-changelog.sh).
+# Tests for the release scripts in .github/scripts (next-version.sh, changelog.sh).
 # Each case builds a throwaway git repository, so nothing here touches the real checkout.
-# Usage: bash .github/scripts/test/run.sh        (needs git and go)
+# Usage: bash .github/scripts/test/run.sh        (needs git, jq, perl and go)
 set -uo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -45,46 +45,175 @@ else
   pass "next-version: v2 without /v2 in go.mod is rejected"
 fi
 
-# ── release-changelog.sh ─────────────────────────────────────────
-release_bin="$tmp/release-bin"
-(cd "$repo_root" && go build -o "$release_bin" ./tools/release) || { echo "cannot build tools/release"; exit 1; }
-export RELEASE_TOOL="$release_bin" RELEASE_DATE=2026-01-02
+# ── changelog.sh ─────────────────────────────────────────────────
+export GITHUB_REPOSITORY=o/r GITHUB_SERVER_URL=https://github.com
 
-changelog_header=$'# Changelog\n\n## [Unreleased]\n'
+# commit <message>: an empty commit.
+commit() { git_quiet commit --allow-empty -m "$1"; }
 
-# rc_repo <dir>: tag v0.1.0 holds a changelog whose [Unreleased] has entry A (two lines long).
-rc_repo() {
-  new_repo "$1" example.com/x v0.0.9
-  printf '%s\n### Added\n\n- Entry A, first line\n  and its continuation line.\n\n## [v0.0.9] - 2025-01-01\n\n### Added\n\n- Entry Z, older.\n\n[Unreleased]: https://example.com/compare/v0.0.9...HEAD\n' \
-    "$changelog_header" > CHANGELOG.md
-  git_quiet add -A && git_quiet commit -m "changelog A" && git_quiet tag -a v0.1.0 -m v0.1.0
+# pr <dir> <n> <title> <head> <base> <labels,csv> [body]: writes the GitHub API answer of a PR.
+pr() {
+  mkdir -p "$1"
+  jq -n --argjson n "$2" --arg t "$3" --arg h "$4" --arg b "$5" --arg l "$6" --arg body "${7:-}" '
+    { number: $n, title: $t, body: $body, html_url: "https://github.com/o/r/pull/\($n)",
+      user: { login: "dev" }, head: { ref: $h }, base: { ref: $b },
+      labels: ($l | split(",") | map(select(. != "") | { name: . })) }' > "$1/$2.json"
 }
 
-# Case 1: main is unstamped after v0.1.0, a hotfix adds entry H. Only H may be released.
-rc_repo "$tmp/rc1"
-printf '%s\n### Added\n\n- Entry A, first line\n  and its continuation line.\n\n### Fixed\n\n- Entry H, the hotfix.\n\n## [v0.0.9] - 2025-01-01\n\n### Added\n\n- Entry Z, older.\n\n[Unreleased]: https://example.com/compare/v0.0.9...HEAD\n' \
-  "$changelog_header" > CHANGELOG.md
-out="$tmp/rc1.out"; notes="$tmp/rc1.notes"
-(cd "$tmp/rc1" && "$scripts/release-changelog.sh" v0.1.1 v0.1.0 "$out" "$notes" >/dev/null 2>&1)
-status=$?
-expect_eq "release-changelog: hotfix with stale entries exits 0" 0 "$status"
-if grep -q 'Entry H' "$notes" && ! grep -q 'Entry A' "$notes"; then pass "release-changelog: notes hold only the new entry"; else fail "release-changelog: notes hold only the new entry" "$(cat "$notes" 2>/dev/null)"; fi
-if grep -q '^## \[v0.1.1\] - 2026-01-02' "$out"; then pass "release-changelog: output is stamped with version and date"; else fail "release-changelog: output is stamped with version and date"; fi
+link() { echo "([#$1](https://github.com/o/r/pull/$1), [@dev](https://github.com/dev))"; }
 
-# Case 2: a multi-line entry that is already released is dropped as a whole block.
-if grep -q 'continuation line' "$out"; then fail "release-changelog: continuation lines of a released entry are dropped"; else pass "release-changelog: continuation lines of a released entry are dropped"; fi
+# A repository with the previous tag v0.0.10 and thirteen PRs merged after it. Between the two
+# tags go.mod gains one requirement, and CHANGELOG/unreleased-legacy.md holds hand-written entries
+# (the transition from the old model).
+cl_repo="$tmp/cl"; fx="$tmp/cl-fixtures"
+new_repo "$cl_repo" example.com/x v0.0.9
+git_quiet tag -a v0.0.10 -m v0.0.10
+note=$'Text before.\n```release-note\nBoom note\n```\nText after.'
+none=$'```release-note\nNONE\n```'
+chore_note=$'```release-note\nNote on chore\n```'
+commit "feat: add thing (#1)";            pr "$fx" 1 "feat: add thing" feat/a develop kind/feature
+commit "fix: repair (#2)";                pr "$fx" 2 "fix: repair" fix/b develop kind/bug
+commit "chore: tidy (#3)";                pr "$fx" 3 "chore: tidy" chore/c develop kind/chore
+commit "Merge pull request #4 from o/develop"; pr "$fx" 4 "release" develop main ""
+commit "docs: skipped (#5)";              pr "$fx" 5 "docs: skipped" docs/d develop kind/feature,skip-changelog
+commit "feat: hidden (#6)";               pr "$fx" 6 "feat: hidden" feat/e develop kind/feature "$none"
+commit "feat!: boom (#7)";                pr "$fx" 7 "feat!: boom" feat/f develop kind/breaking "$note"
+commit "chore(deps): bump deps (#8)";     pr "$fx" 8 "chore(deps): bump deps" dependabot/x develop kind/deps
+commit "fix: no label fix (#9)";          pr "$fx" 9 "fix: no label fix" fix/g develop ""
+commit "chore: sync (#10)";               pr "$fx" 10 "chore: sync" sync/release-v0.0.10 develop ""
+commit "chore: with note (#11)";          pr "$fx" 11 "chore: with note" chore/h develop kind/chore "$chore_note"
+commit "refactor: no label, no note (#12)"; pr "$fx" 12 "refactor: no label, no note" refactor/i develop ""
+commit "deprecate: old api (#13)";        pr "$fx" 13 "deprecate: old api" dep/j develop kind/deprecation
+printf 'module example.com/x\n\ngo 1.25.0\n\nrequire example.org/dep v1.0.0\n' > go.mod
+mkdir -p CHANGELOG
+printf '### Added\n\n- Legacy A, first line\n  and its continuation line.\n\n### Fixed\n\n- Legacy F.\n' > CHANGELOG/unreleased-legacy.md
+git_quiet add -A && git_quiet commit -m "legacy and dependency"
+cd "$repo_root" || exit 1
 
-# Case 3: nothing new since the previous tag -> exit 3, no notes.
-rc_repo "$tmp/rc3"
-(cd "$tmp/rc3" && "$scripts/release-changelog.sh" v0.1.1 v0.1.0 "$tmp/rc3.out" "$tmp/rc3.notes" >/dev/null 2>&1)
-expect_eq "release-changelog: no new entries exits 3" 3 "$?"
+want_notes="## Changelog since v0.0.10
 
-# Case 4: no previous tag at all -> everything in [Unreleased] is released.
-new_repo "$tmp/rc4" example.com/x v0.0.9
-printf '%s\n### Added\n\n- Entry A.\n\n' "$changelog_header" > "$tmp/rc4/CHANGELOG.md"
-(cd "$tmp/rc4" && "$scripts/release-changelog.sh" v0.1.0 - "$tmp/rc4.out" "$tmp/rc4.notes" >/dev/null 2>&1)
-expect_eq "release-changelog: no previous tag releases everything" 0 "$?"
-if grep -q 'Entry A' "$tmp/rc4.notes"; then pass "release-changelog: no previous tag keeps entry"; else fail "release-changelog: no previous tag keeps entry"; fi
+## Urgent Upgrade Notes
+
+### (No, really, you MUST read this before you upgrade)
+
+- Boom note $(link 7)
+
+## Changes by Kind
+
+### Deprecation
+
+- Old api $(link 13)
+
+### API Change
+
+- Boom note $(link 7)
+
+### Feature
+
+- Add thing $(link 1)
+
+### Bug or Regression
+
+- Repair $(link 2)
+
+### Other (Cleanup or Flake)
+
+- Tidy $(link 3)
+- No label fix $(link 9)
+- Note on chore $(link 11)
+- No label, no note $(link 12)
+
+### Dependency
+
+- Bump deps $(link 8)
+
+## Hand-written entries
+
+#### Added
+
+- Legacy A, first line
+  and its continuation line.
+
+#### Fixed
+
+- Legacy F.
+
+## Dependencies
+
+### Added
+- example.org/dep: v1.0.0
+
+### Changed
+_No changes._
+
+### Removed
+_No changes._"
+
+cl() { (cd "$cl_repo" && PR_FIXTURES="$fx" "$scripts/changelog.sh" "$@" 2>/dev/null); }
+
+# Preview: the tag does not exist yet, --ref and --previous describe the range.
+cl v0.1.0 --ref HEAD --previous v0.0.10 --notes "$tmp/preview.md" >/dev/null; status=$?
+expect_eq "changelog: preview without a tag exits 0" 0 "$status"
+expect_eq "changelog: notes are the Kubernetes layout" "$want_notes" "$(cat "$tmp/preview.md" 2>/dev/null)"
+
+git -C "$cl_repo" tag -a v0.1.0 -m v0.1.0 >/dev/null 2>&1
+cl v0.1.0 --notes "$tmp/notes.md" >/dev/null; status=$?
+expect_eq "changelog: tagged version exits 0" 0 "$status"
+expect_eq "changelog: the default range ends at the tag" "$want_notes" "$(cat "$tmp/notes.md" 2>/dev/null)"
+
+# --write, new minor: creates CHANGELOG/CHANGELOG-0.1.md, indexes it and consumes the legacy file.
+cl v0.1.0 --write >/dev/null; status=$?
+expect_eq "changelog: --write for a new minor exits 0" 0 "$status"
+minor="$cl_repo/CHANGELOG/CHANGELOG-0.1.md"
+if rg -q '^# v0.1.0$' "$minor" && rg -q '^## Changelog since v0.0.10$' "$minor" && rg -qF -- '- [v0.1.0](#v010)' "$minor"; then pass "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents"; else fail "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents" "$(cat "$minor" 2>/dev/null | head -20)"; fi
+expect_eq "changelog: README indexes the new file" $'# CHANGELOGs\n\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md" 2>/dev/null)"
+if [ -e "$cl_repo/CHANGELOG/unreleased-legacy.md" ]; then fail "changelog: --write consumes the legacy file"; else pass "changelog: --write consumes the legacy file"; fi
+(cd "$cl_repo" && git_quiet add -A && git_quiet commit -m "sync 0.1.0")
+
+# --write, patch of an existing minor: the new section goes above the old one, same file.
+cd "$cl_repo" || exit 1
+commit "fix: later fix (#40)"; pr "$fx" 40 "fix: later fix" fix/k develop kind/bug
+git_quiet tag -a v0.1.1 -m v0.1.1
+cd "$repo_root" || exit 1
+cl v0.1.1 --write >/dev/null; status=$?
+expect_eq "changelog: --write for a patch exits 0" 0 "$status"
+new_at=$(rg -n '^# v0.1.1$' "$minor" | cut -d: -f1); old_at=$(rg -n '^# v0.1.0$' "$minor" | cut -d: -f1)
+if [ -n "$new_at" ] && [ -n "$old_at" ] && [ "$new_at" -lt "$old_at" ]; then pass "changelog: --write puts the patch above the earlier release of its minor"; else fail "changelog: --write puts the patch above the earlier release of its minor" "v0.1.1 at '$new_at', v0.1.0 at '$old_at'"; fi
+if rg -qF -- '- Later fix' "$minor"; then pass "changelog: the patch section holds its PR"; else fail "changelog: the patch section holds its PR"; fi
+cl v0.1.1 --write >/dev/null
+expect_eq "changelog: --write twice does not repeat the section" 1 "$(rg -c '^# v0.1.1$' "$minor")"
+expect_eq "changelog: a patch adds no README line" $'# CHANGELOGs\n\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md")"
+(cd "$cl_repo" && git_quiet add -A && git_quiet commit -m "sync 0.1.1")
+
+# --write, next minor: a second file, listed above the first.
+cd "$cl_repo" || exit 1
+commit "feat: new minor (#41)"; pr "$fx" 41 "feat: new minor" feat/l develop kind/feature
+git_quiet tag -a v0.2.0 -m v0.2.0
+cd "$repo_root" || exit 1
+cl v0.2.0 --write >/dev/null; status=$?
+expect_eq "changelog: --write for the next minor exits 0" 0 "$status"
+expect_eq "changelog: README lists the newest minor first" $'# CHANGELOGs\n\n- [CHANGELOG-0.2.md](./CHANGELOG-0.2.md)\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md")"
+if rg -q '^## Changelog since v0.1.1$' "$cl_repo/CHANGELOG/CHANGELOG-0.2.md"; then pass "changelog: the next minor starts at the previous patch"; else fail "changelog: the next minor starts at the previous patch"; fi
+if rg -q '^# v0.1.0$' "$minor"; then pass "changelog: earlier minors are untouched"; else fail "changelog: earlier minors are untouched"; fi
+
+# Nothing to release: no entries and no legacy ones -> exit 3, nothing written.
+nr="$tmp/nr"; new_repo "$nr" example.com/x v0.0.9
+commit "chore: tidy (#20)"; pr "$tmp/nr-fx" 20 "chore: tidy" chore/x develop kind/chore "$none"
+git_quiet tag -a v0.0.10 -m v0.0.10
+(cd "$nr" && PR_FIXTURES="$tmp/nr-fx" "$scripts/changelog.sh" v0.0.10 --notes "$tmp/nr.md" --write >/dev/null 2>&1); status=$?
+expect_eq "changelog: nothing to release exits 3" 3 "$status"
+if [ -e "$tmp/nr.md" ] || [ -e "$nr/CHANGELOG" ]; then fail "changelog: nothing to release writes nothing"; else pass "changelog: nothing to release writes nothing"; fi
+cd "$repo_root" || exit 1
+
+# No previous tag: every PR of the history counts.
+np="$tmp/np"; new_repo "$np" example.com/x v0.0.1
+git tag -d v0.0.1 >/dev/null 2>&1
+commit "feat: first (#30)"; pr "$tmp/np-fx" 30 "feat: first" feat/y develop kind/feature
+git_quiet tag -a v0.1.0 -m v0.1.0
+(cd "$np" && PR_FIXTURES="$tmp/np-fx" "$scripts/changelog.sh" v0.1.0 --notes "$tmp/np.md" >/dev/null 2>&1); status=$?
+expect_eq "changelog: no previous tag exits 0" 0 "$status"
+if rg -q '^## Changelog \(first release\)$' "$tmp/np.md" && rg -qF -- "- First $(link 30)" "$tmp/np.md"; then pass "changelog: no previous tag releases every PR"; else fail "changelog: no previous tag releases every PR" "$(cat "$tmp/np.md" 2>/dev/null)"; fi
+cd "$repo_root" || exit 1
 
 echo
 if [ "$failures" -gt 0 ]; then echo "$failures failure(s)"; exit 1; fi

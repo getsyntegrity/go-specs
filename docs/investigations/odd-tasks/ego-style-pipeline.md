@@ -52,7 +52,10 @@ secrets.
 
 ## Decisions
 
-### D1. Release model: ego's, with `CHANGELOG.md` stamped by a pull request after the release
+### D1. Release model: ego's, with the changelog written by a pull request after the release
+
+> Amended by D6: the notes are no longer the hand-written `## [Unreleased]` entries. Steps 3 and 4
+> below describe the first version of this decision; D6 is what the branch now does.
 
 What the repository does now: `release-prep.yml` rewrites `## [Unreleased]` into
 `## [vX.Y.Z] - date` on `develop` while the release PR is open; `release.yml` later checks that
@@ -87,12 +90,60 @@ Rejected alternatives:
 - Keep `release-prep.yml` (bot stamps `develop` before merging). Rejected: it is the reason the
   App exists and the only writer to a protected branch; removing it is the point of the migration.
 - Use ego's `changelog.sh` (notes from PR `release-note` blocks, `CHANGELOG/` directory).
-  Rejected: go-specs' `CHANGELOG.md` is a hand-written Keep a Changelog file with long, reviewed
-  entries and a structure check (`tools/release validate`); replacing it with PR-body blocks would
-  throw that content away and create two sources of truth.
+  Rejected at the time: go-specs' `CHANGELOG.md` was a hand-written Keep a Changelog file with
+  long, reviewed entries and a structure check (`tools/release validate`). Reversed by D6, on the
+  maintainer's decision, with the existing content migrated instead of thrown away.
 - Stamp the changelog in a human-triggered "prepare release" workflow before the release PR.
   Rejected: it brings back a "did we remember to run it" step, which `native-ci-pipeline.md`
   Decision 2 removed on purpose.
+
+### D6. The changelog is generated at release time, in the Kubernetes layout (supersedes D1 steps 3-4)
+
+What changes for contributors: a PR no longer edits `CHANGELOG.md`, and `pr-meta` no longer asks
+for that. It asks for exactly one `kind/*` label, because the label now decides where the PR
+appears in the release notes. The note itself is the optional ` ```release-note ` block of the PR
+description, or else the PR title without its `feat:`/`fix:` prefix; `NONE` or the
+`skip-changelog` label leaves the PR out.
+
+What the release does: `.github/scripts/changelog.sh` (ported from ego's script of the same name)
+lists the PRs merged between the previous tag and the new one, renders them as "Changes by Kind"
+plus a "Dependencies" section from the `go.mod` diff, and is used twice from the same code:
+
+1. `--notes FILE` is the GitHub Release body (GoReleaser still creates the release; its own
+   generated notes are only the fallback when no PR qualifies, exit code 3).
+2. `--write` adds the section to `CHANGELOG/CHANGELOG-X.Y.md` (one file per minor, every patch in
+   it, newest first) and rebuilds the index `CHANGELOG/README.md`. The `sync-develop` job commits
+   that to the `sync/release-vX.Y.Z` branch and opens the pull request into `develop`.
+
+`flow` runs the same script with `--ref HEAD --previous <tag>` to preview the notes on a PR to `main`.
+The root `CHANGELOG.md` is now a short pointer to `CHANGELOG/README.md`.
+
+Migration, done in this branch: the released sections of the old root file were split verbatim into
+`CHANGELOG/CHANGELOG-0.1.md`, `-0.2.md` and `-0.3.md` (old entries were not rewritten into the new
+style), and `CHANGELOG/README.md` was generated in the shape that `--write` produces.
+
+The hand-written `## [Unreleased]` entries, which no release had published yet, were moved to
+`CHANGELOG/unreleased-legacy.md`. The first release folds that file into its section under
+"Hand-written entries" (both in the Release body and in the file), and `--write` deletes it so the
+sync PR removes it. Rejected: leaving them in the root `CHANGELOG.md` under `## [Unreleased]`. The
+root is a pointer now, and a hand-edited section next to a generated changelog invites new
+hand-written entries. Edge case accepted: a hotfix cut from a `main` that still has the file would
+fold the legacy entries into the hotfix notes; it only matters in the window before the first
+generated release.
+
+Rejected alternatives for where the generated file goes:
+
+- Generate the changelog and push it to `main` in the release job. Rejected: `main` accepts no
+  direct pushes, so it needs a ruleset bypass actor, which is exactly what D2 removes.
+- Publish only the GitHub Release and keep no file. Rejected: the repository would lose the
+  reviewable, versioned history that `CHANGELOG/` gives (and the old file's content with it).
+
+`tools/release validate` checked the hand-written `[Unreleased]` section and has nothing left to
+check, so the `verify` step that ran it is dropped. The Go code of `tools/release` is untouched
+(its `changelog`, `notes` and `validate` subcommands are unused by CI now, like `next-version`).
+Section rules follow ego, not Keep a Changelog: `kind/breaking` is also listed under "Urgent
+Upgrade Notes", and every PR that is not excluded is listed, under "Other" when it has no kind. "Nothing to release" means no PR entry and no legacy entry; a release whose only change is
+in `go.mod` therefore falls back to GoReleaser's notes.
 
 ### D2. The release GitHub App is removed
 
@@ -139,8 +190,8 @@ entries in `protect-develop` / `protect-main` can be deleted by a human.
   informational on `develop`, blocking only from `v1` on without `release:major`, because the
   script already treats `v0.x` as a warning), `flow`, `pr-meta`, `notify`, `labels.sh`, issue and
   PR templates.
-- Kept from go-specs: the module-path check, `gofmt` check, `go vet`, build, `go run ./tools/release
-  validate -file CHANGELOG.md`, the Go-version drift check (inside the composite action), bench
+- Kept from go-specs: the module-path check, `gofmt` check, `go vet`, build, the Go-version drift
+  check (inside the composite action), bench
   smoke run plus its race check, `report-cli`, golangci-lint (pinned, full not new-only),
   `dependency-review`, GoReleaser check plus snapshot, the external installability check after a
   release, `benchmarks.yml`, `benchmark-charts.yml`, `fuzz.yml`, `settings.yml`.
@@ -195,11 +246,16 @@ change touches no Go file; removing it can be a follow-up.
   `make check-go-version`, `tools/release validate`, `go build ./...` and `goreleaser check` all
   pass.
 
+- [x] T6 (amendment, D6; beyond the 5-task cap because the maintainer asked for it inside this
+  branch) — `changelog.sh` replaces `release-changelog.sh`; `pr-meta` requires one `kind/*` label;
+  `release.yml` and `flow` use the generator; `CHANGELOG/` migrated from the root file; PR template,
+  CONTRIBUTING.md, docs/CI.md updated. Check: script tests (RED first: `changelog.sh` missing, 20
+  failures; then GREEN), actionlint, shellcheck.
+
 ## Acceptance criteria
 
 - `actionlint` reports nothing; `shellcheck` is clean on every `.github/scripts/*.sh`.
-- `make check-go-version`, `go run ./tools/release validate -file CHANGELOG.md` and
-  `go build ./...` still pass.
+- `make check-go-version` and `go build ./...` still pass.
 - `next-version.sh` returns the documented version for develop, hotfix and label-override cases.
 - Required checks after this change are `ci-ok` and `pr-meta`. Removed names: `analyze (go)`,
   `analyze (actions)`. The two rulesets must be updated by a human before merging.
@@ -208,15 +264,14 @@ change touches no Go file; removing it can be a follow-up.
 ## Checks
 
 actionlint (latest), shellcheck, `bash .github/scripts/test/run.sh`, local runs of
-`next-version.sh` and `test-matrix.sh`, `make check-go-version`,
-`go run ./tools/release validate -file CHANGELOG.md`, `go build ./...`.
+`next-version.sh` and `test-matrix.sh`, `make check-go-version`, `go build ./...`.
 
 ## Needs a human before merging
 
 - Rulesets `protect-develop` and `protect-main`: required checks become `ci-ok` and `pr-meta`;
   remove `analyze (go)` and `analyze (actions)`; remove the App as bypass actor.
 - Run `.github/scripts/labels.sh` once (creates `skip-changelog`, `kind/*`, `release:*`). This PR
-  itself needs the `skip-changelog` label for `pr-meta`.
+  itself needs one `kind/*` label (`kind/chore`) for `pr-meta`.
 - Make sure `ORG_CHECKOUT_TOKEN` is available to this repository (org secret), otherwise the sync
   and chart pull requests need a close/reopen to run CI. `RELEASE_APP_ID` and
   `RELEASE_APP_PRIVATE_KEY` can be deleted.
