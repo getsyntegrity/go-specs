@@ -50,7 +50,9 @@ const cleanupNilMessage = "specs: ctx.Cleanup requires a non-nil function; pass 
 //   - fn may call ctx.Errorf or an assertion to report a failure of the case. A fatal assertion ends
 //     only that cleanup; the rest still run.
 //   - A cleanup registered from a ctx.Go task goes onto the spec's list, and fn may itself register
-//     another cleanup while the list is draining; it runs before the drain ends.
+//     another cleanup while the list is draining; it runs before the drain ends. A failure that such a
+//     cleanup reports through the task's own (finished) Context, such as task.Errorf, is folded into the
+//     spec when the drain ends, so it fails the spec on every engine.
 //   - It is not delegated to ctx.T.Cleanup, even where a real subtest T is bound, so the order is the
 //     same everywhere. Consequently ctx.Cleanup functions run before anything registered with
 //     ctx.T.Cleanup, which testing runs after the subtest function returns.
@@ -113,6 +115,10 @@ func (gs *goState) drainCleanups(c *Context, report bool) (message, output strin
 		if n == 0 {
 			gs.cleanupsDone = true
 			gs.mu.Unlock()
+			// A cleanup, including one a task registered, may report through a task Context that is
+			// already finished (mock.NewController(task).Verify) or through ctx.Errorf: nothing folds
+			// after the cleanups, so fold here, on the spec goroutine, before the case is finalized.
+			gs.fold(c)
 			return message, output
 		}
 		fn := gs.cleanups[n-1]

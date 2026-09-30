@@ -24,6 +24,8 @@ type cleanupOutcome struct {
 	failed  bool
 	errored bool // reported as a panic (an error with a stack), where the engine can say so
 	message string
+	// reports is how many Errorf calls the engine's fake backend received (flat engines only).
+	reports int
 }
 
 type cleanupEngine struct {
@@ -34,7 +36,9 @@ type cleanupEngine struct {
 	classifies bool
 	// rawMessage is true when message is exactly the failure text, with no "file:line:" decoration.
 	rawMessage bool
-	run        func(t *testing.T, c cleanupCase) cleanupOutcome
+	// everyReport is true when the engine's fake backend receives every Errorf, so a test can count them.
+	everyReport bool
+	run         func(t *testing.T, c cleanupCase) cleanupOutcome
 }
 
 func outcomeOfEvent(rep *recordingReporter) cleanupOutcome {
@@ -62,7 +66,7 @@ func outcomeOfCollector(e *errorCollector) cleanupOutcome {
 
 // outcomeOfContext reads a flat sequential engine's outcome from the Context and its fake backend.
 func outcomeOfContext(ctx *Context, be *controlledBackend) cleanupOutcome {
-	o := cleanupOutcome{failed: ctx.hasFailed(), message: ctx.failure.Message}
+	o := cleanupOutcome{failed: ctx.hasFailed(), message: ctx.failure.Message, reports: len(be.errors)}
 	for _, m := range be.errors {
 		if strings.Contains(m, "panic") {
 			o.errored = true
@@ -136,6 +140,11 @@ func cleanupEngines() []cleanupEngine {
 			NewMinimalRunnerFromSpecs([]RunSpec{{Name: "case", Fn: c.body}}).RunParallel(col, 1)
 			return outcomeOfCollector(col)
 		}},
+		{name: "MinimalRunner.RunParallelBatched", run: func(t *testing.T, c cleanupCase) cleanupOutcome {
+			col := &errorCollector{}
+			NewMinimalRunnerFromSpecs([]RunSpec{{Name: "case", Fn: c.body}}).RunParallelBatched(col, 1, 4)
+			return outcomeOfCollector(col)
+		}},
 		{name: "BytecodeRunner.RunParallel", run: func(t *testing.T, c cleanupCase) cleanupOutcome {
 			bb := NewBCBuilder(4)
 			bb.AddSpec(c.body)
@@ -143,13 +152,13 @@ func cleanupEngines() []cleanupEngine {
 			NewBytecodeRunner(bb.BuildBC()).RunParallel(col, 1)
 			return outcomeOfCollector(col)
 		}},
-		{name: "MinimalRunner.Run", run: flat(func(ctx *Context, body func(*Context)) {
+		{name: "MinimalRunner.Run", everyReport: true, run: flat(func(ctx *Context, body func(*Context)) {
 			runMinimalSpecs(ctx, []RunSpec{{Name: "case", Fn: body}})
 		})},
-		{name: "BlockRunner.Run", run: flat(func(ctx *Context, body func(*Context)) {
+		{name: "BlockRunner.Run", everyReport: true, run: flat(func(ctx *Context, body func(*Context)) {
 			runBlocks(ctx, []func(*Context){body}, []specBlock{{start: 0, count: 1}})
 		})},
-		{name: "BytecodeRunner.Run", run: flat(func(ctx *Context, body func(*Context)) {
+		{name: "BytecodeRunner.Run", everyReport: true, run: flat(func(ctx *Context, body func(*Context)) {
 			bb := NewBCBuilder(4)
 			bb.AddSpec(body)
 			p := bb.BuildBC()

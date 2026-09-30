@@ -13,12 +13,37 @@ import (
 // failed assertion, so SpecResultEvent.Failed, the suite's failed count and FailFast all see it.
 //
 // The message is recorded like a failed assertion's (#272) and reported in SpecResultEvent.Message.
-// When a case has already failed, Errorf still reaches the backend but never replaces the recorded
-// message, so the first Errorf (or the assertion that failed before it) is the one reported. That is
-// one-directional: a failed assertion after an Errorf records its own text, as one assertion's message
-// has always replaced an earlier one's on the sequential engines. The failure is attributed to the caller of Errorf: on a real *testing.T
-// through Helper marking, and on Builder.ItParallel and RunParallel through the stack walk that
-// skips go-specs' own frames (this package, snapshots and mock).
+// The failure is attributed to the caller of Errorf: on a real *testing.T through Helper marking, and
+// on Builder.ItParallel and RunParallel through the stack walk that skips go-specs' own frames (this
+// package, snapshots and mock).
+//
+// Concurrency. Errorf is safe to call from any ctx.Go task, from the spec goroutine and from a cleanup
+// at the same time, on the spec's Context or on a task's Context, and it may also be called on a task
+// Context after its task ended, in particular from a cleanup a task registered: that is what a
+// mock.Controller created with a task's Context does. Every such call fails the owning spec.
+//
+// How it works. A case that never used ctx.Go or ctx.Cleanup has no other goroutine to race with, so
+// Errorf records the failure at once, like a failed assertion. Once the case has task or cleanup state,
+// Errorf never touches the spec's failure record or its backend from the calling goroutine. It appends
+// the failure to a mutex-protected pending list, and the spec goroutine folds that list into the
+// case at the settle points where ctx.Go task failures are already folded: after the body, after the
+// AfterEach hooks, and after the cleanups ran. On a real *testing.T the report itself still goes
+// straight to the test from the calling goroutine (testing.T is safe for concurrent use), so its
+// file:line attribution is unchanged; on the other engines the caller's location is captured at the
+// Errorf call and carried with the failure.
+//
+// Message rule. The first failure's message is the one reported, and a later Errorf never replaces it:
+//
+//   - Without task or cleanup state, failures apply in call order: the first Errorf, or the assertion
+//     that failed before it, is reported. A failed assertion after an Errorf records its own text, as
+//     one assertion's message has always replaced an earlier one's on the sequential engines.
+//   - With task or cleanup state, an Errorf is deferred to the next settle point. A failure the spec
+//     goroutine recorded before that point (a failed assertion in the body) is reported first, then the
+//     first failed assertion of a task, then the deferred Errorf calls in the order they reached the
+//     pending list. Errorf calls made by different goroutines have no defined relative order, so the
+//     message of concurrent Errorf calls is one of theirs, and which one may vary between runs.
+//   - Because the fold happens at a settle point, ctx.hasFailed-based reactions such as FailFast see a
+//     deferred Errorf at the end of the case, not immediately after the call.
 //
 // Errorf must not be inlined into its caller: Helper marks the function that called it, and an
 // inlined Errorf would mark the user's own frame, moving the reported line to a runner frame.
@@ -32,6 +57,23 @@ func (c *Context) Errorf(format string, args ...any) {
 		c.tb.Helper()
 	}
 	msg := fmt.Sprintf(format, args...)
+	if gs := c.gs; gs != nil {
+		// Task or cleanup state exists: other goroutines may be in Errorf or asserting, so c.failure
+		// and the backend belong to the spec goroutine alone. Record under gs.mu; fold applies it.
+		f := failureRecord{Failed: true, Message: msg}
+		if c.tb == nil {
+			f.File, f.Line, _ = parallelCallerLocation()
+		}
+		gs.mu.Lock()
+		gs.pending = append(gs.pending, f)
+		gs.mu.Unlock()
+		if c.tb != nil {
+			// A real testing.TB is safe for concurrent use, and reporting from here keeps testing's
+			// file:line attribution: nothing is replayed onto it at fold time.
+			c.backend.Errorf("%s", msg)
+		}
+		return
+	}
 	if !c.failure.Failed {
 		c.failure.Message = msg // Errorf never replaces the message of an earlier failure
 	}

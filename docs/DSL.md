@@ -587,8 +587,10 @@ s.It("publishes an event", func(ctx *specs.Context) {
 - **A panic in `fn`** is recovered and reported as an error of that case, with its stack trace, the
   same way a panic in the body is. The remaining cleanups still run. A failed assertion in `fn` ends
   only that cleanup.
-- **Registered from a `ctx.Go` task** it goes onto the spec's list. In a `BeforeAll`/`AfterAll` hook it
-  runs when that hook returns.
+- **Registered from a `ctx.Go` task** it goes onto the spec's list. A failure such as `task.Errorf` that
+  the cleanup reports through that (already finished) task's `Context` still fails the owning spec, on
+  every engine: the spec goroutine folds it after the cleanups ran and before the case is reported.
+  In a `BeforeAll`/`AfterAll` hook the cleanups run when that hook returns.
 - **Not `t.Cleanup`.** go-specs drains its own list, so the order is identical on every engine.
   Consequently, where a real `*testing.T` is bound, `ctx.Cleanup` functions run before anything
   registered with `ctx.T.Cleanup`, which `testing` runs after the subtest function returns.
@@ -599,7 +601,20 @@ s.It("publishes an event", func(ctx *specs.Context) {
 `ctx.Errorf(format, args...)` is a non-fatal failure: it marks the case failed and returns, so the
 case keeps running, like `testing.T.Errorf`. It goes through the same path as a failed assertion, so
 `SpecResultEvent.Failed`, the suite's failed count and `FailFast` see it. The first message is the one
-`SpecResultEvent.Message` reports; a later `Errorf` never replaces it. The failure is attributed to the
+`SpecResultEvent.Message` reports; a later `Errorf` never replaces it.
+
+`Errorf` is safe to call from `ctx.Go` tasks, from the spec goroutine and from cleanups at the same time,
+on the spec's `Context` or on a task's, and on a task `Context` after its task ended (a
+`mock.Controller` created with a task's `Context` does exactly that from its cleanup). A case that never
+used `ctx.Go` or `ctx.Cleanup` records the failure immediately. Once it has task or cleanup state,
+`Errorf` only appends the failure to a mutex-protected list; the spec goroutine folds that list at the
+settle points where task failures are folded (after the body, after `AfterEach`, after the cleanups).
+On a real `*testing.T` the report itself still goes straight to the test, so its `file:line` is
+unchanged; elsewhere the caller's location is captured at the call. The reported message is then: a
+failure the spec goroutine already recorded (a failed assertion in the body), else a task's failed
+assertion, else the first deferred `Errorf` in the order the calls reached the list. `Errorf` calls from
+different goroutines have no defined order, so with concurrent callers the message is one of theirs.
+`FailFast` sees a deferred `Errorf` at the end of the case, not right after the call. The failure is attributed to the
 caller of `Errorf`: on a real `*testing.T` through helper marking, on `Builder.ItParallel` and
 `RunParallel` through the stack walk that skips go-specs' own frames (the `specs`, `snapshots` and
 `mock` packages). `ctx.Helper()` delegates to the backend's `Helper` and is a no-op where there is none.
