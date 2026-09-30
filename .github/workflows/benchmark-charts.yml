@@ -163,7 +163,15 @@ jobs:
           branch: chore/benchmark-charts
           delete-branch: true
           base: develop
-          # pr-meta exempts this branch, and the label keeps it out of the release notes.
+          # Commit through the GitHub API so the commit is signed and attributed to the token's
+          # identity. Without it the commit is authored as github.actor (whoever pushed to
+          # develop) and unsigned, which develop's `require_extra_approval_for_unattributed_changes`
+          # ruleset setting treats as unattributable and blocks for an extra approval (see #368).
+          # Signing only works with github.token or a GitHub App token: with a PAT the PR still
+          # opens but the commit stays unsigned.
+          sign-commits: true
+          # `kind/chore` satisfies pr-meta (which only exempts `sync/*` branches), and
+          # `skip-changelog` keeps the PR out of the release notes.
           labels: skip-changelog,kind/chore
           title: "chore: update benchmark charts"
           body: >-

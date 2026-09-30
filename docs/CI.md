@@ -135,6 +135,9 @@ hand-edited section next to a generated changelog invites new hand-written entri
 - `ORG_CHECKOUT_TOKEN` (optional): an organization token, used by `release.yml`'s `sync-develop` and
   `benchmark-charts.yml`'s `publish` to open pull requests that trigger CI. Without it they fall back
   to `github.token`, and the pull request has to be closed and reopened to run CI.
+  `publish` also sets `sign-commits: true`, so the chart commit is signed and attributed to the token's
+  identity (github.token or a GitHub App token; a PAT leaves it unsigned), which keeps `develop`'s
+  "extra approval for unattributed changes" ruleset setting from blocking the rolling PR.
 - `SLACK_BOT_TOKEN` (secret) and `SLACK_CHANNEL` (variable), both optional: enable `notify`.
 - Nothing else. There is no release GitHub App any more: `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`
   and the App's bypass entries on the rulesets can be deleted.
