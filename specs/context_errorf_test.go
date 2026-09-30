@@ -132,6 +132,23 @@ func cleanupRealTBody(t *testing.T, engine string) {
 		fmt.Printf("HELPER_LINE=%d\n", line+2) // the helper call is two lines below Caller(0)
 		errorfThroughHelper(ctx, "helper-msg")
 	}
+	storm := func(ctx *Context) {
+		ctx.Cleanup(func() {})
+		for i := 0; i < 4; i++ {
+			i := i
+			ctx.Go(func(*Context) {
+				for j := 0; j < 10; j++ {
+					ctx.Errorf("storm-%d-%d", i, j) // the spec's ctx, from a task goroutine
+				}
+			})
+		}
+		ctx.Errorf("storm-body")
+	}
+	taskCleanup := func(ctx *Context) {
+		ctx.Go(func(task *Context) {
+			task.Cleanup(func() { task.Errorf("taskclean-msg") })
+		})
+	}
 	rep := &recordingReporter{}
 	switch engine {
 	case "spec", "specparallel":
@@ -149,6 +166,8 @@ func cleanupRealTBody(t *testing.T, engine string) {
 			it(s, "cleanuppanic", cleanupPanics)
 			it(s, "errorf", errorf)
 			it(s, "helpererrorf", helperErrorf)
+			it(s, "storm", storm)
+			it(s, "taskcleanup", taskCleanup)
 		})
 	case "builder", "builderparallel":
 		b := NewBuilder()
@@ -166,6 +185,8 @@ func cleanupRealTBody(t *testing.T, engine string) {
 			it("cleanuppanic", cleanupPanics)
 			it("errorf", errorf)
 			it("helpererrorf", helperErrorf)
+			it("storm", storm)
+			it("taskcleanup", taskCleanup)
 		})
 		NewRunnerWithReporter(b.Build(), "suite", rep).Run(t)
 	}
@@ -226,6 +247,12 @@ func runCleanupRealT(t *testing.T, testName, engine string) {
 	}
 	if r := res("errorf"); !strings.Contains(r, "failed=true") || !strings.Contains(r, `msg="errorf-msg 7"`) {
 		t.Errorf("errorf must fail with exactly the Errorf text as SpecResultEvent.Message: %s", r)
+	}
+	if r := res("storm"); !strings.Contains(r, "failed=true") || !strings.Contains(r, `msg="storm-`) {
+		t.Errorf("Errorf from ctx.Go tasks must fail the case with one of their messages: %s", r)
+	}
+	if r := res("taskcleanup"); !strings.Contains(r, "failed=true") || !strings.Contains(r, `msg="taskclean-msg"`) {
+		t.Errorf("Errorf from a task's cleanup must fail the spec: %s", r)
 	}
 	m := regexp.MustCompile(`ERRORF_LINE=(\d+)`).FindStringSubmatch(out)
 	if m == nil {
