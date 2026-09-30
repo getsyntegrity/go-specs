@@ -18,12 +18,14 @@ import (
 // deterministic: the same value gives the same text whatever order its maps were built in.
 
 // workClockLimit is the coarse wall-clock sanity limit of one message. The node count is the real
-// assertion; this only catches a cost the node count does not see.
+// assertion; this only catches a cost the node count does not see. A healthy message takes 40-60ms
+// on a shared CI runner (the old 50ms limit flaked at 59ms), so the limit sits several times above
+// that: it still fails on a cost that is orders of magnitude off (seconds), not on runner noise.
 func workClockLimit() time.Duration {
 	if raceEnabled {
 		return 500 * time.Millisecond
 	}
-	return 50 * time.Millisecond
+	return 250 * time.Millisecond
 }
 
 // nestedOne builds the value of the original finding: a [3]any that holds a 14-entry map whose 13
