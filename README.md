@@ -6,7 +6,7 @@
 
 ## Project status
 
-go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
+go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG](CHANGELOG/README.md) before upgrading.
 
 ## Description
 

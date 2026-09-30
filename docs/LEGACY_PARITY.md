@@ -5,7 +5,7 @@
 > property-exploration subsystem in [#204](https://github.com/getsyntegrity/go-specs/issues/204)
 > (`Paths`, `PathBuilder`, `PathGenerator`, `PathVar`, `PathBuilder.IntRange`, and related
 > exploration machinery), which the table below still lists as present — that
-> capability is no longer part of go-specs. See [CHANGELOG.md](../CHANGELOG.md) for
+> capability is no longer part of go-specs. See [CHANGELOG/README.md](../CHANGELOG/README.md) for
 > the current migration note. Nothing else here is affected.
 
 Recorded as part of [#127](https://github.com/getsyntegrity/go-specs/issues/127) (PR-B):

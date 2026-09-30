@@ -1,0 +1,51 @@
+# PR metadata. A separate workflow from ci.yml so that a label change here does not re-run the
+# tests. Required check: "pr-meta".
+#
+# go-specs generates its changelog when a release is cut, from the pull requests merged since the
+# previous tag (.github/scripts/changelog.sh), so a PR does not edit CHANGELOG/. What that script
+# needs from each PR is its `kind/*` label (which section of the notes it goes to) and, optionally,
+# a ```release-note block in the body. The label is the only thing enforced here: the block is
+# optional because the PR title is the fallback note.
+name: pr-meta
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: pr-meta-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Labels and branch names are attacker-controlled text: they only reach the shell through
+      # env vars and are only compared, never evaluated.
+      - name: Exactly one kind/* label
+        env:
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD" = "develop" ] && [ "$BASE" = "main" ]; then
+            echo "Release PR: its notes come from the PRs it includes"; exit 0
+          fi
+          # Bot branches whose PRs carry no note of their own (the sync PR after a release gets its
+          # labels only after it is opened).
+          case "$HEAD" in
+            sync/*) echo "Exempt by branch ($HEAD)"; exit 0 ;;
+          esac
+          kinds=$(tr ',' '\n' <<<"$LABELS" | grep -E '^kind/' || true)
+          count=$(grep -c . <<<"$kinds" || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Set exactly ONE kind/* label (kind/feature, kind/bug, kind/breaking, kind/deprecation, kind/deps, kind/chore, kind/docs or kind/flake); found $count: ${kinds//$'\n'/ }"
+            exit 1
+          fi
+          echo "Kind: $kinds"
