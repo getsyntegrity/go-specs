@@ -536,3 +536,180 @@ func TestCompareMapKeysIsATotalOrder(t *testing.T) {
 		}
 	}
 }
+
+// NaN != NaN, so a NaN key can never be looked up again: MapIndex on the source map returns an invalid
+// Value. The diff therefore keeps each key with its value from MapRange and never looks it up.
+
+type nanStructKey struct {
+	F float64
+	N int
+}
+
+func nanDiffOf(t *testing.T, expected, actual any) string {
+	t.Helper()
+	msg := EqualFailureMessage(expected, actual)
+	if strings.Contains(msg, "nil") || strings.Contains(msg, "invalid") {
+		t.Fatalf("diff shows a missing value:\n%s", msg)
+	}
+	return msg
+}
+
+func TestStructuralDiffShowsValuesOfNaNKeys(t *testing.T) {
+	nan := math.NaN()
+	nan32 := float32(math.NaN())
+	tests := map[string]struct{ expected, actual any }{
+		"float64":   {map[float64]string{nan: "expected"}, map[float64]string{nan: "actual"}},
+		"float32":   {map[float32]string{nan32: "expected"}, map[float32]string{nan32: "actual"}},
+		"struct":    {map[nanStructKey]string{{nan, 1}: "expected"}, map[nanStructKey]string{{nan, 1}: "actual"}},
+		"array":     {map[[2]float64]string{{nan, 1}: "expected"}, map[[2]float64]string{{nan, 1}: "actual"}},
+		"interface": {map[any]string{nan: "expected"}, map[any]string{nan: "actual"}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			msg := nanDiffOf(t, tc.expected, tc.actual)
+			got := diffLines(t, msg)
+			if len(got) != 2 ||
+				!strings.Contains(got[0], `missing in actual (expected "expected")`) ||
+				!strings.Contains(got[1], `unexpected in actual ("actual")`) {
+				t.Fatalf("NaN key must be missing/unexpected with its real values:\n%s", msg)
+			}
+		})
+	}
+}
+
+func TestStructuralDiffOrdersNaNKeysDeterministically(t *testing.T) {
+	build := func(v1, v2 string) map[float64]string {
+		m := map[float64]string{}
+		m[math.NaN()] = v1
+		m[math.NaN()] = v2
+		m[math.Float64frombits(0x7ff8000000000123)] = "payload-" + v1
+		m[math.Float64frombits(0x7ff8000000000456)] = "payload-" + v2
+		m[1] = "one"
+		return m
+	}
+	var first string
+	for i := 0; i < 50; i++ {
+		msg := nanDiffOf(t, build("a", "b"), build("c", "d"))
+		if i == 0 {
+			first = msg
+			for _, want := range []string{`(expected "a")`, `(expected "b")`, `("c")`, `("d")`, "#1]", "#4]"} {
+				if !strings.Contains(msg, want) {
+					t.Fatalf("missing %q in:\n%s", want, msg)
+				}
+			}
+			continue
+		}
+		if msg != first {
+			t.Fatalf("order or ordinals depend on map iteration:\n%s\n---\n%s", first, msg)
+		}
+	}
+}
+
+func TestStructuralDiffKeepsValuesOfOrdinaryKeys(t *testing.T) {
+	msg := EqualFailureMessage(map[string]string{"a": "x", "b": "y"}, map[string]string{"a": "x", "c": "z"})
+	wantLine(t, msg, `  ["b"]: missing in actual (expected "y")`)
+	wantLine(t, msg, `  ["c"]: unexpected in actual ("z")`)
+}
+
+func TestStructuralDiffDoesNotChangeVerdictsOfNaNKeyedMaps(t *testing.T) {
+	nan := math.NaN()
+	a, b := map[float64]int{nan: 1}, map[float64]int{nan: 1}
+	if ValuesEqual(a, b) || reflect.DeepEqual(a, b) || Equal(a).Match(b) {
+		t.Fatal("maps with NaN keys are unequal under reflect.DeepEqual and must stay so")
+	}
+	c, d := map[float64]int{1: 1, 2: 2}, map[float64]int{2: 2, 1: 1}
+	if !ValuesEqual(c, d) || !Equal(c).Match(d) {
+		t.Fatal("equal ordinary maps must still pass")
+	}
+	if structuralDiff(a, a) != "" {
+		t.Fatal("a map compared with itself has no differences")
+	}
+}
+
+func TestStructuralDiffTerminatesOnNaNKeysWithCyclicValues(t *testing.T) {
+	const env = "GO_SPECS_NAN_CYCLE_CHILD"
+	if os.Getenv(env) == "1" {
+		nan := math.NaN()
+		mk := func(tag string) map[float64]any {
+			m1, m2 := map[string]any{"tag": tag}, map[string]any{"tag": tag + "2"}
+			m1["self"], m2["self"] = m1, m2
+			s := make([]any, 1)
+			s[0] = s
+			out := map[float64]any{}
+			out[nan] = m1
+			out[nan] = m2 // same NaN bits, distinct cyclic values
+			out[nan] = s
+			return out
+		}
+		fmt.Println("MSG-BEGIN")
+		fmt.Println(EqualFailureMessage(mk("a"), mk("b")))
+		fmt.Println("MSG-END")
+		return
+	}
+	out := runInSubprocess(t, "TestStructuralDiffTerminatesOnNaNKeysWithCyclicValues", env)
+	if !strings.Contains(out, "MSG-END") || !strings.Contains(out, "missing in actual") ||
+		!strings.Contains(out, "unexpected in actual") {
+		t.Fatalf("child did not finish or lacks the NaN entries:\n%s", out)
+	}
+}
+
+func TestCompareDeepValuesBreaksTiesByValue(t *testing.T) {
+	type node struct {
+		V    int
+		Next *node
+	}
+	iface := func(v any) reflect.Value { return reflect.ValueOf(&v).Elem() }
+	ordered := func(name string, lo, hi any) {
+		t.Helper()
+		l, h := reflect.ValueOf(lo), reflect.ValueOf(hi)
+		if compareDeepValues(l, h) >= 0 || compareDeepValues(h, l) <= 0 {
+			t.Errorf("%s: %v should order before %v", name, lo, hi)
+		}
+	}
+	ordered("strings", "a", "b")
+	ordered("ints", 1, 2)
+	ordered("floats with NaN first", math.NaN(), 1.0)
+	ordered("slice elementwise", []int{1, 2}, []int{1, 3})
+	ordered("slice length", []int{1}, []int{1, 0})
+	ordered("array", [2]string{"a", "a"}, [2]string{"a", "b"})
+	ordered("struct fieldwise", node{V: 1}, node{V: 2})
+	ordered("maps by sorted entries", map[string]int{"a": 1}, map[string]int{"a": 2})
+	ordered("map keys first", map[string]int{"a": 9}, map[string]int{"b": 1})
+	ordered("pointers dereferenced", &node{V: 1}, &node{V: 2})
+	if compareDeepValues(iface(1), iface(1)) != 0 || compareDeepValues(iface(nil), iface(1)) >= 0 {
+		t.Error("interfaces compare by nil-ness then dynamic value")
+	}
+	if compareDeepValues(iface("a"), iface(1)) == 0 {
+		t.Error("different dynamic types must not tie")
+	}
+
+	// Cyclic pointers terminate; a revisited pair compares equal.
+	a, b := &node{V: 1}, &node{V: 1}
+	a.Next, b.Next = a, b
+	if compareDeepValues(reflect.ValueOf(a), reflect.ValueOf(b)) != 0 {
+		t.Error("isomorphic cycles must tie")
+	}
+	c := &node{V: 1}
+	c.Next = &node{V: 2, Next: c}
+	if compareDeepValues(reflect.ValueOf(a), reflect.ValueOf(c)) == 0 {
+		t.Error("cycles with different contents must order")
+	}
+	// Self-containing slices and maps terminate too.
+	s1, s2 := make([]any, 1), make([]any, 1)
+	s1[0], s2[0] = s1, s2
+	_ = compareDeepValues(reflect.ValueOf(s1), reflect.ValueOf(s2))
+	m1, m2 := map[string]any{}, map[string]any{}
+	m1["m"], m2["m"] = m1, m2
+	_ = compareDeepValues(reflect.ValueOf(m1), reflect.ValueOf(m2))
+}
+
+func TestCompareMapKeysOrdersNaNsByBitPattern(t *testing.T) {
+	lo, hi := math.Float64frombits(0x7ff8000000000001), math.Float64frombits(0x7ff8000000000002)
+	if compareMapKeys(reflect.ValueOf(lo), reflect.ValueOf(hi)) >= 0 ||
+		compareMapKeys(reflect.ValueOf(hi), reflect.ValueOf(lo)) <= 0 {
+		t.Error("NaNs with different payloads must order by bit pattern")
+	}
+	if compareMapKeys(reflect.ValueOf(lo), reflect.ValueOf(lo)) != 0 {
+		t.Error("identical NaN bit patterns tie")
+	}
+}

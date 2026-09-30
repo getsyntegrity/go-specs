@@ -2,6 +2,7 @@ package assert
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -278,18 +279,20 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
 		return
 	}
-	// Labels are computed over the union of both maps' keys, sorted once, so a key only in a and a
+	// Entries keep each key with its value from MapRange. A key that is not equal to itself (NaN, or a
+	// struct or array holding one) can never be looked up again, so MapIndex on the source map would
+	// return an invalid Value; only keys that are used to probe the OTHER map go through MapIndex, and
+	// there "not found" is exactly reflect.DeepEqual's verdict.
+	// Labels are computed over the union of both maps' entries, sorted once, so a key only in a and a
 	// key only in b that render alike still get different paths.
-	entries := make([]mapEntry, 0, a.Len()+b.Len())
-	for _, k := range a.MapKeys() {
-		entries = append(entries, mapEntry{key: k, fromA: true})
-	}
-	for _, k := range b.MapKeys() {
-		if !a.MapIndex(k).IsValid() {
-			entries = append(entries, mapEntry{key: k})
+	entries := rangeMapEntries(a, true, make([]mapEntry, 0, a.Len()+b.Len()))
+	bOnly := rangeMapEntries(b, false, nil)
+	for _, e := range bOnly {
+		if !a.MapIndex(e.key).IsValid() {
+			entries = append(entries, e)
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return compareMapKeys(entries[i].key, entries[j].key) < 0 })
+	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(entries[i], entries[j]) < 0 })
 	keys := make([]reflect.Value, len(entries))
 	for i, e := range entries {
 		keys[i] = e.key
@@ -302,24 +305,49 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
 		bv := b.MapIndex(e.key)
 		if !bv.IsValid() {
-			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(a.MapIndex(e.key), 0)))
+			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(e.val, 0)))
 			continue
 		}
-		w.walk(a.MapIndex(e.key), bv, keyPath, depth+1)
+		w.walk(e.val, bv, keyPath, depth+1)
 	}
 	for i, e := range entries {
 		if e.fromA {
 			continue
 		}
 		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
-			fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(b.MapIndex(e.key), 0)))
+			fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(e.val, 0)))
 	}
 }
 
-// mapEntry is one key of the union of two maps and whether the first (expected) map holds it.
+// mapEntry is one key of the union of two maps with its value, and whether the first (expected) map
+// holds it. The value travels with the key because a non-reflexive key cannot be looked up again.
 type mapEntry struct {
-	key   reflect.Value
-	fromA bool
+	key, val reflect.Value
+	fromA    bool
+}
+
+// rangeMapEntries appends every entry of m, in iteration order, using MapRange so no value is fetched
+// through a key.
+func rangeMapEntries(m reflect.Value, fromA bool, dst []mapEntry) []mapEntry {
+	it := m.MapRange()
+	for it.Next() {
+		dst = append(dst, mapEntry{key: it.Key(), val: it.Value(), fromA: fromA})
+	}
+	return dst
+}
+
+// compareMapEntries orders entries by key, then, for keys that still tie (NaNs with the same bit
+// pattern), by a deep comparison of their values, then expected before actual. If all three tie the
+// entries are indistinguishable in key and value, so the rendered text is identical whichever comes
+// first and the output is still deterministic.
+func compareMapEntries(x, y mapEntry) int {
+	if c := compareMapKeys(x.key, y.key); c != 0 {
+		return c
+	}
+	if c := compareDeepValues(x.val, y.val); c != 0 {
+		return c
+	}
+	return cmpBool(!x.fromA, !y.fromA)
 }
 
 // disambiguatedKeyLabels returns the bounded display label of each key, in order. A label shared by
@@ -343,19 +371,19 @@ func disambiguatedKeyLabels(keys []reflect.Value) []string {
 	return labels
 }
 
-// sortedMapKeys orders keys by compareMapKeys, so the same two maps always produce the same diff
-// whatever order the runtime iterates them in.
-func sortedMapKeys(m reflect.Value) []reflect.Value {
-	keys := m.MapKeys()
-	sort.SliceStable(keys, func(i, j int) bool { return compareMapKeys(keys[i], keys[j]) < 0 })
-	return keys
+// sortedMapEntries returns the entries of m ordered by compareMapEntries, so the same two maps always
+// produce the same diff whatever order the runtime iterates them in.
+func sortedMapEntries(m reflect.Value) []mapEntry {
+	entries := rangeMapEntries(m, true, make([]mapEntry, 0, m.Len()))
+	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(entries[i], entries[j]) < 0 })
+	return entries
 }
 
 // compareMapKeys is a total order over every comparable key kind, reading only through reflect (never
 // Interface, so unexported fields are fine). It compares full values, not the bounded rendering, so
 // keys that render alike still order deterministically. Pointers, channels and unsafe pointers order
 // by address and are never dereferenced, so they cannot recurse into a cycle; that order is stable
-// within a run but not across runs. NaN sorts before every number and -0 equals +0.
+// within a run but not across runs. NaN sorts before every number (NaNs among themselves by bit pattern) and -0 equals +0.
 func compareMapKeys(a, b reflect.Value) int {
 	if !a.IsValid() || !b.IsValid() {
 		return cmpBool(a.IsValid(), b.IsValid())
@@ -449,7 +477,7 @@ func cmpFloat(a, b float64) int {
 	an, bn := a != a, b != b
 	switch {
 	case an && bn:
-		return 0
+		return cmpUint(math.Float64bits(a), math.Float64bits(b))
 	case an:
 		return -1
 	case bn:
@@ -565,14 +593,14 @@ func renderValue(v reflect.Value, depth int) string {
 		if depth >= renderMaxDepth {
 			return "map[…]"
 		}
-		keys := sortedMapKeys(v)
-		parts := make([]string, 0, min(len(keys), renderMaxElems)+1)
-		for i, k := range keys {
+		entries := sortedMapEntries(v)
+		parts := make([]string, 0, min(len(entries), renderMaxElems)+1)
+		for i, e := range entries {
 			if i == renderMaxElems {
-				parts = append(parts, fmt.Sprintf("… +%d more", len(keys)-renderMaxElems))
+				parts = append(parts, fmt.Sprintf("… +%d more", len(entries)-renderMaxElems))
 				break
 			}
-			parts = append(parts, renderValue(k, depth+1)+": "+renderValue(v.MapIndex(k), depth+1))
+			parts = append(parts, renderValue(e.key, depth+1)+": "+renderValue(e.val, depth+1))
 		}
 		return "map[" + strings.Join(parts, ", ") + "]"
 	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
@@ -585,10 +613,12 @@ func renderValue(v reflect.Value, depth int) string {
 	}
 }
 
-// containsCycle reports whether v reaches itself through pointers, maps or slices. fmt's %v follows
-// maps and slices without a cycle check (it prints only nested pointers as addresses), so a
-// self-containing map would overflow the stack while the failure header renders it.
-func containsCycle(v reflect.Value) bool {
+// needsBoundedRender reports whether the failure header must use the bounded, deterministic renderer
+// instead of fmt's %v: either v reaches itself through pointers, maps or slices (fmt follows maps and
+// slices without a cycle check, printing only nested pointers as addresses, so a self-containing map
+// would overflow the stack), or a map has a NaN-bearing key (fmt sorts NaN keys as a tie, so their
+// order would depend on map iteration).
+func needsBoundedRender(v reflect.Value) bool {
 	return cycleWalk(v, map[diffVisit]bool{})
 }
 
@@ -618,8 +648,9 @@ func cycleWalk(v reflect.Value, onPath map[diffVisit]bool) bool {
 		case reflect.Pointer:
 			return cycleWalk(v.Elem(), onPath)
 		case reflect.Map:
-			for _, k := range v.MapKeys() {
-				if cycleWalk(k, onPath) || cycleWalk(v.MapIndex(k), onPath) {
+			it := v.MapRange()
+			for it.Next() {
+				if containsNaN(it.Key()) || cycleWalk(it.Key(), onPath) || cycleWalk(it.Value(), onPath) {
 					return true
 				}
 			}
@@ -646,6 +677,33 @@ func cycleWalk(v reflect.Value, onPath map[diffVisit]bool) bool {
 	return false
 }
 
+// containsNaN reports whether a map key is, or holds by value, a floating-point or complex NaN. Such a
+// key is not equal to itself. Pointers are not followed: they compare by address.
+func containsNaN(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return v.Float() != v.Float()
+	case reflect.Complex64, reflect.Complex128:
+		c := v.Complex()
+		return real(c) != real(c) || imag(c) != imag(c)
+	case reflect.Interface:
+		return !v.IsNil() && containsNaN(v.Elem())
+	case reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if containsNaN(v.Index(i)) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if containsNaN(v.Field(i)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isScalarKind(k reflect.Kind) bool {
 	switch k {
 	case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -654,4 +712,143 @@ func isScalarKind(k reflect.Kind) bool {
 		return true
 	}
 	return false
+}
+
+// deepCompareBudget bounds the nodes one compareDeepValues call visits, so a tie-break over a huge
+// value costs a fixed amount. Past it the comparison reports a tie.
+const deepCompareBudget = 10_000
+
+// compareDeepValues is a total-order tie-break over the values of entries whose keys compare equal. It
+// reads only through reflect (never Interface, so unexported fields work) and is cycle-safe: a pointer,
+// map or slice pair already visited compares equal, as in reflect.DeepEqual, and a node budget ends
+// the walk with a tie. Kinds order first, then scalars, strings, arrays and slices element-wise and
+// then by length, structs field-wise, interfaces by dynamic type then value, maps by their sorted
+// entries (key, then value), pointers by their pointees, and funcs, channels and unsafe pointers by
+// nil-ness then address.
+func compareDeepValues(a, b reflect.Value) int {
+	d := deepComparer{budget: deepCompareBudget}
+	return d.compare(a, b)
+}
+
+type deepComparer struct {
+	budget  int
+	visited map[diffVisit]bool
+}
+
+// revisit records a pointer-like pair and reports whether it was already visited.
+func (d *deepComparer) revisit(a, b reflect.Value) bool {
+	if d.visited == nil {
+		d.visited = make(map[diffVisit]bool)
+	}
+	key := diffVisit{a: a.Pointer(), b: b.Pointer(), typ: a.Type()}
+	if a.Kind() == reflect.Slice {
+		key.na, key.nb = a.Len(), b.Len()
+	}
+	if d.visited[key] {
+		return true
+	}
+	d.visited[key] = true
+	return false
+}
+
+func (d *deepComparer) compare(a, b reflect.Value) int {
+	if d.budget <= 0 {
+		return 0
+	}
+	d.budget--
+	if !a.IsValid() || !b.IsValid() {
+		return cmpBool(a.IsValid(), b.IsValid())
+	}
+	if a.Kind() != b.Kind() {
+		return cmpInt(int64(a.Kind()), int64(b.Kind()))
+	}
+	switch a.Kind() {
+	case reflect.Array:
+		for i := 0; i < a.Len(); i++ {
+			if c := d.compare(a.Index(i), b.Index(i)); c != 0 {
+				return c
+			}
+		}
+		return 0
+	case reflect.Struct:
+		for i := 0; i < a.NumField(); i++ {
+			if c := d.compare(a.Field(i), b.Field(i)); c != 0 {
+				return c
+			}
+		}
+		return 0
+	case reflect.Interface:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		ea, eb := a.Elem(), b.Elem()
+		if ta, tb := ea.Type(), eb.Type(); ta != tb {
+			if c := strings.Compare(ta.String(), tb.String()); c != 0 {
+				return c
+			}
+			if c := strings.Compare(ta.PkgPath(), tb.PkgPath()); c != 0 {
+				return c
+			}
+		}
+		return d.compare(ea, eb)
+	case reflect.Pointer:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		if d.revisit(a, b) {
+			return 0
+		}
+		return d.compare(a.Elem(), b.Elem())
+	case reflect.Slice:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		if d.revisit(a, b) {
+			return 0
+		}
+		common := min(a.Len(), b.Len())
+		for i := 0; i < common; i++ {
+			if c := d.compare(a.Index(i), b.Index(i)); c != 0 {
+				return c
+			}
+		}
+		return cmpInt(int64(a.Len()), int64(b.Len()))
+	case reflect.Map:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		if d.revisit(a, b) {
+			return 0
+		}
+		ea, eb := d.sortedEntries(a), d.sortedEntries(b)
+		common := min(len(ea), len(eb))
+		for i := 0; i < common; i++ {
+			if c := compareMapKeys(ea[i].key, eb[i].key); c != 0 {
+				return c
+			}
+			if c := d.compare(ea[i].val, eb[i].val); c != 0 {
+				return c
+			}
+		}
+		return cmpInt(int64(len(ea)), int64(len(eb)))
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		return cmpUint(uint64(a.Pointer()), uint64(b.Pointer()))
+	}
+	// Scalars and strings share compareMapKeys, which is total over them.
+	return compareMapKeys(a, b)
+}
+
+// sortedEntries orders a map's entries by key, then by value with this comparer's shared budget.
+func (d *deepComparer) sortedEntries(m reflect.Value) []mapEntry {
+	entries := rangeMapEntries(m, true, make([]mapEntry, 0, m.Len()))
+	sort.SliceStable(entries, func(i, j int) bool {
+		if c := compareMapKeys(entries[i].key, entries[j].key); c != 0 {
+			return c < 0
+		}
+		return d.compare(entries[i].val, entries[j].val) < 0
+	})
+	return entries
 }

@@ -91,8 +91,8 @@ func EqualFailureMessage(expected, actual any) string {
 		return errorMismatchMessage(expectedErr, actualErr)
 	}
 	var renderedActual, renderedExpected string
-	if containsCycle(reflect.ValueOf(actual)) || containsCycle(reflect.ValueOf(expected)) {
-		// %v would recurse forever through a self-containing map or slice; the diff renderer is bounded.
+	if needsBoundedRender(reflect.ValueOf(actual)) || needsBoundedRender(reflect.ValueOf(expected)) {
+		// %v would recurse forever through a self-containing map or slice and orders NaN keys by iteration; the diff renderer is bounded and deterministic.
 		renderedActual = renderDiffValue(reflect.ValueOf(actual), 0)
 		renderedExpected = renderDiffValue(reflect.ValueOf(expected), 0)
 	} else {
