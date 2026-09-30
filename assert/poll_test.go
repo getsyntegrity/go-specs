@@ -503,3 +503,41 @@ func TestSatisfyKeepsPlainFormattingForOrdinaryValues(t *testing.T) {
 		t.Fatalf("FailureMessage = %q, want %q", got, want)
 	}
 }
+
+// A callback that panics with a self-containing value used to overflow the stack while Message
+// rendered the panic value with a plain %v.
+func TestPollMessageRendersASelfContainingPanicValueSafely(t *testing.T) {
+	values := []struct {
+		name  string
+		value func() any
+	}{
+		{"map", func() any {
+			m := map[string]any{}
+			m["self"] = m
+			return m
+		}},
+		{"slice", func() any {
+			s := make([]any, 1)
+			s[0] = s
+			return s
+		}},
+	}
+	for _, v := range values {
+		t.Run(v.name, func(t *testing.T) {
+			out := runPollChild(t, "panic-"+v.name, Eventually, neverMatches{}, func() any { panic(v.value()) })
+			if out == "" {
+				return
+			}
+			if !strings.Contains(out, "panicked on attempt 1") {
+				t.Fatalf("output lacks the panic verdict:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestPollMessageKeepsPlainFormattingForOrdinaryPanicValues(t *testing.T) {
+	res := Eventually(func() any { panic("boom") }, neverMatches{})
+	if !strings.Contains(res.Message(), ": boom\n") {
+		t.Fatalf("message = %q, want the panic value printed with %%v", res.Message())
+	}
+}

@@ -122,7 +122,7 @@ func (r PollResult) Message() string {
 	case TerminatedCancelled:
 		fmt.Fprintf(&b, "%s: cancelled after %v (%s): %v", r.mode, r.Elapsed, attempts, r.Err)
 	case TerminatedPanic:
-		fmt.Fprintf(&b, "%s: callback or matcher panicked on attempt %d after %v: %v\n%s", r.mode, r.Attempts, r.Elapsed, r.Panic, r.Stack)
+		fmt.Fprintf(&b, "%s: callback or matcher panicked on attempt %d after %v: %s\n%s", r.mode, r.Attempts, r.Elapsed, renderBounded(r.Panic, "%v"), r.Stack)
 	default:
 		fmt.Fprintf(&b, "%s: failed (%s) after %v (%s)", r.mode, r.Termination, r.Elapsed, attempts)
 	}

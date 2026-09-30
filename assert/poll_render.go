@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// Rendering of arbitrary user values in failure messages: the value a poll last observed
-// (PollResult.Message) and the actual of Satisfy.
+// Rendering of arbitrary user values in failure messages: the value a poll last observed and the
+// value a poll callback panicked with (PollResult.Message), and the actual of Satisfy.
 //
 // These values are arbitrary user data, and fmt has no cycle protection: a map that contains itself
 // overflows the stack, which no recover can catch. renderBounded therefore checks the value first. An
@@ -18,10 +18,10 @@ import (
 // and cuts off at a depth and element limit.
 
 const (
-	cycleMarker      = "<cycle>"
-	renderMaxDepth   = 8
-	renderMaxElems   = 16
-	renderNodeBudget = 10_000
+	cycleMarker       = "<cycle>"
+	boundedMaxDepth   = 8
+	boundedMaxElems   = 16
+	boundedNodeBudget = 10_000
 )
 
 // renderObserved renders the value a poll last observed, with %#v when that is safe.
@@ -34,7 +34,7 @@ func renderBounded(v any, verb string) string {
 	if !rv.IsValid() {
 		return fmt.Sprintf(verb, v) // an untyped nil, spelled by fmt as before
 	}
-	w := walker{path: map[visit]bool{}, budget: renderNodeBudget}
+	w := walker{path: map[visit]bool{}, budget: boundedNodeBudget}
 	if w.safe(rv) {
 		return fmt.Sprintf(verb, v)
 	}
@@ -125,7 +125,7 @@ func (r *renderer) write(v reflect.Value, depth int) {
 		r.b.WriteString("nil")
 		return
 	}
-	if depth > renderMaxDepth {
+	if depth > boundedMaxDepth {
 		r.b.WriteString("...")
 		return
 	}
@@ -159,7 +159,7 @@ func (r *renderer) write(v reflect.Value, depth int) {
 			if i > 0 {
 				r.b.WriteString(", ")
 			}
-			if i == renderMaxElems {
+			if i == boundedMaxElems {
 				fmt.Fprintf(r.b, "... %d more", v.Len()-i)
 				break
 			}
@@ -200,7 +200,7 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 		if i > 0 {
 			r.b.WriteString(", ")
 		}
-		if i == renderMaxElems {
+		if i == boundedMaxElems {
 			fmt.Fprintf(r.b, "... %d more", len(entries)-i)
 			break
 		}
