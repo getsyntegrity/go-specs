@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/getsyntegrity/go-specs v0.0.0
-	pgregory.net/rapid v1.2.0
+	pgregory.net/rapid v1.3.0
 )
 
 // The nested module is developed against the parent checkout. A release drops this line and
