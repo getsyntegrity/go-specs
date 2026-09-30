@@ -674,56 +674,6 @@ func TestStructuralDiffTerminatesOnNaNKeysWithCyclicValues(t *testing.T) {
 	}
 }
 
-func TestCompareDeepValuesBreaksTiesByValue(t *testing.T) {
-	type node struct {
-		V    int
-		Next *node
-	}
-	iface := func(v any) reflect.Value { return reflect.ValueOf(&v).Elem() }
-	ordered := func(name string, lo, hi any) {
-		t.Helper()
-		l, h := reflect.ValueOf(lo), reflect.ValueOf(hi)
-		if compareDeepValues(l, h) >= 0 || compareDeepValues(h, l) <= 0 {
-			t.Errorf("%s: %v should order before %v", name, lo, hi)
-		}
-	}
-	ordered("strings", "a", "b")
-	ordered("ints", 1, 2)
-	ordered("floats with NaN first", math.NaN(), 1.0)
-	ordered("slice elementwise", []int{1, 2}, []int{1, 3})
-	ordered("slice length", []int{1}, []int{1, 0})
-	ordered("array", [2]string{"a", "a"}, [2]string{"a", "b"})
-	ordered("struct fieldwise", node{V: 1}, node{V: 2})
-	ordered("maps by sorted entries", map[string]int{"a": 1}, map[string]int{"a": 2})
-	ordered("map keys first", map[string]int{"a": 9}, map[string]int{"b": 1})
-	ordered("pointers dereferenced", &node{V: 1}, &node{V: 2})
-	if compareDeepValues(iface(1), iface(1)) != 0 || compareDeepValues(iface(nil), iface(1)) >= 0 {
-		t.Error("interfaces compare by nil-ness then dynamic value")
-	}
-	if compareDeepValues(iface("a"), iface(1)) == 0 {
-		t.Error("different dynamic types must not tie")
-	}
-
-	// Cyclic pointers terminate; a revisited pair compares equal.
-	a, b := &node{V: 1}, &node{V: 1}
-	a.Next, b.Next = a, b
-	if compareDeepValues(reflect.ValueOf(a), reflect.ValueOf(b)) != 0 {
-		t.Error("isomorphic cycles must tie")
-	}
-	c := &node{V: 1}
-	c.Next = &node{V: 2, Next: c}
-	if compareDeepValues(reflect.ValueOf(a), reflect.ValueOf(c)) == 0 {
-		t.Error("cycles with different contents must order")
-	}
-	// Self-containing slices and maps terminate too.
-	s1, s2 := make([]any, 1), make([]any, 1)
-	s1[0], s2[0] = s1, s2
-	_ = compareDeepValues(reflect.ValueOf(s1), reflect.ValueOf(s2))
-	m1, m2 := map[string]any{}, map[string]any{}
-	m1["m"], m2["m"] = m1, m2
-	_ = compareDeepValues(reflect.ValueOf(m1), reflect.ValueOf(m2))
-}
-
 func TestCompareMapKeysOrdersNaNsByBitPattern(t *testing.T) {
 	lo, hi := math.Float64frombits(0x7ff8000000000001), math.Float64frombits(0x7ff8000000000002)
 	if compareMapKeys(reflect.ValueOf(lo), reflect.ValueOf(hi)) >= 0 ||

@@ -290,12 +290,12 @@ func TestSmallestMapEntriesMatchesAFullSort(t *testing.T) {
 	m[math.NaN()] = "nan"
 	top, total := smallestMapEntries(reflect.ValueOf(m), 5)
 	want := rangeMapEntries(reflect.ValueOf(m), true, nil)
-	sort.SliceStable(want, func(i, j int) bool { return compareMapEntries(want[i], want[j]) < 0 })
+	sort.SliceStable(want, func(i, j int) bool { return compareMapEntries(&want[i], &want[j]) < 0 })
 	if total != len(want) || len(top) != 5 {
 		t.Fatalf("total=%d top=%d, want %d and 5", total, len(top), len(want))
 	}
 	for i := range top {
-		if compareMapEntries(top[i], want[i]) != 0 {
+		if compareMapEntries(&top[i], &want[i]) != 0 {
 			t.Fatalf("entry %d differs from the sorted map", i)
 		}
 	}

@@ -1,6 +1,7 @@
 package assert
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"reflect"
@@ -288,17 +289,23 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 			entries = append(entries, e)
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(entries[i], entries[j]) < 0 })
-	keys := make([]reflect.Value, len(entries))
-	for i, e := range entries {
-		keys[i] = e.key
+	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(&entries[i], &entries[j]) < 0 })
+	units := tiedUnits(entries)
+	keys := make([]reflect.Value, len(units))
+	for i, u := range units {
+		keys[i] = entries[u.first].key
 	}
 	labels := disambiguatedKeyLabels(keys, w.methods)
-	for i, e := range entries {
+	for i, u := range units {
+		e := entries[u.first]
+		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
+		if u.n > 1 {
+			w.add(keyPath, ambiguityDetail(entries[u.first:u.first+u.n]))
+			continue
+		}
 		if !e.fromA {
 			continue
 		}
-		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
 		bv := b.MapIndex(e.key)
 		if !bv.IsValid() {
 			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", w.render(e.val)))
@@ -306,8 +313,9 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		}
 		w.walk(e.val, bv, keyPath, depth+1)
 	}
-	for i, e := range entries {
-		if e.fromA {
+	for i, u := range units {
+		e := entries[u.first]
+		if u.n > 1 || e.fromA {
 			continue
 		}
 		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
@@ -315,11 +323,70 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	}
 }
 
+// tiedUnit is a run of sorted entries reported as one line: a single entry, or an ambiguity group.
+type tiedUnit struct{ first, n int }
+
+// tiedUnits splits sorted entries into units. Entries with the same key whose value fingerprints tie
+// while truncated cannot be told apart within the budget and form one group; every other entry is a
+// unit of its own (entries with equal complete fingerprints are identical, so each keeps its own
+// ordinal and the text does not depend on which comes first).
+func tiedUnits(entries []mapEntry) []tiedUnit {
+	units := make([]tiedUnit, 0, len(entries))
+	for i := 0; i < len(entries); {
+		j := i + 1
+		for j < len(entries) && indistinguishable(&entries[i], &entries[j]) {
+			j++
+		}
+		units = append(units, tiedUnit{first: i, n: j - i})
+		i = j
+	}
+	return units
+}
+
+// ambiguityDetail is the one line that stands for a group of entries that cannot be told apart. It
+// carries no value: the rendered text of such entries could differ between them, which would make the
+// line depend on which one was picked.
+func ambiguityDetail(group []mapEntry) string {
+	fromA := 0
+	for _, e := range group {
+		if e.fromA {
+			fromA++
+		}
+	}
+	fromB := len(group) - fromA
+	head := fmt.Sprintf("%d entries indistinguishable within the diagnostic budget", len(group))
+	switch {
+	case fromB == 0:
+		return fmt.Sprintf("%s: all %d missing in actual", head, fromA)
+	case fromA == 0:
+		return fmt.Sprintf("%s: all %d unexpected in actual", head, fromB)
+	}
+	return fmt.Sprintf("%s: %d missing in actual, %d unexpected in actual", head, fromA, fromB)
+}
+
 // mapEntry is one key of the union of two maps with its value, and whether the first (expected) map
 // holds it. The value travels with the key because a non-reflexive key cannot be looked up again.
 type mapEntry struct {
 	key, val reflect.Value
 	fromA    bool
+	fp       *valueFingerprint // computed on first need, only for entries whose key ties
+	// ambiguous is set by a renderer's selection when another entry with the same key has a
+	// value it cannot tell apart from this one, so this entry's value is not printed.
+	ambiguous bool
+}
+
+// fingerprint returns the entry's value fingerprint, computing it once.
+func (e *mapEntry) fingerprint() *valueFingerprint {
+	if e.fp == nil {
+		e.fp = newValueFingerprint(e.val)
+	}
+	return e.fp
+}
+
+// indistinguishable reports two entries with the same key whose values agree on everything the
+// fingerprint budget could see, without being known to be equal.
+func indistinguishable(x, y *mapEntry) bool {
+	return compareMapKeys(x.key, y.key) == 0 && fingerprintsAmbiguous(x.fingerprint(), y.fingerprint())
 }
 
 // rangeMapEntries appends every entry of m, in iteration order, using MapRange so no value is fetched
@@ -333,14 +400,15 @@ func rangeMapEntries(m reflect.Value, fromA bool, dst []mapEntry) []mapEntry {
 }
 
 // compareMapEntries orders entries by key, then, for keys that still tie (NaNs with the same bit
-// pattern), by a deep comparison of their values, then expected before actual. If all three tie the
-// entries are indistinguishable in key and value, so the rendered text is identical whichever comes
-// first and the output is still deterministic.
-func compareMapEntries(x, y mapEntry) int {
+// pattern), by the fingerprint of their values (see tiebreak.go), then expected before actual. The
+// fingerprint is computed once per entry and the comparison reads nothing else, so it is a consistent
+// strict weak order. Entries that tie on all three are identical in key and value, or, when their
+// fingerprints are truncated, indistinguishable within the budget: renderers then print no value.
+func compareMapEntries(x, y *mapEntry) int {
 	if c := compareMapKeys(x.key, y.key); c != 0 {
 		return c
 	}
-	if c := compareDeepValues(x.val, y.val); c != 0 {
+	if c := compareFingerprints(x.fingerprint(), y.fingerprint()); c != 0 {
 		return c
 	}
 	return cmpBool(!x.fromA, !y.fromA)
@@ -383,6 +451,12 @@ func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 		keySlot = reflect.New(m.Type().Key()).Elem()
 		valSlot = reflect.New(m.Type().Elem()).Elem()
 	}
+	// Ties on the key are broken by the fingerprint of the value (tiebreak.go). It is built in one
+	// reusable scratch buffer, so an entry that ties but stays out of the window allocates nothing;
+	// only an entry that enters the window keeps a copy. An entry that ties a window entry while
+	// truncated cannot be told apart from it: both are flagged ambiguous and print no value.
+	var scratch fpBuilder
+	var scratchFP valueFingerprint
 	for it := m.MapRange(); it.Next(); {
 		total++
 		key, valLoaded := keySlot, false
@@ -401,13 +475,22 @@ func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 			}
 			return valSlot
 		}
+		var fp *valueFingerprint
+		ambiguous := false
 		// The value is only fetched when the key ties or the entry enters the window, so an entry
 		// that is clearly out costs one key comparison and no value copy.
 		pos := len(top)
 		for pos > 0 {
 			c := compareMapKeys(key, top[pos-1].key)
 			if c == 0 {
-				c = compareMapEntries(mapEntry{key: key, val: value(), fromA: true}, top[pos-1])
+				if fp == nil {
+					scratchFP = scratch.compute(value())
+					fp = &scratchFP
+				}
+				c = compareFingerprints(fp, top[pos-1].fingerprint())
+				if c == 0 && !fp.complete {
+					top[pos-1].ambiguous, ambiguous = true, true
+				}
 			}
 			if c >= 0 {
 				break
@@ -421,7 +504,10 @@ func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 			top = append(top, mapEntry{})
 		}
 		copy(top[pos+1:], top[pos:])
-		top[pos] = mapEntry{key: detached(key, reuse), val: detached(value(), reuse), fromA: true}
+		top[pos] = mapEntry{key: detached(key, reuse), val: detached(value(), reuse), fromA: true, ambiguous: ambiguous}
+		if fp != nil {
+			top[pos].fp = &valueFingerprint{data: bytes.Clone(fp.data), complete: fp.complete}
+		}
 	}
 	return top, total
 }
@@ -689,7 +775,7 @@ func (r *diffRenderer) render(v reflect.Value, depth int) string {
 		entries, total := smallestMapEntries(v, r.lim.maxElems)
 		parts := make([]string, 0, len(entries)+1)
 		for _, e := range entries {
-			parts = append(parts, r.render(e.key, depth+1)+": "+r.render(e.val, depth+1))
+			parts = append(parts, r.render(e.key, depth+1)+": "+r.renderEntryValue(e, depth+1))
 			if r.nodes.hit {
 				return "map[" + strings.Join(parts, ", ") + "]"
 			}
@@ -706,6 +792,15 @@ func (r *diffRenderer) render(v reflect.Value, depth int) string {
 	default:
 		return r.leaf(v)
 	}
+}
+
+// renderEntryValue renders the value of a map entry, or the ambiguity marker when another entry with
+// the same key cannot be told apart from it within the fingerprint budget.
+func (r *diffRenderer) renderEntryValue(e mapEntry, depth int) string {
+	if e.ambiguous {
+		return ambiguousValueMarker
+	}
+	return r.render(e.val, depth)
 }
 
 // leaf renders a scalar. A named scalar with methods keeps its String text on the ordinary path (a
@@ -732,140 +827,4 @@ func (r *diffRenderer) leaf(v reflect.Value) string {
 		return strconv.FormatComplex(v.Complex(), 'g', -1, 128)
 	}
 	return "<" + v.Type().String() + ">"
-}
-
-// deepCompareBudget bounds the nodes one compareDeepValues call visits, so a tie-break over a huge
-// value costs a fixed amount. Past it the comparison reports a tie.
-const deepCompareBudget = 10_000
-
-// compareDeepValues is a total-order tie-break over the values of entries whose keys compare equal. It
-// reads only through reflect (never Interface, so unexported fields work) and is cycle-safe: a pointer,
-// map or slice pair already visited compares equal, as in reflect.DeepEqual, and a node budget ends
-// the walk with a tie. Kinds order first, then scalars, strings, arrays and slices element-wise and
-// then by length, structs field-wise, interfaces by dynamic type then value, maps by their sorted
-// entries (key, then value), pointers by their pointees, and funcs, channels and unsafe pointers by
-// nil-ness then address.
-func compareDeepValues(a, b reflect.Value) int {
-	d := deepComparer{budget: deepCompareBudget}
-	return d.compare(a, b)
-}
-
-type deepComparer struct {
-	budget  int
-	visited map[refPair]bool
-}
-
-// revisit records a pointer-like pair and reports whether it was already visited.
-func (d *deepComparer) revisit(a, b reflect.Value) bool {
-	if d.visited == nil {
-		d.visited = make(map[refPair]bool)
-	}
-	key := refPairOf(a, b)
-	if d.visited[key] {
-		return true
-	}
-	d.visited[key] = true
-	return false
-}
-
-func (d *deepComparer) compare(a, b reflect.Value) int {
-	if d.budget <= 0 {
-		return 0
-	}
-	d.budget--
-	if !a.IsValid() || !b.IsValid() {
-		return cmpBool(a.IsValid(), b.IsValid())
-	}
-	if a.Kind() != b.Kind() {
-		return cmpInt(int64(a.Kind()), int64(b.Kind()))
-	}
-	switch a.Kind() {
-	case reflect.Array:
-		for i := 0; i < a.Len(); i++ {
-			if c := d.compare(a.Index(i), b.Index(i)); c != 0 {
-				return c
-			}
-		}
-		return 0
-	case reflect.Struct:
-		for i := 0; i < a.NumField(); i++ {
-			if c := d.compare(a.Field(i), b.Field(i)); c != 0 {
-				return c
-			}
-		}
-		return 0
-	case reflect.Interface:
-		if a.IsNil() || b.IsNil() {
-			return cmpBool(!a.IsNil(), !b.IsNil())
-		}
-		ea, eb := a.Elem(), b.Elem()
-		if ta, tb := ea.Type(), eb.Type(); ta != tb {
-			if c := strings.Compare(ta.String(), tb.String()); c != 0 {
-				return c
-			}
-			if c := strings.Compare(ta.PkgPath(), tb.PkgPath()); c != 0 {
-				return c
-			}
-		}
-		return d.compare(ea, eb)
-	case reflect.Pointer:
-		if a.IsNil() || b.IsNil() {
-			return cmpBool(!a.IsNil(), !b.IsNil())
-		}
-		if d.revisit(a, b) {
-			return 0
-		}
-		return d.compare(a.Elem(), b.Elem())
-	case reflect.Slice:
-		if a.IsNil() || b.IsNil() {
-			return cmpBool(!a.IsNil(), !b.IsNil())
-		}
-		if d.revisit(a, b) {
-			return 0
-		}
-		common := min(a.Len(), b.Len())
-		for i := 0; i < common; i++ {
-			if c := d.compare(a.Index(i), b.Index(i)); c != 0 {
-				return c
-			}
-		}
-		return cmpInt(int64(a.Len()), int64(b.Len()))
-	case reflect.Map:
-		if a.IsNil() || b.IsNil() {
-			return cmpBool(!a.IsNil(), !b.IsNil())
-		}
-		if d.revisit(a, b) {
-			return 0
-		}
-		ea, eb := d.sortedEntries(a), d.sortedEntries(b)
-		common := min(len(ea), len(eb))
-		for i := 0; i < common; i++ {
-			if c := compareMapKeys(ea[i].key, eb[i].key); c != 0 {
-				return c
-			}
-			if c := d.compare(ea[i].val, eb[i].val); c != 0 {
-				return c
-			}
-		}
-		return cmpInt(int64(len(ea)), int64(len(eb)))
-	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
-		if a.IsNil() || b.IsNil() {
-			return cmpBool(!a.IsNil(), !b.IsNil())
-		}
-		return cmpUint(uint64(a.Pointer()), uint64(b.Pointer()))
-	}
-	// Scalars and strings share compareMapKeys, which is total over them.
-	return compareMapKeys(a, b)
-}
-
-// sortedEntries orders a map's entries by key, then by value with this comparer's shared budget.
-func (d *deepComparer) sortedEntries(m reflect.Value) []mapEntry {
-	entries := rangeMapEntries(m, true, make([]mapEntry, 0, m.Len()))
-	sort.SliceStable(entries, func(i, j int) bool {
-		if c := compareMapKeys(entries[i].key, entries[j].key); c != 0 {
-			return c < 0
-		}
-		return d.compare(entries[i].val, entries[j].val) < 0
-	})
-	return entries
 }

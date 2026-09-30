@@ -154,8 +154,15 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 		if c := strings.Compare(entries[i].key, entries[j].key); c != 0 {
 			return c < 0
 		}
-		return compareMapEntries(entries[i].pair, entries[j].pair) < 0
+		return compareMapEntries(&entries[i].pair, &entries[j].pair) < 0
 	})
+	// Entries with the same key whose values the fingerprint cannot tell apart print no value: which
+	// of them comes first is arbitrary, so showing either would make the text depend on it.
+	for i := 1; i < len(entries); i++ {
+		if indistinguishable(&entries[i-1].pair, &entries[i].pair) {
+			entries[i-1].pair.ambiguous, entries[i].pair.ambiguous = true, true
+		}
+	}
 	for i, e := range entries {
 		if i > 0 {
 			r.b.WriteString(", ")
@@ -165,7 +172,11 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 			break
 		}
 		r.b.WriteString(e.key + ":")
-		r.write(e.pair.val, depth+1)
+		if e.pair.ambiguous {
+			r.b.WriteString(ambiguousValueMarker)
+		} else {
+			r.write(e.pair.val, depth+1)
+		}
 		if r.nodes.hit {
 			r.b.WriteString("}")
 			return
