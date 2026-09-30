@@ -127,7 +127,7 @@ func (r PollResult) Message() string {
 		fmt.Fprintf(&b, "%s: failed (%s) after %v (%s)", r.mode, r.Termination, r.Elapsed, attempts)
 	}
 	if r.Attempts > 0 && (r.Termination != TerminatedPanic || r.Last != nil) {
-		fmt.Fprintf(&b, "\n  last observed: %#v", r.Last)
+		fmt.Fprintf(&b, "\n  last observed: %s", fmt.Sprintf("%#v", r.Last))
 	}
 	if r.Failure != "" {
 		fmt.Fprintf(&b, "\n  matcher failure: %s", r.Failure)
@@ -235,6 +235,14 @@ func poll(mode string, untilMatch bool, fn func() any, m Matcher, opts []PollOpt
 	start := cfg.clock.Now()
 	deadline := cfg.clock.NewTimer(cfg.timeout)
 	defer deadline.Stop()
+	// The attempt timer is released by defer so that runtime.Goexit (t.FailNow inside the callback)
+	// cannot leak it. Only the latest timer can still be pending: an earlier one fired to get here.
+	var next Timer
+	defer func() {
+		if next != nil {
+			next.Stop()
+		}
+	}()
 	finish := func(t Termination, passed bool) PollResult {
 		res.Termination, res.Passed = t, passed
 		res.Elapsed = cfg.clock.Now().Sub(start)
@@ -252,15 +260,13 @@ func poll(mode string, untilMatch bool, fn func() any, m Matcher, opts []PollOpt
 			res.Err = err
 			return finish(TerminatedCancelled, false)
 		}
-		next := cfg.clock.NewTimer(cfg.interval)
+		next = cfg.clock.NewTimer(cfg.interval)
 		res.Attempts++
 		matched, panicked := attempt(fn, m, &res)
 		if panicked {
-			next.Stop()
 			return finish(TerminatedPanic, false)
 		}
 		if matched == untilMatch {
-			next.Stop()
 			if untilMatch {
 				return finish(TerminatedMatched, true)
 			}
@@ -268,10 +274,8 @@ func poll(mode string, untilMatch bool, fn func() any, m Matcher, opts []PollOpt
 		}
 		select {
 		case <-deadline.C():
-			next.Stop()
 			return timedOut()
 		case <-cfg.ctx.Done():
-			next.Stop()
 			res.Err = cfg.ctx.Err()
 			return finish(TerminatedCancelled, false)
 		case <-next.C():

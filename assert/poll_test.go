@@ -346,3 +346,35 @@ func TestManualClockTimers(t *testing.T) {
 		t.Fatalf("Now = %v", c.Now())
 	}
 }
+
+func TestPollGoexitInCallbackStopsTheAttemptTimer(t *testing.T) {
+	clock := NewManualClock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Eventually(func() any { runtime.Goexit(); return nil }, Equal(1), WithClock(clock))
+	}()
+	<-done
+	if got := clock.Pending(); got != 0 {
+		t.Fatalf("Pending() = %d after the callback called runtime.Goexit, want 0 (a timer leaked)", got)
+	}
+}
+
+func TestPollReleasesEveryTimerOnEachExitPath(t *testing.T) {
+	clock := NewManualClock()
+	step, _ := stepper(clock, tick, 1)
+	Eventually(step, Equal(1), WithClock(clock))
+	if got := clock.Pending(); got != 0 {
+		t.Errorf("Pending() = %d after a matching Eventually, want 0", got)
+	}
+	step, _ = stepper(clock, tick, 1)
+	Consistently(step, Equal(1), WithClock(clock), WithTimeout(timeout), WithInterval(tick))
+	if got := clock.Pending(); got != 0 {
+		t.Errorf("Pending() = %d after a held Consistently, want 0", got)
+	}
+	Eventually(func() any { panic("boom") }, Equal(1), WithClock(clock))
+	if got := clock.Pending(); got != 0 {
+		t.Errorf("Pending() = %d after a panicking callback, want 0", got)
+	}
+}
+
