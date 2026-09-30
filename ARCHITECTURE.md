@@ -17,7 +17,7 @@ go-specs
 ├── property/    # property testing with replay and shrinking; NESTED MODULE (github.com/getsyntegrity/go-specs/property)
 ├── report/      # event types and reporter (package: github.com/getsyntegrity/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
-├── examples/    # usage examples (package: github.com/getsyntegrity/go-specs/examples)
+├── examples/    # usage reference, one file per feature, indexed in examples/README.md (package: github.com/getsyntegrity/go-specs/examples)
 └── tools/
     └── specs-cli/   # CLI (package: github.com/getsyntegrity/go-specs/tools/specs-cli)
 ```
@@ -33,7 +33,8 @@ go-specs
 - **mock** → (none)
 - **property** (separate module) → assert, pgregory.net/rapid
 - **benchmarks** → specs
-- **examples** → specs, mock
+- **examples** → specs, assert, mock, report, snapshots
+- **property/examples** (in the property module) → property, specs, assert, pgregory.net/rapid
 - **tools/specs-cli** → specs
 
 No cycles: assert, snapshots, and mock do not depend on specs or runner.

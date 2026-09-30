@@ -2,6 +2,8 @@
 
 The go-specs DSL is the user-facing API for defining tests. This document describes each construct and execution order.
 
+Runnable examples of every construct are indexed in [examples/README.md](../examples/README.md).
+
 ## Describe
 
 `Describe` starts a suite or a nested block. It takes a test handle (`*testing.T` or `*testing.B`), a name, and a callback that receives a `*Spec`.
@@ -175,7 +177,7 @@ flowchart TD
 Unlike `BeforeEach`/`AfterEach`, a group's `BeforeAll`/`AfterAll` never run again for a second
 spec in the same group — the whole point is that they run once, no matter how many specs (or
 nested groups' specs) the group contains. See
-[`examples/suite_hooks`](../examples/suite_hooks) for a runnable example sharing one fixture
+[`examples/hooks_test.go`](../examples/hooks_test.go) (`TestHooks_beforeAllAfterAll`) for a runnable example sharing one fixture
 across several specs, and `docs/SUITE_HOOKS_CONTRACT.md` for the full failure-handling contract
 (a failing `BeforeAll` skips the rest of its group but never a sibling group, and a group's
 `AfterAll` is guaranteed once the group was entered, even after a failure).
@@ -221,7 +223,7 @@ specs.Describe(t, "add", func(s *specs.Spec) {
 })
 ```
 
-Every row is an ordinary `It`: its own Go subtest (`go test -run 'TestAdd/add/negative'` runs one row), wrapped by the enclosing `BeforeEach`/`AfterEach`, reported as its own spec and failing on its own. `Table` adds no hierarchy segment (the row above is `add/negative`); wrap it in `s.When` if you want a grouping segment. `examples/table` walks through migrating a plain `t.Run` table test.
+Every row is an ordinary `It`: its own Go subtest (`go test -run 'TestAdd/add/negative'` runs one row), wrapped by the enclosing `BeforeEach`/`AfterEach`, reported as its own spec and failing on its own. `Table` adds no hierarchy segment (the row above is `add/negative`); wrap it in `s.When` if you want a grouping segment. [`examples/table_test.go`](../examples/table_test.go) walks through migrating a plain `t.Run` table test.
 
 Rules, all checked before any row is registered (a rejected table registers nothing, and the panic names the rows by index):
 
@@ -319,7 +321,7 @@ specs.Describe(t, "instrumented store", func(s *specs.Spec) {
 
 runs, per spec, in this order: `outer-before`, then the helper's own before hook, then the spec
 body, then the helper's own after hook (registered after `outer-after`, so LIFO runs it first), then
-`outer-after`. `examples/shared_behaviors/shared_behaviors_test.go` runs exactly this and asserts the
+`outer-after`. [`examples/shared_behaviors_test.go`](../examples/shared_behaviors_test.go) runs exactly this and asserts the
 full order for two specs, so this is verified behavior, not a claim.
 
 No new production API was needed to support this pattern — it already worked before this section was
@@ -716,7 +718,7 @@ because `*specs.Context` satisfies `mock.TB`, it works the same on every engine 
 `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`). The `mock` package still does not import
 `specs`; `NewController` takes a small interface (`Helper`, `Cleanup`, `Errorf`) that `*testing.T`,
 `*testing.B` and `*specs.Context` all satisfy. Runnable versions of everything below are in
-`examples/mocks/`.
+[`examples/mocks_test.go`](../examples/mocks_test.go) and [`examples/spies_test.go`](../examples/spies_test.go).
 
 ### The typed adapter pattern
 
