@@ -10,8 +10,10 @@
 #                  shards, so one slow package cannot dominate the wall time
 #   test (N)    -> each shard on its own runner, in parallel
 #   test-report -> merges coverage, publishes the slowest tests, stores timings for the next run
-#   race        -> `go test -race ./...` (not sharded)
-#   modules     -> build, vet, test and race of the nested module (property)
+#   race        -> `go test -race ./...` (not sharded). Merges only: push to develop or main (and
+#                  manual runs), never on pull requests, so feature and hotfix PRs stay fast.
+#                  The same rule applies to the race steps of modules and bench-smoke.
+#   modules     -> build, vet and test of the nested module (property); race on merges only
 #
 # Static and release-shape checks: flow (only develop or hotfix/* may target main, and the version
 # a merge to main would publish), verify (module path, gofmt, vet, build, CHANGELOG.md structure,
@@ -22,15 +24,16 @@
 # race-checks the goroutine-spawning ones) and report-cli (runs the documented go-specs-report flow
 # for real). See the comments on each.
 #
-# `push` to develop: validates the real result of a merge and stores the test timings that PRs use
-# to split the shards (caches saved from the default branch are visible to every PR). It replaces
+# `push` to develop or main: validates the real result of a merge, runs the race detector (skipped
+# on PRs), and on develop stores the test timings that PRs use to split the shards (caches saved
+# from the default branch are visible to every PR). It replaces
 # the old "no push trigger" rule (pr-gated-pipeline.md Decision 1), whose main reason was the
 # release-prep commit that no longer exists.
 name: ci
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
   pull_request:
     branches: [develop, main]
     # labeled/unlabeled: recomputes the version when the release:* labels change
@@ -313,10 +316,12 @@ jobs:
           key: test-timings-${{ github.run_id }}
 
   # The race detector compiles everything instrumented, the slowest step of this file, so it is
-  # its own job with its own build-cache flavour.
+  # its own job with its own build-cache flavour. It runs on merges (push to develop or main) and
+  # manual runs only: pull requests skip it to keep feature and hotfix feedback fast, and ci-ok
+  # accepts the skip.
   race:
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.outputs.go == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -332,8 +337,8 @@ jobs:
   # The property module is a nested Go module (property/go.mod), so `./...` at the root does not
   # reach it: each entry of the matrix is built, vetted and tested on its own. Plain `go test`
   # replays seeds and committed corpus files only and runs no fuzz campaign (that is fuzz.yml's
-  # job), so it is bounded and deterministic. The race detector runs in the same job: the module is
-  # small, so a separate job would only repeat the toolchain setup.
+  # job), so it is bounded and deterministic. The race detector runs in the same job (the module is
+  # small, so a separate job would only repeat the toolchain setup), on merges only, like `race`.
   modules:
     name: modules (${{ matrix.dir }})
     needs: plan
@@ -359,6 +364,11 @@ jobs:
           go build ./...
           go vet ./...
           go test "${flags[@]}" ./...
+      - name: Test with race detector
+        if: github.event_name != 'pull_request'
+        working-directory: ${{ matrix.dir }}
+        run: |
+          read -ra flags <<<"$TESTFLAGS"
           go test -race "${flags[@]}" ./...
 
   bench-smoke:
@@ -387,8 +397,9 @@ jobs:
       # BenchmarkFalseSharing_* (specs/parallel_false_sharing_bench_test.go) and
       # BenchmarkRunner_MinimalParallel_* (benchmarks/minimal_and_buildsuite_bench_test.go). The
       # selector is scoped to them because -race adds real per-goroutine overhead; widen it if a
-      # future benchmark reaches a new concurrency entry point.
+      # future benchmark reaches a new concurrency entry point. Merges only, like `race`.
       - name: Race-check goroutine-spawning benchmarks
+        if: github.event_name != 'pull_request'
         run: go test -race -run='^$' -bench='FalseSharing|MinimalParallel' -benchtime=1x ./specs/... ./benchmarks/...
 
   # AC-23 of #146: docs/REPORTING.md's "Running it in CI with go-specs-report" section is not just

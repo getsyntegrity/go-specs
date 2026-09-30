@@ -23,7 +23,7 @@ CONTRIBUTING.md's Branching Model. The design notes and the decisions behind it 
 
 | File | Trigger(s) | Job(s) | Purpose |
 |---|---|---|---|
-| `ci.yml` | `pull_request` (`develop`, `main`), `push` (`develop`), `workflow_dispatch` | `flow`, `verify`, `lint`, `plan`, `test (shard N)`, `test-report`, `race`, `modules (property)`, `bench-smoke`, `report-cli`, `tidy`, `api`, `vuln`, `goreleaser`, `dependency-review` (PR-only), `ci-ok` | The gate. See "What `ci.yml` checks". |
+| `ci.yml` | `pull_request` (`develop`, `main`), `push` (`develop`, `main`), `workflow_dispatch` | `flow`, `verify`, `lint`, `plan`, `test (shard N)`, `test-report`, `race` (merges only), `modules (property)`, `bench-smoke`, `report-cli`, `tidy`, `api`, `vuln`, `goreleaser`, `dependency-review` (PR-only), `ci-ok` | The gate. See "What `ci.yml` checks". |
 | `pr-meta.yml` | `pull_request` (`develop`, `main`) | `pr-meta` | A PR must change `CHANGELOG.md` unless exempt (`skip-changelog` or `kind/deps` label, a `sync/*`, `dependabot/*` or `chore/benchmark-charts` branch, or the `develop` → `main` release PR). |
 | `release.yml` | `push` (`main`), `workflow_dispatch` (re-run) | `release`, `sync-develop`, `notify` | Tag, GitHub Release, installability check, then a pull request into `develop`. See "Release flow". |
 | `security.yml` | `push` (`develop`), nightly `schedule`, `workflow_dispatch` | `codeql (go)`, `codeql (actions)`, `govulncheck-strict`, `notify` | Static analysis and strict vulnerability scan. Warns, never blocks. The `actions` leg scans the workflow YAML itself for script injection. |
@@ -52,8 +52,15 @@ throwaway git repositories (`ci.yml`'s `verify` job runs it too).
   them fresh). `plan` skips the compile-heavy jobs for a PR that only touches top-level Markdown,
   `docs/` or the issue/PR templates; `ci-ok` still reports, because a skipped job counts as
   success.
-- **`race`**, **`modules`** (the nested `property` module: build, vet, test, race), **`bench-smoke`**
-  (every benchmark once, plus a race-checked run of the goroutine-spawning ones), **`report-cli`**
+- **Race detector, merges only.** The `race` job, the race step of `modules` and the race-checked
+  benchmark step of `bench-smoke` run on `push` to `develop` or `main` (the merge of a PR) and on
+  `workflow_dispatch`, never on pull requests. `-race` instruments the whole build and is the
+  slowest part of the pipeline, so feature and hotfix PRs skip it to keep feedback fast; a race is
+  caught on the merge instead. Need it on a PR? Run `make test-race` locally or trigger the
+  workflow manually on the branch (`gh workflow run ci.yml --ref <branch>`).
+- **`race`**, **`modules`** (the nested `property` module: build, vet, test; race on merges),
+  **`bench-smoke`** (every benchmark once; on merges also a race-checked run of the
+  goroutine-spawning ones), **`report-cli`**
   (runs the `go-specs-report` flow documented in `docs/REPORTING.md` for real, against the
   `report/coordination` fixtures; green only when `go test` is red and `finalize` succeeds with the
   expected totals), **`tidy`**, **`vuln`** (`govulncheck`), **`goreleaser`** (`goreleaser check`
