@@ -3,12 +3,16 @@ package assert
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 	"os/exec"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // Structural diffs are built only after a failed comparison, from EqualFailureMessage. These tests
@@ -402,6 +406,133 @@ func TestStructuralDiffOrdersKeysSharingALongPrefixByFullKey(t *testing.T) {
 			}
 		} else if msg != first {
 			t.Fatalf("order depends on map iteration:\n%s\n---\n%s", first, msg)
+		}
+	}
+}
+
+// diffWideKey has more fields than renderMaxElems, so its bounded rendering hides the last ones.
+type diffWideKey struct{ A, B, C, D, E, F int }
+
+func TestStructuralDiffOrdersStructKeysDifferingBeyondTheRenderedFields(t *testing.T) {
+	k1 := diffWideKey{1, 2, 3, 4, 1, 0}
+	k2 := diffWideKey{1, 2, 3, 4, 2, 0}
+	k3 := diffWideKey{1, 2, 3, 4, 2, 1}
+	var first string
+	for i := 0; i < 50; i++ {
+		expected := map[diffWideKey]int{k3: 3, k2: 2, k1: 1}
+		actual := map[diffWideKey]int{k3: 103, k2: 102, k1: 101}
+		msg := EqualFailureMessage(expected, actual)
+		if i == 0 {
+			first = msg
+			got := diffLines(t, msg)
+			if len(got) != 3 || !strings.HasSuffix(got[0], "expected 1, actual 101") ||
+				!strings.HasSuffix(got[1], "expected 2, actual 102") || !strings.HasSuffix(got[2], "expected 3, actual 103") {
+				t.Fatalf("struct keys are not ordered by all their fields:\n%s", msg)
+			}
+			paths := map[string]bool{}
+			for _, l := range got {
+				paths[strings.SplitN(l, ": expected", 2)[0]] = true
+			}
+			if len(paths) != 3 {
+				t.Fatalf("struct key paths are not distinct:\n%s", msg)
+			}
+		} else if msg != first {
+			t.Fatalf("order depends on map iteration:\n%s\n---\n%s", first, msg)
+		}
+	}
+}
+
+func TestStructuralDiffDisambiguatesLongKeysSharingAPrefix(t *testing.T) {
+	prefix := strings.Repeat("k", diffMaxValueRunes*2)
+	var first string
+	for i := 0; i < 50; i++ {
+		expected := map[string]int{prefix + "B": 2, prefix + "A": 1}
+		actual := map[string]int{prefix + "B": 102, prefix + "A": 101}
+		msg := EqualFailureMessage(expected, actual)
+		if i == 0 {
+			first = msg
+			got := diffLines(t, msg)
+			if len(got) != 2 || !strings.Contains(got[0], " #1]: expected 1, actual 101") ||
+				!strings.Contains(got[1], " #2]: expected 2, actual 102") {
+				t.Fatalf("colliding key paths carry no ordinal, in key order:\n%s", msg)
+			}
+		} else if msg != first {
+			t.Fatalf("output depends on map iteration:\n%s\n---\n%s", first, msg)
+		}
+	}
+}
+
+func TestStructuralDiffDisambiguatesMissingAndUnexpectedKeysThatRenderAlike(t *testing.T) {
+	prefix := strings.Repeat("k", diffMaxValueRunes*2)
+	msg := EqualFailureMessage(map[string]int{prefix + "A": 1}, map[string]int{prefix + "B": 2})
+	got := diffLines(t, msg)
+	if len(got) != 2 || !strings.Contains(got[0], " #1]: missing in actual") ||
+		!strings.Contains(got[1], " #2]: unexpected in actual") {
+		t.Fatalf("missing and unexpected keys share one label:\n%s", msg)
+	}
+}
+
+func TestStructuralDiffKeepsPlainKeyPathsWithoutOrdinal(t *testing.T) {
+	msg := EqualFailureMessage(map[string]int{"a": 1, "b": 2}, map[string]int{"a": 9, "b": 8})
+	wantLine(t, msg, `  ["a"]: expected 1, actual 9`)
+	if strings.Contains(msg, "#") {
+		t.Fatalf("ordinary keys must not carry an ordinal:\n%s", msg)
+	}
+}
+
+func TestCompareMapKeysIsATotalOrder(t *testing.T) {
+	type pair struct {
+		a int
+		b string
+	}
+	x, y := 1, 2
+	nan := math.NaN()
+	negZero := math.Copysign(0, -1)
+	ordered := func(name string, lo, hi any) {
+		t.Helper()
+		l, h := reflect.ValueOf(lo), reflect.ValueOf(hi)
+		if compareMapKeys(l, h) >= 0 || compareMapKeys(h, l) <= 0 {
+			t.Errorf("%s: %v should order before %v", name, lo, hi)
+		}
+	}
+	ordered("NaN before numbers", nan, -1e300)
+	ordered("negative before positive float", -1.5, 2.5)
+	ordered("complex real part", complex(1, 9), complex(2, 0))
+	ordered("complex imag part", complex(1, 1), complex(1, 2))
+	ordered("array elementwise", [3]int{1, 2, 3}, [3]int{1, 2, 4})
+	ordered("struct past the rendered fields", diffWideKey{1, 2, 3, 4, 1, 0}, diffWideKey{1, 2, 3, 4, 2, 0})
+	ordered("unexported struct fields", pair{1, "a"}, pair{1, "b"})
+	ordered("string full value", strings.Repeat("k", 500)+"A", strings.Repeat("k", 500)+"B")
+	if compareMapKeys(reflect.ValueOf(negZero), reflect.ValueOf(0.0)) != 0 {
+		t.Error("-0 and +0 must compare equal")
+	}
+	if compareMapKeys(reflect.ValueOf(nan), reflect.ValueOf(nan)) != 0 {
+		t.Error("NaN must tie with NaN")
+	}
+	lo, hi := &x, &y
+	if uintptr(unsafe.Pointer(lo)) > uintptr(unsafe.Pointer(hi)) {
+		lo, hi = hi, lo
+	}
+	ordered("pointers by address", lo, hi)
+
+	iface := func(v any) reflect.Value { return reflect.ValueOf(&v).Elem() }
+	nilIface := reflect.ValueOf(new(any)).Elem()
+	if compareMapKeys(nilIface, iface(1)) >= 0 || compareMapKeys(iface(1), nilIface) <= 0 {
+		t.Error("nil interface must order first")
+	}
+	if compareMapKeys(nilIface, nilIface) != 0 {
+		t.Error("two nil interfaces must tie")
+	}
+	mixed := []any{"b", 2, "a", 1, 1.5, true, [1]int{1}, pair{1, "x"}}
+	want := mixed
+	for i := 0; i < 20; i++ {
+		got := append([]any(nil), mixed...)
+		rand.Shuffle(len(got), func(i, j int) { got[i], got[j] = got[j], got[i] })
+		sort.SliceStable(got, func(i, j int) bool { return compareMapKeys(iface(got[i]), iface(got[j])) < 0 })
+		if i == 0 {
+			want = got
+		} else if !reflect.DeepEqual(got, want) {
+			t.Fatalf("mixed dynamic types order depends on input order:\n%v\n%v", want, got)
 		}
 	}
 }

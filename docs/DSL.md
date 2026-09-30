@@ -973,7 +973,7 @@ The diff only explains a verdict that was already reached: it is built after the
 - **Cycles.** A pointer, map or slice pair already being compared is treated as equal, as `reflect.DeepEqual` does, so a self-referencing value terminates. A cyclic value is rendered in the first line with the bounded renderer instead of `%v`.
 - **Opaque structs.** A struct that implements `fmt.Stringer` or `error` and has unexported fields (`time.Time`, for one) is reported as a single value using its `String()`, not field by field.
 - **Limits.** At most 10 differences are listed, followed by `... more differences not shown (limit 10)`. Paths are followed 8 segments deep; below that a single line says `differs below this point (depth limit 8 reached)`. Each rendered value shows at most 80 characters (`…` marks a cut), 4 elements or fields per container, and 3 levels of nesting.
-- **Not covered.** `EqualTo` and `ExpectT(...).ToEqual` compare with `==` and keep their one-line message. Map keys that are pointers or channels render as addresses and so order by address. Snapshot failures keep their own diff.
+- **Not covered.** `EqualTo` and `ExpectT(...).ToEqual` compare with `==` and keep their one-line message. Map keys are ordered by their full value (every struct field, the whole string), never by the bounded rendering; pointer and channel keys order by address. When several distinct keys would show the same truncated path, each gets its ordinal appended inside the brackets (`["kkkk… #1]`, `["kkkk… #2]`), in key order; other paths are unchanged. Snapshot failures keep their own diff.
 
 ### Errors compare by identity, and the comparison is oriented
 

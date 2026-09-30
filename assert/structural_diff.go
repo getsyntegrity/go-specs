@@ -278,47 +278,188 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
 		return
 	}
-	for _, k := range sortedMapKeys(a) {
-		keyPath := fmt.Sprintf("%s[%s]", path, renderDiffValue(k, 0))
-		bv := b.MapIndex(k)
-		if !bv.IsValid() {
-			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(a.MapIndex(k), 0)))
+	// Labels are computed over the union of both maps' keys, sorted once, so a key only in a and a
+	// key only in b that render alike still get different paths.
+	entries := make([]mapEntry, 0, a.Len()+b.Len())
+	for _, k := range a.MapKeys() {
+		entries = append(entries, mapEntry{key: k, fromA: true})
+	}
+	for _, k := range b.MapKeys() {
+		if !a.MapIndex(k).IsValid() {
+			entries = append(entries, mapEntry{key: k})
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return compareMapKeys(entries[i].key, entries[j].key) < 0 })
+	keys := make([]reflect.Value, len(entries))
+	for i, e := range entries {
+		keys[i] = e.key
+	}
+	labels := disambiguatedKeyLabels(keys)
+	for i, e := range entries {
+		if !e.fromA {
 			continue
 		}
-		w.walk(a.MapIndex(k), bv, keyPath, depth+1)
-	}
-	for _, k := range sortedMapKeys(b) {
-		if !a.MapIndex(k).IsValid() {
-			w.add(fmt.Sprintf("%s[%s]", path, renderDiffValue(k, 0)),
-				fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(b.MapIndex(k), 0)))
+		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
+		bv := b.MapIndex(e.key)
+		if !bv.IsValid() {
+			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(a.MapIndex(e.key), 0)))
+			continue
 		}
+		w.walk(a.MapIndex(e.key), bv, keyPath, depth+1)
+	}
+	for i, e := range entries {
+		if e.fromA {
+			continue
+		}
+		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
+			fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(b.MapIndex(e.key), 0)))
 	}
 }
 
-// sortedMapKeys orders keys by their full rendering, so the same two maps always produce the same
-// diff whatever order the runtime iterates them in. The sort key is deliberately not the bounded
-// display form: long keys sharing a prefix longer than diffMaxValueRunes would tie there and fall
-// back to map iteration order.
+// mapEntry is one key of the union of two maps and whether the first (expected) map holds it.
+type mapEntry struct {
+	key   reflect.Value
+	fromA bool
+}
+
+// disambiguatedKeyLabels returns the bounded display label of each key, in order. A label shared by
+// two or more distinct keys (long strings with a common prefix, structs differing past the rendered
+// fields) gets its 1-based ordinal among the colliding keys appended after a space, inside the
+// brackets: `["kkkk… #1]`, `["kkkk… #2]`. Labels that are unique are left exactly as rendered.
+func disambiguatedKeyLabels(keys []reflect.Value) []string {
+	labels := make([]string, len(keys))
+	count := make(map[string]int, len(keys))
+	for i, k := range keys {
+		labels[i] = renderDiffValue(k, 0)
+		count[labels[i]]++
+	}
+	seen := make(map[string]int)
+	for i, l := range labels {
+		if count[l] > 1 {
+			seen[l]++
+			labels[i] = fmt.Sprintf("%s #%d", l, seen[l])
+		}
+	}
+	return labels
+}
+
+// sortedMapKeys orders keys by compareMapKeys, so the same two maps always produce the same diff
+// whatever order the runtime iterates them in.
 func sortedMapKeys(m reflect.Value) []reflect.Value {
 	keys := m.MapKeys()
-	rendered := make([]string, len(keys))
-	for i, k := range keys {
-		rendered[i] = renderValue(k, 0)
-	}
-	sort.Sort(&keySorter{keys, rendered})
+	sort.SliceStable(keys, func(i, j int) bool { return compareMapKeys(keys[i], keys[j]) < 0 })
 	return keys
 }
 
-type keySorter struct {
-	keys     []reflect.Value
-	rendered []string
+// compareMapKeys is a total order over every comparable key kind, reading only through reflect (never
+// Interface, so unexported fields are fine). It compares full values, not the bounded rendering, so
+// keys that render alike still order deterministically. Pointers, channels and unsafe pointers order
+// by address and are never dereferenced, so they cannot recurse into a cycle; that order is stable
+// within a run but not across runs. NaN sorts before every number and -0 equals +0.
+func compareMapKeys(a, b reflect.Value) int {
+	if !a.IsValid() || !b.IsValid() {
+		return cmpBool(a.IsValid(), b.IsValid())
+	}
+	if a.Kind() != b.Kind() {
+		return cmpInt(int64(a.Kind()), int64(b.Kind()))
+	}
+	switch a.Kind() {
+	case reflect.Bool:
+		return cmpBool(a.Bool(), b.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return cmpInt(a.Int(), b.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return cmpUint(a.Uint(), b.Uint())
+	case reflect.Float32, reflect.Float64:
+		return cmpFloat(a.Float(), b.Float())
+	case reflect.Complex64, reflect.Complex128:
+		x, y := a.Complex(), b.Complex()
+		if c := cmpFloat(real(x), real(y)); c != 0 {
+			return c
+		}
+		return cmpFloat(imag(x), imag(y))
+	case reflect.String:
+		return strings.Compare(a.String(), b.String())
+	case reflect.Pointer, reflect.Chan, reflect.UnsafePointer:
+		return cmpUint(uint64(a.Pointer()), uint64(b.Pointer()))
+	case reflect.Array:
+		for i := 0; i < a.Len(); i++ {
+			if c := compareMapKeys(a.Index(i), b.Index(i)); c != 0 {
+				return c
+			}
+		}
+		return 0
+	case reflect.Struct:
+		for i := 0; i < a.NumField(); i++ {
+			if c := compareMapKeys(a.Field(i), b.Field(i)); c != 0 {
+				return c
+			}
+		}
+		return 0
+	case reflect.Interface:
+		if a.IsNil() || b.IsNil() {
+			return cmpBool(!a.IsNil(), !b.IsNil())
+		}
+		ea, eb := a.Elem(), b.Elem()
+		if ta, tb := ea.Type(), eb.Type(); ta != tb {
+			if c := strings.Compare(ta.String(), tb.String()); c != 0 {
+				return c
+			}
+			// Same spelling, different types (same name in different packages or scopes).
+			if c := strings.Compare(ta.PkgPath(), tb.PkgPath()); c != 0 {
+				return c
+			}
+		}
+		return compareMapKeys(ea, eb)
+	}
+	return 0
 }
 
-func (s *keySorter) Len() int           { return len(s.keys) }
-func (s *keySorter) Less(i, j int) bool { return s.rendered[i] < s.rendered[j] }
-func (s *keySorter) Swap(i, j int) {
-	s.keys[i], s.keys[j] = s.keys[j], s.keys[i]
-	s.rendered[i], s.rendered[j] = s.rendered[j], s.rendered[i]
+func cmpBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case !a:
+		return -1
+	}
+	return 1
+}
+
+func cmpInt(a, b int64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+func cmpUint(a, b uint64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+func cmpFloat(a, b float64) int {
+	an, bn := a != a, b != b
+	switch {
+	case an && bn:
+		return 0
+	case an:
+		return -1
+	case bn:
+		return 1
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
 }
 
 // describeNilness says which side of a nil-versus-non-nil slice or map difference a value is on,
