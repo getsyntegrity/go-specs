@@ -74,12 +74,23 @@ jobs:
           .github/scripts/next-version.sh "$head_ref" "$labels" | tee -a "$GITHUB_OUTPUT"
           echo "tagged=false" >> "$GITHUB_OUTPUT"
 
+      # The repo toolchain must exist before ANY GoReleaser step, validation included: GoReleaser
+      # shells out to `go` to read the module path even though .goreleaser.yaml skips the build, and
+      # the runner's preinstalled Go is older than go.mod's floor (GOTOOLCHAIN=local forbids a
+      # download), so the run died with "go.mod requires go >= 1.25.0". It is unconditional because
+      # both the validation (new tag) and the real release (a rerun with a tag but no published
+      # release) need it. go-setup installs the one in .go-version and runs the go.mod drift check,
+      # so a release never builds on a toolchain the repo did not declare.
+      - uses: ./.github/actions/go-setup
+        with:
+          cache-key: release
+
       # Validate .goreleaser.yaml BEFORE the tag is pushed, so a broken config stops the run while
       # nothing is published yet (ci.yml no longer runs GoReleaser on pull requests). `check` only
       # validates the schema; it does not resolve `main:` build paths, so it would not have caught
       # .goreleaser.yaml pointing `builds` at an entrypoint that never existed (#130). A
       # `--snapshot` release does; it publishes nothing. The real release step below still passes
-      # `--clean`, which wipes the dist/ this leaves behind.
+      # `--clean`, which wipes the dist/ this leaves behind. Both need `go` (see go-setup above).
       - name: Install GoReleaser
         if: steps.version.outputs.tagged == 'false'
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
@@ -112,13 +123,6 @@ jobs:
           code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
                    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$VERSION")
           echo "exists=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      # A release must not build on a toolchain the repo never declared: go-setup installs the
-      # one in .go-version and runs the go.mod drift check.
-      - if: steps.published.outputs.exists == 'false'
-        uses: ./.github/actions/go-setup
-        with:
-          cache-key: release
 
       # Notes from the PRs merged since the previous tag. Exit 3 = no PR entry at all; the release
       # is not blocked, GoReleaser falls back to its own generated git-log changelog.
