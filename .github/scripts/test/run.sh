@@ -157,7 +157,7 @@ cl v0.1.0 --ref HEAD --previous v0.0.10 --notes "$tmp/preview.md" >/dev/null; st
 expect_eq "changelog: preview without a tag exits 0" 0 "$status"
 expect_eq "changelog: notes are the Kubernetes layout" "$want_notes" "$(cat "$tmp/preview.md" 2>/dev/null)"
 
-git -C "$cl_repo" tag -a v0.1.0 -m v0.1.0 >/dev/null 2>&1
+(cd "$cl_repo" && git_quiet tag -a v0.1.0 -m v0.1.0)
 cl v0.1.0 --notes "$tmp/notes.md" >/dev/null; status=$?
 expect_eq "changelog: tagged version exits 0" 0 "$status"
 expect_eq "changelog: the default range ends at the tag" "$want_notes" "$(cat "$tmp/notes.md" 2>/dev/null)"
