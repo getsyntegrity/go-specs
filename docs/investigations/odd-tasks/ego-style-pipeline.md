@@ -171,8 +171,10 @@ change touches no Go file; removing it can be a follow-up.
   Check: shellcheck on every script; `bash .github/scripts/test/run.sh`.
   Commit: `5d0fb5c`. RED observed first (release-changelog.sh missing: 6 failures), then GREEN
   (13/13). shellcheck clean after quoting the bump values in `next-version.sh` (SC2209).
-- [ ] T2 — `ci.yml` in ego's shape (`flow`, `plan`, sharded `test`, `test-report`, `modules`,
+- [x] T2 — `ci.yml` in ego's shape (`flow`, `plan`, sharded `test`, `test-report`, `modules`,
   `tidy`, `api`, `ci-ok`) with the go-specs jobs ported in. Check: actionlint.
+  Commit: `2c1b83d`. actionlint clean; `go mod tidy` is clean in both modules and `api-check.sh`
+  ran against `origin/develop` locally, so the new `tidy` and `api` jobs start green.
 - [ ] T3 — `release.yml` (push to `main`, notes from `CHANGELOG.md`, `sync-develop`, `notify`),
   `pr-meta.yml`; delete `release-prep.yml`. Check: actionlint; local dry run of the version and
   notes scripts.

@@ -1,0 +1,54 @@
+# PR metadata. A separate workflow from ci.yml so that a label change here does not re-run the
+# tests. Required check: "pr-meta".
+#
+# go-specs' release notes are the entries of CHANGELOG.md's `## [Unreleased]` section, so the rule
+# is: a PR must change CHANGELOG.md, unless it is exempt. (ego asks for a `release-note` block in
+# the PR body instead; go-specs keeps its hand-written changelog as the single source.)
+name: pr-meta
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: pr-meta-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read   # list the files of the PR
+    steps:
+      - name: CHANGELOG.md entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD" = "develop" ] && [ "$BASE" = "main" ]; then
+            echo "Release PR: its notes come from the PRs it includes"; exit 0
+          fi
+          case ",$LABELS," in
+            *,skip-changelog,*|*,kind/deps,*) echo "Exempt by label ($LABELS)"; exit 0 ;;
+          esac
+          # Bot branches that never carry a user-visible change (their PRs also get the
+          # skip-changelog label, but only after they are opened).
+          case "$HEAD" in
+            sync/*|dependabot/*|chore/benchmark-charts) echo "Exempt by branch ($HEAD)"; exit 0 ;;
+          esac
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if ! grep -qxF CHANGELOG.md <<<"$files"; then
+            echo "::error::Add an entry under '## [Unreleased]' in CHANGELOG.md, or apply the skip-changelog label if the change is invisible to people who use go-specs."
+            exit 1
+          fi
+          echo "CHANGELOG.md is part of this PR"

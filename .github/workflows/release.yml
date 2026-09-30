@@ -1,319 +1,241 @@
-# Release: tag the merge commit and run GoReleaser, automatically, the moment a develop -> main or
-# hotfix/* -> main PR merges -- Decision 2 of docs/investigations/odd-tasks/native-ci-pipeline.md
-# for the develop path, Decision 1 of docs/investigations/odd-tasks/hotfix-release-and-charts.md
-# for the hotfix path. There is a single path to a release now: no workflow_dispatch, no manual
-# "did we remember to run it" step. The version and its changelog section already exist on this
-# commit, written by release-prep.yml while the PR was open (its header explains why that happens
-# before merge rather than after); the `release` job below re-derives the version from commit
-# history and cross-checks it against what release-prep.yml wrote, so a PR merged without going
-# through release-prep.yml (or merged after a later commit release-prep.yml never got a chance to
-# re-prepare for) fails loudly here instead of tagging the wrong version.
+# Merge to main (from develop or hotfix/*) -> semver tag + GitHub Release, modeled on the ego
+# repository's release workflow. For a Go module the tag IS the release: it is what `go get`
+# resolves. GoReleaser only creates the GitHub Release (go-specs publishes no binary, see
+# .goreleaser.yaml).
 #
-# A hotfix/* merge additionally gets a `develop` sync (Decisions 5-6 of
-# hotfix-release-and-charts.md): once the patch is tagged and published, `hotfix-sync` (`needs:
-# release`, hotfix only) pushes a disposable `sync/hotfix-vX.Y.Z` branch and opens (or reuses) a
-# PR from it into `develop`, so the fix lands back on develop too -- CONTRIBUTING.md's Branching
-# Model already says a hotfix "is merged down into develop"; this is what actually does that
-# instead of relying on someone remembering to open the PR by hand. There used to be a separate
-# hotfix-sync.yml workflow for this, triggered by the same pull_request-closed event as this one;
-# it is gone now (Decision 6) -- `needs: release` guarantees this job runs strictly after the tag
-# and publish steps in `release`, by construction, rather than by racing a second workflow's
-# trigger against this one or chaining through workflow_run's less direct "was this a hotfix
-# merge" re-derivation from github.event.workflow_run.pull_requests.
+# After every release `sync-develop` opens a pull request into develop that stamps CHANGELOG.md
+# (`## [Unreleased]` -> `## [vX.Y.Z] - date`) and, for a hotfix, carries the fix back down. This is
+# how the branching rule "develop and main only change through pull requests" holds for bots too:
+# nothing in this file pushes to either branch, it only pushes a tag and a `sync/*` branch.
 #
-# `release` and `hotfix-sync` are two jobs, not one, so the release GitHub App's installation
-# token exists only in the one job that uses it: `release` never mints it, and an ordinary
-# develop -> main release (the common case) never touches the App at all.
-name: Release
+# Version: .github/scripts/next-version.sh (release:* label on the merged PR, else hotfix/* is a
+# patch and develop is a minor).
+# Release notes: the CHANGELOG.md entries of `## [Unreleased]` that the previous tag did not already
+# publish (.github/scripts/release-changelog.sh). See docs/CI.md.
+name: release
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
+  # Re-run of a release that stopped halfway (the tag is reused). Only meaningful on main.
+  workflow_dispatch:
 
-# Workflow-level floor, matching every sibling file: the release job below still declares its own
-# contents: write, since a workflow-level default can't grant write and this is the one workflow
-# that needs it -- this block exists so a future job added here starts from read-only, not from
-# whatever the org/repo default happens to be.
+concurrency:
+  group: release
+  cancel-in-progress: false   # never two releases at once, never one cut halfway
+
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   release:
-    # A genuinely merged (not just closed) develop -> main or hotfix/* -> main PR from this
-    # repository releases. A closed-without-merging PR, a PR from a fork, or a PR targeting main
-    # from anywhere other than develop or hotfix/* all no-op.
-    if: github.event.pull_request.merged == true && (github.event.pull_request.head.ref == 'develop' || startsWith(github.event.pull_request.head.ref, 'hotfix/')) && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # 30 minutes: tag + GoReleaser + the external installability check -- the heaviest single job
-    # in the repo, at the top of the release/release-prep/goreleaser band.
     timeout-minutes: 30
-    # Job-level only, not a workflow-level default: this is the one workflow in the repository
-    # that pushes a tag and publishes a GitHub Release, and scoping the write permission to the
-    # single job that needs it keeps every other workflow's contents: read default meaningful by
-    # contrast. `hotfix-sync` below authenticates separately with the release GitHub App's
-    # installation token, so it needs no addition here.
     permissions:
-      contents: write
-    env:
-      GOTOOLCHAIN: local
-      # See release-prep.yml's HEAD_REF comment: a branch name is attacker-controlled, so it is
-      # read into this env var once and expanded as a normal shell variable in every later
-      # script, never re-interpolated as a raw `${{ ... }}` expression inside `run:` text.
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-    # Read by `hotfix-sync` below via `needs.release.outputs.*`, since that job condition and its
-    # branch/PR names must know the release kind, the version just tagged, and whether this run
-    # actually tagged anything or found it already done.
+      contents: write        # create the tag and the GitHub Release
+      pull-requests: read    # read the PR that originated the merge
     outputs:
       version: ${{ steps.version.outputs.version }}
-      is_hotfix: ${{ steps.kind.outputs.is_hotfix }}
-      already_tagged: ${{ steps.skip.outputs.already_tagged }}
+      source: ${{ steps.version.outputs.source }}
     steps:
-      # No checkout needed yet: this only distinguishes which of the two branches this job
-      # condition already narrowed to, for the -patch-only cross-check below and for
-      # `hotfix-sync`'s own `if:` condition.
-      - name: Determine release kind
-        id: kind
-        run: |
-          if [[ "$HEAD_REF" == hotfix/* ]]; then
-            echo "is_hotfix=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_hotfix=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # The merge commit, not main's moving HEAD: between this job starting and its "Determine
-      # the version to release" step running, another PR could in principle merge into main first
-      # (GitHub does not serialize merges against workflow starts). Pinning to
-      # merge_commit_sha -- the exact commit this specific PR produced -- is what makes every
-      # later step (the version cross-check, the tag, the changelog section extracted for release
-      # notes) unambiguously about *this* PR's merge, not whatever main happens to point at by the
-      # time the job gets there.
-      - name: Checkout merge commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # persist-credentials stays at its default (true): "Create tag" pushes with plain
+      # `git push origin`, relying on the GITHUB_TOKEN header actions/checkout configures.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
-          fetch-depth: 0  # full history and tags: needed for both the tag lookup and next-version
-          # persist-credentials stays at its default (true): "Create and push tag" below pushes
-          # with plain `git push origin`, relying on the GITHUB_TOKEN auth header actions/checkout
-          # configures by default. hotfix-sync's own checkout, below in this file, pushes with the
-          # release App's token instead and sets persist-credentials: false, since it has no tag
-          # push to support.
+          fetch-depth: 0
 
-      # Same gate as ci.yml, repeated here because a release is the one run that must not build on
-      # a toolchain the repo never declared.
-      - name: Check Go version pin
-        run: ./.github/scripts/check-go-version.sh
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: .go-version
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
-
-      # Two independent ways to name the version being released must agree before anything is
-      # tagged: recomputing it from Conventional Commits since the last tag (the same computation
-      # release-prep.yml did while the PR was open, including its -patch-only flag for a hotfix)
-      # versus reading it back out of CHANGELOG.md's top heading (what release-prep.yml actually
-      # wrote there). They can disagree if the PR was merged without release-prep.yml ever running
-      # on it, or if a commit landed after release-prep.yml's last run and the PR was merged
-      # before it re-triggered -- in either case CHANGELOG.md's heading is stale, and tagging that
-      # stale version would be wrong.
-      - name: Determine the version to release
+      - name: Compute version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
-
-          # No tag exists yet on MERGE_SHA (this job is what creates it), so describing it finds
-          # the nearest ancestor tag -- the last release before this merge.
-          LAST_TAG="$(git describe --tags --abbrev=0 "$MERGE_SHA" 2>/dev/null || echo v0.0.0)"
-
-          git log --format='%B%x00' "${LAST_TAG}..${MERGE_SHA}" > /tmp/release-commits.txt
-          if [ "${{ steps.kind.outputs.is_hotfix }}" = "true" ]; then
-            FROM_COMMITS="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt -patch-only)"
-          else
-            FROM_COMMITS="$(go run ./tools/release next-version -last "$LAST_TAG" -commits /tmp/release-commits.txt)"
+          set -euo pipefail
+          # Re-run: if this commit already has a tag, it is reused.
+          existing=$(git tag --points-at HEAD --list 'v*' | sort -V | tail -1)
+          if [ -n "$existing" ]; then
+            { echo "version=$existing"; echo "tagged=true"; echo "source=rerun"; } >> "$GITHUB_OUTPUT"
+            echo "::notice::HEAD already has $existing, reusing it"
+            exit 0
           fi
-          FROM_CHANGELOG="$(go run ./tools/release latest-heading -file CHANGELOG.md)"
+          # PR that produced this commit (works with merge commits and squash). Its head branch
+          # and labels are attacker-controlled text: they are only ever passed as arguments.
+          pr=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                 "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+               | jq -c '[.[] | select(.merged_at != null and .base.ref == "main")][0] // {}')
+          head_ref=$(jq -r '.head.ref // ""' <<<"$pr")
+          labels=$(jq -r '[.labels[]?.name] | join(",")' <<<"$pr")
+          echo "PR #$(jq -r '.number // "?"' <<<"$pr") from '$head_ref' labels='$labels'"
+          .github/scripts/next-version.sh "$head_ref" "$labels" | tee -a "$GITHUB_OUTPUT"
+          echo "tagged=false" >> "$GITHUB_OUTPUT"
 
-          if [ "$FROM_COMMITS" != "$FROM_CHANGELOG" ]; then
-            echo "::error::Version mismatch: commits since ${LAST_TAG} compute ${FROM_COMMITS}, but CHANGELOG.md's top heading says ${FROM_CHANGELOG}. This usually means release-prep.yml did not run (or did not get to re-run after a later commit) on this PR before it was merged. Re-open the PR, let release-prep.yml prepare it, and merge again." >&2
-            exit 1
-          fi
-
-          echo "version=${FROM_CHANGELOG}" >> "$GITHUB_OUTPUT"
-
-      # Idempotency guard only, matching the same guard the old workflow_dispatch version carried:
-      # protects a redelivered or manually re-run webhook from tagging the same version twice, not
-      # a gate on whether to publish. Every step below it, including hotfix-sync further down in
-      # this file, shares this same guard: a version that is already tagged has already been
-      # synced too.
-      - name: Skip if already tagged
-        id: skip
+      - name: Create tag
+        if: steps.version.outputs.tagged == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.version }}" >/dev/null; then
-            echo "already_tagged=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.version.outputs.version }} already exists, skipping release"
-          else
-            echo "already_tagged=false" >> "$GITHUB_OUTPUT"
-          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
 
-      - name: Create and push tag
-        if: steps.skip.outputs.already_tagged != 'true'
+      - name: Release already published?
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}" "${{ github.event.pull_request.merge_commit_sha }}"
-          git push origin "${{ steps.version.outputs.version }}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
+                   "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$VERSION")
+          echo "exists=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      # Prefer this repository's own hand-written changelog entry for the release's notes over
-      # GoReleaser's generated git-log changelog (.goreleaser.yaml's `changelog:` block): the
-      # CHANGELOG.md section written for this version already explains *why*, which a commit-log
-      # dump does not. Falls back to GoReleaser's own changelog -- by simply not passing
-      # --release-notes -- if the section turns out empty for any reason, rather than failing the
-      # release over release-notes formatting.
-      - name: Extract release notes from CHANGELOG.md
+      # A release must not build on a toolchain the repo never declared: go-setup installs the
+      # one in .go-version and runs the go.mod drift check.
+      - if: steps.published.outputs.exists == 'false'
+        uses: ./.github/actions/go-setup
+        with:
+          cache-key: release
+
+      # Notes from CHANGELOG.md. Exit 3 = no entry that the previous tag did not already publish;
+      # the release is not blocked, GoReleaser falls back to its own generated git-log changelog.
+      - name: Release notes
         id: notes
-        if: steps.skip.outputs.already_tagged != 'true'
+        if: steps.published.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if go run ./tools/release notes -version "${{ steps.version.outputs.version }}" -file CHANGELOG.md > /tmp/release-notes.md && [ -s /tmp/release-notes.md ]; then
-            echo "flag=--release-notes /tmp/release-notes.md" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No non-empty CHANGELOG.md section for ${{ steps.version.outputs.version }} -- falling back to GoReleaser's own generated changelog."
-            echo "flag=" >> "$GITHUB_OUTPUT"
-          fi
+          previous=$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                     | grep -vxF "$VERSION" | sort -V | tail -1 || true)
+          status=0
+          .github/scripts/release-changelog.sh "$VERSION" "${previous:--}" "$RUNNER_TEMP/CHANGELOG.stamped.md" "$RUNNER_TEMP/release-notes.md" || status=$?
+          case "$status" in
+            0) echo "args=release --clean --release-notes=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT" ;;
+            3) echo "::warning::No new CHANGELOG.md entries since ${previous:-the beginning}: using GoReleaser's generated notes"
+               echo "args=release --clean" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
 
-      - name: Run GoReleaser
-        if: steps.skip.outputs.already_tagged != 'true'
+      - if: steps.published.outputs.exists == 'false'
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean ${{ steps.notes.outputs.flag }}
+          args: ${{ steps.notes.outputs.args }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}
 
+      # Black-box check from a clean consumer module, no local replace: proves
+      # `go get <this repo's module path>@<tag>` resolves and builds from the tag just pushed.
+      # GOPROXY=direct + GOSUMDB=off clone the tag straight from git instead of waiting on the
+      # public proxy's mirror. Added after v0.1.0 shipped with a go.mod module path that did not
+      # match the repository (getsyntegrity/go-specs#139).
       - name: Verify external installability of the published tag
-        # Black-box check from a clean consumer module, no local replace:
-        # proves `go get <this repo's module path>@<tag>` actually resolves
-        # and builds from the tag just pushed. GOPROXY=direct + GOSUMDB=off
-        # clone the tag straight from git instead of waiting on the public
-        # proxy's mirror to index it. Added after v0.1.0 shipped with a
-        # go.mod module path that didn't match the repository (getsyntegrity/go-specs#139).
-        if: steps.skip.outputs.already_tagged != 'true'
+        if: steps.published.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           MODULE="$(go list -m)"
-          TAG="${{ steps.version.outputs.version }}"
           WORKDIR="$(mktemp -d)"
           cd "$WORKDIR"
           go mod init consumer-smoke-test
-          GOPROXY=direct GOSUMDB=off go get "${MODULE}@${TAG}"
+          GOPROXY=direct GOSUMDB=off go get "${MODULE}@${VERSION}"
 
-  hotfix-sync:
-    needs: release
-    if: needs.release.outputs.is_hotfix == 'true' && needs.release.outputs.already_tagged != 'true'
+  # develop cannot be pushed to directly, so the changelog stamp (and, after a hotfix, the fix
+  # itself) go through a pull request from a disposable sync/release-vX.Y.Z branch cut from the tag.
+  # ORG_CHECKOUT_TOKEN (a PAT) is optional: without it the fallback is github.token, and the PR it
+  # opens will not trigger CI by itself (GitHub does not start workflows from GITHUB_TOKEN); close
+  # and reopen the PR to start CI. Merge this PR with a merge commit, not a squash: a squash would
+  # leave main's release commit out of develop's history.
+  sync-develop:
+    needs: [release]
+    if: needs.release.outputs.version != ''
     runs-on: ubuntu-latest
-    # 20 minutes: mint a token, push a branch, open a PR -- lighter than `release`, but still in
-    # the release/release-prep/goreleaser band since it mints and uses the release App token.
-    timeout-minutes: 20
-    # contents: read only: every write this job makes (the sync-branch push, the sync PR) goes
-    # through the release App's installation token below, never this job's own GITHUB_TOKEN.
+    timeout-minutes: 15
     permissions:
-      contents: read
-    env:
-      # See release-prep.yml's HEAD_REF comment: a branch name is attacker-controlled. This job
-      # reads it straight from the workflow's own pull_request event, the same as `release` does,
-      # rather than threading it through `needs.release.outputs` -- the event context is available
-      # to every job in the run, not just the one that happened to check it out first.
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      contents: write        # push the sync/* branch (when using github.token)
+      pull-requests: write   # open the pull request and label it
     steps:
-      # Only a hotfix needs the release GitHub App's installation token -- the develop path never
-      # reaches this job at all (see the job's own `if:`), and requiring a secret an ordinary
-      # release never used would be a needless new failure mode for it. Checked before checkout
-      # (no checkout needed to check a secret) so a missing token fails in seconds with an
-      # actionable message, matching release-prep.yml's own check.
-      - name: Verify the release GitHub App is configured
-        env:
-          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
-            echo "::error::RELEASE_APP_ID and/or RELEASE_APP_PRIVATE_KEY is not set. Create the release GitHub App and add its ID and private key as repository secrets. See CONTRIBUTING.md's Releasing section (GitHub App setup)." >&2
-            exit 1
-          fi
-
-      # Minted once, ahead of both steps that need it below -- only the App can bypass the
-      # protect-develop / protect-main rulesets (see CONTRIBUTING.md's Prerequisite section), so both the
-      # sync-branch push and the sync PR authenticate with this same short-lived installation
-      # token. This is now the only job in the workflow that ever mints it.
-      - name: Mint a release GitHub App installation token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
-      # The tag `release` just pushed, not the merge commit directly -- by the time this job
-      # starts, that tag is what the release actually is. fetch-depth: 0 for the same reason as
-      # `release`'s own checkout: a shallow clone can complicate pushing a new branch derived from
-      # it.
-      - name: Checkout the tagged release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Persisted credentials on purpose: the branch push below needs them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.version }}
-          fetch-depth: 0
-          # Both pushes this job makes go through the release App's token, passed explicitly in
-          # each step below -- never through a credential actions/checkout would otherwise persist
-          # in .git/config -- so there is nothing here that needs it.
-          persist-credentials: false
-
-      # Decision 5 of hotfix-release-and-charts.md: this PR's head must never be `main` itself.
-      # .github/settings.yml sets delete_branch_on_merge: true, and `main` is neither this
-      # repository's default branch (`develop` is, per CONTRIBUTING.md's Branching Model) nor
-      # branch-protected today, so nothing stops GitHub from deleting a merged PR's head branch --
-      # a head of `main` would mean GitHub deletes `main` itself the instant this sync PR merges.
-      # A release-specific temporary branch, forked from the commit just tagged by `release`,
-      # carries the exact same content into the sync PR and is *meant* to be deleted once merged,
-      # which is exactly what delete_branch_on_merge is for. Its name is derived from the release
-      # version (already validated as plain vX.Y.Z by tools/release, never from the
-      # attacker-controlled PR head ref), so it needs no separate sanitizing.
-      - name: Push the hotfix sync branch
+          fetch-depth: 0   # all the tags
+          token: ${{ secrets.ORG_CHECKOUT_TOKEN || github.token }}
+      - uses: ./.github/actions/go-setup
+        with:
+          cache-key: sync
+      - name: Stamp CHANGELOG.md and open the sync PR
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          SYNC_BRANCH: sync/hotfix-${{ needs.release.outputs.version }}
-        run: |
-          # The checkout above set persist-credentials: false, so there is no GITHUB_TOKEN auth
-          # header left in .git/config to fight with the App token embedded in this URL -- unlike
-          # when this step lived in the same job as `release`'s own checkout, no
-          # `-c http.https://github.com/.extraheader=` override is needed to make this push
-          # authenticate as the App instead of GITHUB_TOKEN (Decision 3 of native-ci-pipeline.md:
-          # a GITHUB_TOKEN-authored push would not retrigger required checks anyway, and only the
-          # App can bypass the protect-develop / protect-main rulesets in the first place).
-          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${SYNC_BRANCH}"
-
-      # Idempotent like release-prep.yml's own writes: reuse an already-open PR for this exact
-      # sync branch instead of erroring on a second attempt (a manual workflow re-run, say) trying
-      # to create the same PR twice. In the ordinary case this branch name is unique per release
-      # (Decision 5), so there is nothing to reuse; this check only matters for that re-run case.
-      - name: Open or reuse the hotfix sync PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SYNC_BRANCH: sync/hotfix-${{ needs.release.outputs.version }}
+          GH_TOKEN: ${{ secrets.ORG_CHECKOUT_TOKEN || github.token }}
           VERSION: ${{ needs.release.outputs.version }}
+          SOURCE: ${{ needs.release.outputs.source }}
         run: |
-          EXISTING="$(gh pr list --base develop --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$EXISTING" ]; then
-            echo "::notice::Reusing existing open sync PR #${EXISTING} for ${SYNC_BRANCH}."
-          else
-            gh pr create \
-              --base develop \
-              --head "$SYNC_BRANCH" \
-              --title "chore: sync hotfix ${VERSION} into develop" \
-              --body "Automatic sync after hotfix \`${HEAD_REF}\` was released as \`${VERSION}\` on \`main\` (CONTRIBUTING.md's Branching Model: a hotfix is merged down into \`develop\` once it ships). No further release is triggered by merging this PR.
+          set -euo pipefail
+          branch="sync/release-$VERSION"
+          previous=$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                     | grep -vxF "$VERSION" | sort -V | tail -1 || true)
+          # A hotfix is tagged on a commit that is not in develop: the PR is needed even when the
+          # changelog has nothing to stamp. A develop release only needs it for the stamp. A
+          # re-run or an unknown source is treated like a hotfix: an extra PR is harmless, a
+          # missing one would leave a fix out of develop.
+          hotfix=true
+          if [ "$SOURCE" = "release" ]; then hotfix=false; fi
 
-          Possible \`CHANGELOG.md\` conflict: \`main\` now has a \`## [${VERSION}]\` section while \`develop\`'s own \`## [Unreleased]\` has kept growing since the hotfix branched -- both edit the top of the file. Resolve any conflict by keeping \`develop\`'s \`[Unreleased]\` above the hotfix's released section, not the other way around.
-
-          This PR's head, \`${SYNC_BRANCH}\`, is a disposable branch created from the tagged release commit, not \`main\` itself -- see release.yml's own comment for why."
+          git switch -q -C "$branch"
+          stamped=false
+          status=0
+          .github/scripts/release-changelog.sh "$VERSION" "${previous:--}" "$RUNNER_TEMP/CHANGELOG.stamped.md" || status=$?
+          case "$status" in
+            0) cp "$RUNNER_TEMP/CHANGELOG.stamped.md" CHANGELOG.md ;;
+            3) echo "::notice::Nothing to stamp in CHANGELOG.md" ;;
+            *) exit "$status" ;;
+          esac
+          if ! git diff --quiet -- CHANGELOG.md; then
+            git add CHANGELOG.md
+            git -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -q -m "docs: CHANGELOG $VERSION"
+            stamped=true
           fi
+          if [ "$stamped" = false ] && [ "$hotfix" = false ]; then
+            echo "::notice::develop already has everything in $VERSION, no sync PR needed"; exit 0
+          fi
+
+          git push -q --force origin "$branch"
+
+          open=$(gh pr list --base develop --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            echo "::notice::Sync PR #$open already open for $branch"; exit 0
+          fi
+          if [ "$hotfix" = true ]; then
+            title="chore: sync hotfix $VERSION main into develop"
+            body="Automatic PR after hotfix $VERSION: it carries the fix back into develop and stamps CHANGELOG.md. Resolve any CHANGELOG.md conflict by keeping develop's \`## [Unreleased]\` above the new \`## [$VERSION]\` section. Merge with a merge commit."
+          else
+            title="docs: CHANGELOG $VERSION"
+            body="Automatic PR after release $VERSION: stamps CHANGELOG.md. Merge with a merge commit."
+          fi
+          url=$(gh pr create --base develop --head "$branch" --title "$title" --body "$body")
+          echo "::notice::Sync PR: $url"
+          gh pr edit "$url" --add-label skip-changelog || echo "::warning::Could not set the skip-changelog label"
+
+  notify:
+    if: always()
+    needs: [release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+      - uses: ./.github/actions/notify
+        with:
+          status: ${{ needs.release.result }}
+          title: ${{ github.event.repository.name }} ${{ needs.release.outputs.version || '(no version)' }}
+          details: ${{ github.event.head_commit.message }}
+          slack-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ vars.SLACK_CHANNEL }}
