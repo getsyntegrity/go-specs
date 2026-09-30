@@ -3,7 +3,7 @@
 > **Historical snapshot.** This audit reflects the codebase as of commit `b1d4292` (2026-03-09).
 > Some APIs and benchmarks it describes — including the path-generation/exploration subsystem
 > (`Paths`, `PathValues`, `PathGenerator`, and the path benchmark discussed below) — were later
-> modified or removed; see [CHANGELOG.md](CHANGELOG.md) for what changed and when. This document
+> modified or removed; see [CHANGELOG/README.md](CHANGELOG/README.md) for what changed and when. This document
 > is not a description of the current HEAD. For the current API surface and benchmark set, see
 > the changelog and the up-to-date docs (`README.md`, `BENCHMARKS.md`, `docs/`).
 
