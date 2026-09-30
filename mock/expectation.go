@@ -34,7 +34,8 @@ type Expectation struct {
 }
 
 // Times requires exactly n calls. Without a count method an expectation defaults to Times(1).
-// It panics when n is negative.
+// It panics when n is negative. Times(0) is Never: a prohibition that takes precedence over any
+// permissive expectation matching the same call.
 func (e *Expectation) Times(n int) *Expectation {
 	if e == nil {
 		return nil
@@ -74,6 +75,13 @@ func (e *Expectation) bounds() (min, max int) {
 func (e *Expectation) hasCapacity() bool {
 	_, max := e.bounds()
 	return max < 0 || e.got < max
+}
+
+// prohibits reports whether e forbids every call it matches, i.e. its effective maximum is 0. It
+// looks at the bounds, not at which count method was called; the caller holds the controller lock.
+func (e *Expectation) prohibits() bool {
+	_, max := e.bounds()
+	return max == 0
 }
 
 // mismatch returns why args do not match, or "" when they do. It only reads immutable fields and

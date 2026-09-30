@@ -230,9 +230,14 @@ func (m *Method) Calls() []RecordedCall {
 	return copyCalls(m.calls)
 }
 
-// Call records a call and returns the Result of the expectation that took it. When no expectation
-// matches (or every matching one is at capacity) the failure is reported immediately through
-// t.Errorf and a zero Result is returned so the code under test keeps running.
+// Call records a call once and returns the Result of the expectation that took it.
+//
+// Matching rule: prohibitions (matching expectations whose effective maximum is 0: Never, Times(0),
+// AtMost(0) or a final range of 0..0) take precedence over permissive expectations, whatever the
+// declaration order; among allowed expectations the first matching one with capacity wins. A
+// forbidden call is reported immediately through t.Errorf, runs no Return/Do, notifies no captor
+// and returns a zero Result. A call that no expectation accepts is reported the same way as an
+// unexpected call, so the code under test keeps running.
 func (m *Method) Call(args ...any) Result {
 	if m == nil {
 		return Result{}
@@ -251,9 +256,18 @@ func (m *Method) Call(args ...any) Result {
 	}
 
 	c.mu.Lock()
-	var claimed *Expectation
+	var claimed, forbidden *Expectation
 	var n int
 	for i, e := range exps {
+		if reasons[i] == "" && e.prohibits() {
+			forbidden = e
+			break
+		}
+	}
+	for i, e := range exps {
+		if forbidden != nil {
+			break
+		}
 		if reasons[i] == "" && e.hasCapacity() {
 			e.got++
 			if e.firstSeq == 0 {
@@ -264,7 +278,11 @@ func (m *Method) Call(args ...any) Result {
 		}
 	}
 	var lines []string
-	if claimed == nil {
+	var forbiddenText string
+	if forbidden != nil {
+		forbiddenText = fmt.Sprintf("mock: forbidden call %s: expectation %s declared at %s says never",
+			formatCall(m.name, rc.Args), forbidden.describe(), forbidden.site)
+	} else if claimed == nil {
 		for i, e := range exps {
 			reason := reasons[i]
 			if reason == "" {
@@ -275,6 +293,11 @@ func (m *Method) Call(args ...any) Result {
 	}
 	c.mu.Unlock()
 
+	if forbidden != nil {
+		// Reported once, here: the prohibition's got stays 0, so Verify has nothing to add.
+		c.t.Errorf("%s", forbiddenText)
+		return Result{}
+	}
 	if claimed == nil {
 		detail := ": no expectations declared for this method"
 		if len(lines) > 0 {
