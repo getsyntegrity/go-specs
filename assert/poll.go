@@ -113,16 +113,16 @@ func (r PollResult) Message() string {
 	attempts := plural(r.Attempts, "attempt")
 	switch r.Termination {
 	case TerminatedInvalid:
-		fmt.Fprintf(&b, "%s: invalid arguments: %v", r.mode, r.Err)
+		fmt.Fprintf(&b, "%s: invalid arguments: %s", r.mode, userValue(r.Err))
 		return b.String()
 	case TerminatedTimeout:
 		fmt.Fprintf(&b, "%s: timed out after %v (%s)", r.mode, r.Elapsed, attempts)
 	case TerminatedMismatch:
 		fmt.Fprintf(&b, "%s: condition failed on attempt %d after %v", r.mode, r.Attempts, r.Elapsed)
 	case TerminatedCancelled:
-		fmt.Fprintf(&b, "%s: cancelled after %v (%s): %v", r.mode, r.Elapsed, attempts, r.Err)
+		fmt.Fprintf(&b, "%s: cancelled after %v (%s): %s", r.mode, r.Elapsed, attempts, userValue(r.Err))
 	case TerminatedPanic:
-		fmt.Fprintf(&b, "%s: callback or matcher panicked on attempt %d after %v: %s\n%s", r.mode, r.Attempts, r.Elapsed, renderBounded(r.Panic, "%v"), r.Stack)
+		fmt.Fprintf(&b, "%s: callback or matcher panicked on attempt %d after %v: %s\n%s", r.mode, r.Attempts, r.Elapsed, userValue(r.Panic), r.Stack)
 	default:
 		fmt.Fprintf(&b, "%s: failed (%s) after %v (%s)", r.mode, r.Termination, r.Elapsed, attempts)
 	}

@@ -33,15 +33,15 @@ func (m *haveKeyMatcher) FailureMessage(actual any) string {
 	case lookupNotMap:
 		return notMapMessage("HaveKey", actual)
 	case lookupKeyMismatch:
-		return fmt.Sprintf("expected %v to have key %v — %s", actual, m.key, keyMismatchReason(actual, m.key))
+		return fmt.Sprintf("expected %s to have key %s — %s", userValue(actual), userValue(m.key), keyMismatchReason(actual, m.key))
 	default:
-		return fmt.Sprintf("expected %v to have key %v", actual, m.key)
+		return fmt.Sprintf("expected %s to have key %s", userValue(actual), userValue(m.key))
 	}
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *haveKeyMatcher) Description() string {
-	return fmt.Sprintf("having key %v", m.key)
+	return fmt.Sprintf("having key %s", userValue(m.key))
 }
 
 // HaveValue returns a matcher that expects actual (a map) to contain at least one value equal to
@@ -93,7 +93,7 @@ func (m *haveValueMatcher) FailureMessage(actual any) string {
 	if !ok {
 		return notMapMessage("HaveValue", actual)
 	}
-	message := fmt.Sprintf("expected %v to have value %v", actual, m.value)
+	message := fmt.Sprintf("expected %s to have value %s", userValue(actual), userValue(m.value))
 	if elem := rv.Type().Elem(); elem.Kind() != reflect.Interface {
 		if valueType := reflect.TypeOf(m.value); valueType == nil || !valueType.AssignableTo(elem) {
 			message += fmt.Sprintf(" — %s values are %s, got %T", rv.Type(), elem, m.value)
@@ -104,7 +104,7 @@ func (m *haveValueMatcher) FailureMessage(actual any) string {
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *haveValueMatcher) Description() string {
-	return fmt.Sprintf("having value %v", m.value)
+	return fmt.Sprintf("having value %s", userValue(m.value))
 }
 
 // HavePair returns a matcher that expects actual (a map) to contain key mapped to a value equal to
@@ -139,17 +139,17 @@ func (m *havePairMatcher) FailureMessage(actual any) string {
 	case lookupNotMap:
 		return notMapMessage("HavePair", actual)
 	case lookupKeyMismatch:
-		return fmt.Sprintf("expected %v to have key %v with value %v — %s", actual, m.key, m.value, keyMismatchReason(actual, m.key))
+		return fmt.Sprintf("expected %s to have key %s with value %s — %s", userValue(actual), userValue(m.key), userValue(m.value), keyMismatchReason(actual, m.key))
 	case lookupMissing:
-		return fmt.Sprintf("expected %v to have key %v with value %v — key is missing", actual, m.key, m.value)
+		return fmt.Sprintf("expected %s to have key %s with value %s — key is missing", userValue(actual), userValue(m.key), userValue(m.value))
 	default:
-		return fmt.Sprintf("expected %v to have key %v with value %v — key has value %v", actual, m.key, m.value, got)
+		return fmt.Sprintf("expected %s to have key %s with value %s — key has value %s", userValue(actual), userValue(m.key), userValue(m.value), userValue(got))
 	}
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *havePairMatcher) Description() string {
-	return fmt.Sprintf("having key %v with value %v", m.key, m.value)
+	return fmt.Sprintf("having key %s with value %s", userValue(m.key), userValue(m.value))
 }
 
 type lookupStatus int

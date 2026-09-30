@@ -8,14 +8,15 @@ import (
 	"strings"
 )
 
-// Rendering of arbitrary user values in failure messages: the value a poll last observed and the
-// value a poll callback panicked with (PollResult.Message), and the actual of Satisfy.
+// The bounded fallback renderer behind formatUserValue (render_safe.go): the value a poll last
+// observed, the value a poll callback panicked with (PollResult.Message), the actual of Satisfy and the
+// operands of every matcher message.
 //
 // These values are arbitrary user data, and fmt has no cycle protection: a map that contains itself
-// overflows the stack, which no recover can catch. renderBounded therefore checks the value first. An
+// overflows the stack, which no recover can catch. formatUserValue therefore checks the value first. An
 // acyclic value of ordinary size is printed with the caller's fmt verb, so common failures read as
-// before. A cyclic or oversized one is printed by a bounded renderer that marks a cycle as "<cycle>"
-// and cuts off at a depth and element limit.
+// before. A cyclic or oversized one is printed by this renderer, which marks a cycle as "<cycle>",
+// cuts off at a depth, element and node limit, and says so with "<truncated>" when the budget runs out.
 
 const (
 	cycleMarker       = "<cycle>"
@@ -25,99 +26,24 @@ const (
 )
 
 // renderObserved renders the value a poll last observed, with %#v when that is safe.
-func renderObserved(v any) string { return renderBounded(v, "%#v") }
+func renderObserved(v any) string { return formatUserValue(v, "%#v") }
 
-// renderBounded renders v with verb when v is acyclic and of ordinary size, and with the bounded
-// renderer otherwise.
-func renderBounded(v any, verb string) string {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return fmt.Sprintf(verb, v) // an untyped nil, spelled by fmt as before
-	}
-	w := walker{path: map[visit]bool{}, budget: boundedNodeBudget}
-	if w.safe(rv) {
-		return fmt.Sprintf(verb, v)
-	}
+// renderFallback prints v with the bounded renderer: depth, element and node limits, a marker on a
+// cycle, and no user method ever called.
+func renderFallback(v reflect.Value) string {
 	var b strings.Builder
-	r := renderer{path: map[visit]bool{}, b: &b}
-	r.write(rv, 0)
+	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}}
+	r.write(v, 0)
 	return b.String()
 }
 
-// visit identifies a reference: the same type, address and length is the same slice, map or pointer.
-type visit struct {
-	typ reflect.Type
-	ptr uintptr
-	n   int
-}
-
-func refVisit(v reflect.Value) (visit, bool) {
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map:
-		if v.IsNil() {
-			return visit{}, false
-		}
-		return visit{typ: v.Type(), ptr: v.Pointer()}, true
-	case reflect.Slice:
-		if v.IsNil() || v.Len() == 0 {
-			return visit{}, false
-		}
-		return visit{typ: v.Type(), ptr: v.Pointer(), n: v.Len()}, true
-	}
-	return visit{}, false
-}
-
-// walker reports whether a value can be handed to fmt: no reference cycle and a bounded size.
-type walker struct {
-	path   map[visit]bool
-	budget int
-}
-
-func (w *walker) safe(v reflect.Value) bool {
-	if w.budget--; w.budget < 0 {
-		return false
-	}
-	if key, ok := refVisit(v); ok {
-		if w.path[key] {
-			return false
-		}
-		w.path[key] = true
-		defer delete(w.path, key)
-	}
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		if v.IsNil() {
-			return true
-		}
-		return w.safe(v.Elem())
-	case reflect.Map:
-		iter := v.MapRange()
-		for iter.Next() {
-			if !w.safe(iter.Key()) || !w.safe(iter.Value()) {
-				return false
-			}
-		}
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if !w.safe(v.Index(i)) {
-				return false
-			}
-		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if !w.safe(v.Field(i)) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// renderer prints a value with a depth limit, an element limit and cycle detection. It reads values
-// by kind, never through Interface, so it also works on unexported struct fields.
+// renderer prints a value with a depth limit, an element limit, a node budget and cycle detection. It
+// reads values by kind, never through Interface, so it also works on unexported struct fields and never
+// runs a String, Error, Format or GoString method.
 type renderer struct {
-	path map[visit]bool
-	b    *strings.Builder
+	path  map[refKey]bool
+	b     *strings.Builder
+	nodes *nodeBudget
 }
 
 func (r *renderer) write(v reflect.Value, depth int) {
@@ -129,7 +55,11 @@ func (r *renderer) write(v reflect.Value, depth int) {
 		r.b.WriteString("...")
 		return
 	}
-	if key, ok := refVisit(v); ok {
+	if !r.nodes.take() {
+		r.b.WriteString(truncationMarker)
+		return
+	}
+	if key, ok := refIdentity(v); ok {
 		if r.path[key] {
 			r.b.WriteString(cycleMarker)
 			return
@@ -164,16 +94,27 @@ func (r *renderer) write(v reflect.Value, depth int) {
 				break
 			}
 			r.write(v.Index(i), depth+1)
+			if r.nodes.hit {
+				break
+			}
 		}
 		r.b.WriteString("}")
 	case reflect.Struct:
-		r.b.WriteString(v.Type().String() + "{")
+		t := v.Type()
+		r.b.WriteString(t.String() + "{")
 		for i := 0; i < v.NumField(); i++ {
 			if i > 0 {
 				r.b.WriteString(", ")
 			}
-			r.b.WriteString(v.Type().Field(i).Name + ":")
+			if i == boundedMaxElems {
+				fmt.Fprintf(r.b, "... %d more", v.NumField()-i)
+				break
+			}
+			r.b.WriteString(t.Field(i).Name + ":")
 			r.write(v.Field(i), depth+1)
+			if r.nodes.hit {
+				break
+			}
 		}
 		r.b.WriteString("}")
 	default:
@@ -181,31 +122,57 @@ func (r *renderer) write(v reflect.Value, depth int) {
 	}
 }
 
+// mapSortCap is the largest map whose keys are all rendered and sorted by their text. A larger map
+// prints only its boundedMaxElems smallest keys in the total order of compareMapKeys, so the work stays
+// bounded and the choice does not depend on map iteration order.
+const mapSortCap = 1024
+
+type renderedEntry struct {
+	key  string
+	pair mapEntry
+}
+
 func (r *renderer) writeMap(v reflect.Value, depth int) {
 	r.b.WriteString(v.Type().String() + "{")
-	type entry struct {
-		key string
-		val reflect.Value
+	var picked []mapEntry
+	total := v.Len()
+	if total > mapSortCap {
+		picked, _ = smallestMapEntries(v, boundedMaxElems)
+	} else {
+		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
 	}
-	var entries []entry
-	iter := v.MapRange()
-	for iter.Next() {
+	entries := make([]renderedEntry, len(picked))
+	for i, e := range picked {
 		var kb strings.Builder
-		kr := renderer{path: r.path, b: &kb}
-		kr.write(iter.Key(), depth+1)
-		entries = append(entries, entry{kb.String(), iter.Value()})
+		kr := renderer{path: r.path, b: &kb, nodes: r.nodes}
+		kr.write(e.key, depth+1)
+		entries[i] = renderedEntry{kb.String(), e}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	// Ties in the rendered key (NaN keys, keys that render alike) fall back to the shared key and value
+	// order, so the output never depends on the order the runtime iterates the map.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if c := strings.Compare(entries[i].key, entries[j].key); c != 0 {
+			return c < 0
+		}
+		return compareMapEntries(entries[i].pair, entries[j].pair) < 0
+	})
 	for i, e := range entries {
 		if i > 0 {
 			r.b.WriteString(", ")
 		}
 		if i == boundedMaxElems {
-			fmt.Fprintf(r.b, "... %d more", len(entries)-i)
+			fmt.Fprintf(r.b, "... %d more", total-i)
 			break
 		}
 		r.b.WriteString(e.key + ":")
-		r.write(e.val, depth+1)
+		r.write(e.pair.val, depth+1)
+		if r.nodes.hit {
+			r.b.WriteString("}")
+			return
+		}
+	}
+	if len(entries) <= boundedMaxElems && total > len(entries) {
+		fmt.Fprintf(r.b, ", ... %d more", total-len(entries))
 	}
 	r.b.WriteString("}")
 }

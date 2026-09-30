@@ -95,9 +95,9 @@ func (m *orderMatcher) FailureMessage(actual any) string {
 	name := m.op.matcherName()
 	switch status {
 	case ordOK:
-		return fmt.Sprintf("expected %v to be %s %v", actual, m.op.phrase(), m.target)
+		return fmt.Sprintf("expected %s to be %s %s", userValue(actual), m.op.phrase(), userValue(m.target))
 	case ordNaN:
-		return fmt.Sprintf("expected %v to be %s %v — NaN is not ordered", actual, m.op.phrase(), m.target)
+		return fmt.Sprintf("expected %s to be %s %s — NaN is not ordered", userValue(actual), m.op.phrase(), userValue(m.target))
 	case ordTargetInvalid:
 		return fmt.Sprintf("%s: expected value %T is not a number or string", name, m.target)
 	case ordMixed:
@@ -109,7 +109,7 @@ func (m *orderMatcher) FailureMessage(actual any) string {
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *orderMatcher) Description() string {
-	return fmt.Sprintf("%s %v", m.op.phrase(), m.target)
+	return fmt.Sprintf("%s %s", m.op.phrase(), userValue(m.target))
 }
 
 // BeBetween returns a matcher that expects lo <= actual <= hi: both bounds are inclusive. The bounds
@@ -143,22 +143,22 @@ func (m *betweenMatcher) FailureMessage(actual any) string {
 		return fmt.Sprintf("BeBetween: bounds %T and %T are not comparable", m.lo, m.hi)
 	}
 	if bounds > 0 {
-		return fmt.Sprintf("expected %v to be between %v and %v — lower bound is greater than upper bound", actual, m.lo, m.hi)
+		return fmt.Sprintf("expected %s to be between %s and %s — lower bound is greater than upper bound", userValue(actual), userValue(m.lo), userValue(m.hi))
 	}
 	switch _, status := compareOrdered(actual, m.lo); status {
 	case ordNaN:
-		return fmt.Sprintf("expected %v to be between %v and %v — NaN is not ordered", actual, m.lo, m.hi)
+		return fmt.Sprintf("expected %s to be between %s and %s — NaN is not ordered", userValue(actual), userValue(m.lo), userValue(m.hi))
 	case ordMixed:
 		return fmt.Sprintf("BeBetween: cannot compare %T with %T", actual, m.lo)
 	case ordActualInvalid, ordTargetInvalid:
 		return fmt.Sprintf("BeBetween: %T is not a number or string", actual)
 	}
-	return fmt.Sprintf("expected %v to be between %v and %v (inclusive)", actual, m.lo, m.hi)
+	return fmt.Sprintf("expected %s to be between %s and %s (inclusive)", userValue(actual), userValue(m.lo), userValue(m.hi))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *betweenMatcher) Description() string {
-	return fmt.Sprintf("between %v and %v (inclusive)", m.lo, m.hi)
+	return fmt.Sprintf("between %s and %s (inclusive)", userValue(m.lo), userValue(m.hi))
 }
 
 // BeCloseTo returns a matcher that expects |actual - target| <= delta, the delta being inclusive.
@@ -199,14 +199,14 @@ func (m *closeToMatcher) FailureMessage(actual any) string {
 	}
 	got := n.float()
 	if math.IsNaN(got) || math.IsNaN(m.target) {
-		return fmt.Sprintf("expected %v to be within %v of %v — NaN is not ordered", actual, m.delta, m.target)
+		return fmt.Sprintf("expected %s to be within %v of %s — NaN is not ordered", userValue(actual), m.delta, userValue(m.target))
 	}
-	return fmt.Sprintf("expected %v to be within %v of %v, difference is %v", actual, m.delta, m.target, math.Abs(got-m.target))
+	return fmt.Sprintf("expected %s to be within %v of %s, difference is %v", userValue(actual), m.delta, userValue(m.target), math.Abs(got-m.target))
 }
 
 // Description implements Describer; see equalMatcher.Description.
 func (m *closeToMatcher) Description() string {
-	return fmt.Sprintf("within %v of %v", m.delta, m.target)
+	return fmt.Sprintf("within %v of %s", m.delta, userValue(m.target))
 }
 
 type orderStatus uint8

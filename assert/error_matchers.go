@@ -62,7 +62,7 @@ func isComparableNil(err error) bool {
 // same message are indistinguishable under %v — the reason this defect read as "expected boom to
 // equal boom" — so the type is what makes a failure readable.
 func describeError(err error) string {
-	return fmt.Sprintf("%v (%T)", err, err)
+	return fmt.Sprintf("%s (%T)", userValue(err), err)
 }
 
 // errorMismatchMessage is the single wording for a failed oriented error comparison, shared by
@@ -99,8 +99,7 @@ func (m *matchErrorMatcher) FailureMessage(actual any) string {
 	}
 	actualErr, ok := actual.(error)
 	if !ok {
-		return fmt.Sprintf("expected an error matching %s, got %v (%T) — errors.Is needs an error actual",
-			describeError(m.target), actual, actual)
+		return fmt.Sprintf("expected an error matching %s, got %s (%T) — errors.Is needs an error actual", describeError(m.target), userValue(actual), actual)
 	}
 	return errorMismatchMessage(m.target, actualErr)
 }
@@ -134,8 +133,7 @@ func (m *matchErrorAsMatcher) Match(actual any) bool {
 
 func (m *matchErrorAsMatcher) FailureMessage(actual any) string {
 	if !isErrorAsTarget(m.target) {
-		return fmt.Sprintf("MatchErrorAs needs a non-nil pointer to a type implementing error (or to an interface), got %v (%T)",
-			m.target, m.target)
+		return fmt.Sprintf("MatchErrorAs needs a non-nil pointer to a type implementing error (or to an interface), got %s (%T)", userValue(m.target), m.target)
 	}
 	// Checked before the type assertion for the same reason as in matchErrorMatcher.FailureMessage.
 	if actual == nil {
@@ -143,8 +141,7 @@ func (m *matchErrorAsMatcher) FailureMessage(actual any) string {
 	}
 	actualErr, ok := actual.(error)
 	if !ok {
-		return fmt.Sprintf("expected an error assignable to %T, got %v (%T) — errors.As needs an error actual",
-			m.target, actual, actual)
+		return fmt.Sprintf("expected an error assignable to %T, got %s (%T) — errors.As needs an error actual", m.target, userValue(actual), actual)
 	}
 	return fmt.Sprintf("expected %s to unwrap to %T — errors.As(actual, target) is false",
 		describeError(actualErr), m.target)
