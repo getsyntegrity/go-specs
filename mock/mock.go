@@ -1,3 +1,13 @@
+// Package mock provides call recording and interface mocking for specs.
+//
+// Spy records calls and Mock groups named spies. Controller adds expectations on top of one shared
+// recorder: Method(name).Expect(args...) declares how a call is expected to happen (Times counts,
+// default exactly once), Method(name).Call(args...) is what a hand-written adapter of an interface
+// method calls, Result/Value read the stubbed return values, InOrder checks the global call order
+// across methods and spies, and Verify (registered with t.Cleanup by NewController) reports unmet
+// expectations. Unexpected calls are reported immediately through t.Errorf.
+//
+// The package depends only on assert: a *testing.T, *testing.B or *specs.Context satisfies TB.
 package mock
 
 import "sync"

@@ -19,7 +19,7 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
 - **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, `ContainAllOf`, `BeOneOf`, `BeGreaterThan`, `BeBetween`, `BeZero`, `Satisfy`, etc.), composable with `Not`/`All`/`Any`, `ctx.Eventually`/`ctx.Consistently` polling assertions, and snapshot testing
-- **Lightweight mocking** — Spies and argument matchers without heavy code generation
+- **Lightweight mocking** — Spies, argument matchers and `mock.Controller` (stubbing, counts, captors, call order, automatic verification at cleanup) for hand-written typed adapters, without code generation; see [docs/DSL.md](docs/DSL.md#mocking-interfaces-with-mockcontroller)
 
 ## Installation
 
@@ -226,7 +226,7 @@ go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) int
 - **specs** — Core DSL, runner, context, and execution plan
 - **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, ContainAllOf, BeOneOf, BeGreaterThan, BeBetween, BeZero, Satisfy, etc.) and composition (Not, All, Any)
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
-- **mock** — Spies and argument matchers
+- **mock** — Spies, argument matchers and `Controller` expectations for interface mocks ([examples/mocks](examples/mocks))
 - **snapshots** — Snapshot testing support
 - **examples** — Example tests (basic, hooks, parallel, and more)
 
