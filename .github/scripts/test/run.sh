@@ -166,7 +166,7 @@ expect_eq "changelog: the default range ends at the tag" "$want_notes" "$(cat "$
 cl v0.1.0 --write >/dev/null; status=$?
 expect_eq "changelog: --write for a new minor exits 0" 0 "$status"
 minor="$cl_repo/CHANGELOG/CHANGELOG-0.1.md"
-if rg -q '^# v0.1.0$' "$minor" && rg -q '^## Changelog since v0.0.10$' "$minor" && rg -qF -- '- [v0.1.0](#v010)' "$minor"; then pass "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents"; else fail "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents" "$(cat "$minor" 2>/dev/null | head -20)"; fi
+if grep -qE '^# v0.1.0$' "$minor" && grep -qE '^## Changelog since v0.0.10$' "$minor" && grep -qF -- '- [v0.1.0](#v010)' "$minor"; then pass "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents"; else fail "changelog: --write creates CHANGELOG-0.1.md with the section and its table of contents" "$(cat "$minor" 2>/dev/null | head -20)"; fi
 expect_eq "changelog: README indexes the new file" $'# CHANGELOGs\n\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md" 2>/dev/null)"
 if [ -e "$cl_repo/CHANGELOG/unreleased-legacy.md" ]; then fail "changelog: --write consumes the legacy file"; else pass "changelog: --write consumes the legacy file"; fi
 (cd "$cl_repo" && git_quiet add -A && git_quiet commit -m "sync 0.1.0")
@@ -178,11 +178,11 @@ git_quiet tag -a v0.1.1 -m v0.1.1
 cd "$repo_root" || exit 1
 cl v0.1.1 --write >/dev/null; status=$?
 expect_eq "changelog: --write for a patch exits 0" 0 "$status"
-new_at=$(rg -n '^# v0.1.1$' "$minor" | cut -d: -f1); old_at=$(rg -n '^# v0.1.0$' "$minor" | cut -d: -f1)
+new_at=$(grep -nE '^# v0.1.1$' "$minor" | cut -d: -f1); old_at=$(grep -nE '^# v0.1.0$' "$minor" | cut -d: -f1)
 if [ -n "$new_at" ] && [ -n "$old_at" ] && [ "$new_at" -lt "$old_at" ]; then pass "changelog: --write puts the patch above the earlier release of its minor"; else fail "changelog: --write puts the patch above the earlier release of its minor" "v0.1.1 at '$new_at', v0.1.0 at '$old_at'"; fi
-if rg -qF -- '- Later fix' "$minor"; then pass "changelog: the patch section holds its PR"; else fail "changelog: the patch section holds its PR"; fi
+if grep -qF -- '- Later fix' "$minor"; then pass "changelog: the patch section holds its PR"; else fail "changelog: the patch section holds its PR"; fi
 cl v0.1.1 --write >/dev/null
-expect_eq "changelog: --write twice does not repeat the section" 1 "$(rg -c '^# v0.1.1$' "$minor")"
+expect_eq "changelog: --write twice does not repeat the section" 1 "$(grep -cE '^# v0.1.1$' "$minor")"
 expect_eq "changelog: a patch adds no README line" $'# CHANGELOGs\n\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md")"
 (cd "$cl_repo" && git_quiet add -A && git_quiet commit -m "sync 0.1.1")
 
@@ -194,8 +194,8 @@ cd "$repo_root" || exit 1
 cl v0.2.0 --write >/dev/null; status=$?
 expect_eq "changelog: --write for the next minor exits 0" 0 "$status"
 expect_eq "changelog: README lists the newest minor first" $'# CHANGELOGs\n\n- [CHANGELOG-0.2.md](./CHANGELOG-0.2.md)\n- [CHANGELOG-0.1.md](./CHANGELOG-0.1.md)' "$(cat "$cl_repo/CHANGELOG/README.md")"
-if rg -q '^## Changelog since v0.1.1$' "$cl_repo/CHANGELOG/CHANGELOG-0.2.md"; then pass "changelog: the next minor starts at the previous patch"; else fail "changelog: the next minor starts at the previous patch"; fi
-if rg -q '^# v0.1.0$' "$minor"; then pass "changelog: earlier minors are untouched"; else fail "changelog: earlier minors are untouched"; fi
+if grep -qE '^## Changelog since v0.1.1$' "$cl_repo/CHANGELOG/CHANGELOG-0.2.md"; then pass "changelog: the next minor starts at the previous patch"; else fail "changelog: the next minor starts at the previous patch"; fi
+if grep -qE '^# v0.1.0$' "$minor"; then pass "changelog: earlier minors are untouched"; else fail "changelog: earlier minors are untouched"; fi
 
 # Nothing to release: no entries and no legacy ones -> exit 3, nothing written.
 nr="$tmp/nr"; new_repo "$nr" example.com/x v0.0.9
@@ -213,7 +213,7 @@ commit "feat: first (#30)"; pr "$tmp/np-fx" 30 "feat: first" feat/y develop kind
 git_quiet tag -a v0.1.0 -m v0.1.0
 (cd "$np" && PR_FIXTURES="$tmp/np-fx" "$scripts/changelog.sh" v0.1.0 --notes "$tmp/np.md" >/dev/null 2>&1); status=$?
 expect_eq "changelog: no previous tag exits 0" 0 "$status"
-if rg -q '^## Changelog \(first release\)$' "$tmp/np.md" && rg -qF -- "- First $(link 30)" "$tmp/np.md"; then pass "changelog: no previous tag releases every PR"; else fail "changelog: no previous tag releases every PR" "$(cat "$tmp/np.md" 2>/dev/null)"; fi
+if grep -qE '^## Changelog \(first release\)$' "$tmp/np.md" && grep -qF -- "- First $(link 30)" "$tmp/np.md"; then pass "changelog: no previous tag releases every PR"; else fail "changelog: no previous tag releases every PR" "$(cat "$tmp/np.md" 2>/dev/null)"; fi
 cd "$repo_root" || exit 1
 
 echo
