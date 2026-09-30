@@ -341,6 +341,84 @@ func TestContractConcurrentParallelSpecsShareOneController(t *testing.T) {
 	}
 }
 
+// --- prohibitions over permissive expectations ---
+
+// prohibitionSpellings are the ways to declare an expectation whose effective maximum is 0.
+var prohibitionSpellings = []struct {
+	name  string
+	apply func(*mock.Expectation) *mock.Expectation
+}{
+	{"Never()", func(e *mock.Expectation) *mock.Expectation { return e.Never() }},
+	{"Times(0)", func(e *mock.Expectation) *mock.Expectation { return e.Times(0) }},
+	{"AtMost(0)", func(e *mock.Expectation) *mock.Expectation { return e.AtMost(0) }},
+	{"AtLeast(0).AtMost(0)", func(e *mock.Expectation) *mock.Expectation { return e.AtLeast(0).AtMost(0) }},
+}
+
+// prohibitionCase declares the prohibition on Put("protected", any) and a permissive fallback for every
+// Put, in either declaration order. The fallback's Do and its captor announce themselves on stdout so
+// the contract can see whether they ran. With callProtected the body calls the protected key first,
+// then an allowed one.
+func prohibitionCase(name string, apply func(*mock.Expectation) *mock.Expectation, prohibitionFirst, callProtected bool) contractCase {
+	return contractCase{name, func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		st := store{ctrl}
+		keys := mock.NewCaptor[string]()
+		prohibit := func() {
+			apply(ctrl.Method("Put").Expect("protected", mock.Any())) // DECL_PROHIB
+		}
+		fallback := func() {
+			ctrl.Method("Put").Expect(keys.Matcher(), mock.Any()).AnyTimes().Do(func(args []any) []any {
+				fmt.Printf("FALLBACK_RAN %s %v\n", name, args[0])
+				return []any{nil}
+			})
+		}
+		if prohibitionFirst {
+			prohibit()
+			fallback()
+		} else {
+			fallback()
+			prohibit()
+		}
+		if callProtected {
+			_ = st.Put("protected", "v")
+		}
+		_ = st.Put("ok", "v")
+		fmt.Printf("CAPTURED %s %v\n", name, keys.Values())
+	}}
+}
+
+// prohibitionCases builds one case per spelling and declaration order.
+func prohibitionCases(callProtected bool) []contractCase {
+	var cases []contractCase
+	for _, sp := range prohibitionSpellings {
+		for _, first := range []bool{true, false} {
+			order := "fallback first"
+			if first {
+				order = "prohibition first"
+			}
+			cases = append(cases, prohibitionCase("prohibition "+sp.name+" "+order, sp.apply, first, callProtected))
+		}
+	}
+	return cases
+}
+
+// TestContractProhibitionGreenControls: the same setups, calling only allowed arguments, pass on
+// every engine and the fallback answers.
+func TestContractProhibitionGreenControls(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e engine) {
+		rep := &recorder{}
+		e.run(t, rep, prohibitionCases(false))
+		if want := len(prohibitionSpellings) * 2; len(rep.finished) != want {
+			t.Fatalf("finished %d specs, want %d", len(rep.finished), want)
+		}
+		for _, f := range rep.finished {
+			if f.Failed {
+				t.Errorf("green control %q failed: %s", f.Name, f.Message)
+			}
+		}
+	})
+}
+
 // --- scenarios that fail on purpose: run in a subprocess on a real *testing.T ---
 
 var failingCases = []contractCase{
@@ -431,6 +509,8 @@ var failingCases = []contractCase{
 		putN(store{ctrl}, 1)
 	}},
 }
+
+func init() { failingCases = append(failingCases, prohibitionCases(true)...) }
 
 const contractEnv = "GO_SPECS_MOCK_CONTRACT"
 
@@ -583,9 +663,31 @@ func checkFailureOutput(t *testing.T, engineName, out string) {
 	contains("bounds 2..3 with 4 calls", result("bounds 2..3 with 4 calls"),
 		"mock: unexpected call Put(", "matched but at capacity (want 2..3, got 3)", "declared at "+decl("DECL_B23_4"))
 	contains("bounds AtMost(0) called", result("bounds AtMost(0) called"),
-		"mock: unexpected call Put(", "the expectation says never", "declared at "+decl("DECL_B0_A"))
+		"mock: forbidden call Put(", `Put("k", "v"): expectation Put(any value, any value) declared at `+decl("DECL_B0_A")+" says never")
 	contains("bounds AtLeast(0).AtMost(0) called", result("bounds AtLeast(0).AtMost(0) called"),
-		"mock: unexpected call Put(", "the expectation says never", "declared at "+decl("DECL_B0_B"))
+		"mock: forbidden call Put(", `Put("k", "v"): expectation Put(any value, any value) declared at `+decl("DECL_B0_B")+" says never")
+
+	// Prohibitions take precedence over permissive expectations, in either declaration order: the case
+	// fails with the forbidden-call diagnostic (method, arguments, declaration site), reported once as
+	// "forbidden call" (never "unexpected"), and neither the fallback's Do nor its captor saw the
+	// protected call.
+	for _, c := range prohibitionCases(true) {
+		r := result(c.name)
+		contains(c.name, r, `mock: forbidden call Put("protected", "v"): expectation Put(equal to "protected", any value) declared at `+decl("DECL_PROHIB")+" says never")
+		if n := strings.Count(r, "forbidden call"); n != 1 {
+			t.Errorf("%s: %d forbidden-call reports in the message, want 1:\n%s", c.name, n, r)
+		}
+		if strings.Contains(r, "unexpected call") {
+			t.Errorf("%s: a prohibited call must not be reported as unexpected:\n%s", c.name, r)
+		}
+		ran := regexp.MustCompile(`(?m)^FALLBACK_RAN `+regexp.QuoteMeta(c.name)+` (.*)$`).FindAllStringSubmatch(out, -1)
+		if len(ran) != 1 || ran[0][1] != "ok" {
+			t.Errorf("%s: the fallback Do must run once, for \"ok\" only, got %v", c.name, ran)
+		}
+		if want := "CAPTURED " + c.name + " [ok]"; !strings.Contains(out, want) {
+			t.Errorf("%s: the captor must hold only the allowed call, want %q in:\n%s", c.name, want, out)
+		}
+	}
 
 	// Attribution: a call reported through mock points at the adapter line, never into mock/. On real
 	// testing.T engines this is testing's own "file:line:" prefix (Helper marking through
