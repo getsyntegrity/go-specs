@@ -22,10 +22,11 @@ import (
 
 // BuildSuite compiles once, RunShard runs one slice. Running both halves of a 2-way split covers
 // every spec exactly once. Here two shards run in one test to prove the partition; in CI each job
-// runs only its own shard, taken from ShardFromArgsOrEnv.
+// runs only its own shard, taken from ShardFromArgsOrEnv. The suite runs on directTB (see
+// dsl_test.go) so the coverage check does not depend on `go test -run` selecting subtests.
 func TestSharding_runShardPartitionsTheSuite(t *testing.T) {
 	seen := map[string]int{}
-	suite := specs.BuildSuite(t, "shardable", func(s *specs.Spec) {
+	suite := specs.BuildSuite(directTB{t}, "shardable", func(s *specs.Spec) {
 		for _, name := range []string{"a", "b", "c", "d", "e"} {
 			s.It(name, func(ctx *specs.Context) { seen[name]++ })
 		}
@@ -33,7 +34,7 @@ func TestSharding_runShardPartitionsTheSuite(t *testing.T) {
 
 	const total = 2
 	for shard := range total {
-		suite.RunShard(t, shard, total)
+		suite.RunShard(directTB{t}, shard, total)
 	}
 
 	var names []string
