@@ -157,6 +157,34 @@ func TestFuzzCorpusSubprocess(t *testing.T) {
 	}
 }
 
+// fzRegressions are the inputs the fuzz targets found a defect with. Each has its corpus file under
+// testdata/fuzz/<target>/<name> and a named unit test in fuzz_regression_test.go that fails without
+// the fix; this table replays the recipe in a child process as well.
+var fzRegressions = []struct {
+	name, target string
+	data         []byte
+}{
+	{"budget-exhausted-while-rendering-map-keys", "FuzzPollMessage", []byte("B2cB000B0")},
+}
+
+func TestFuzzRegressionsSubprocess(t *testing.T) {
+	for _, r := range fzRegressions {
+		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
+			committed, err := fzReadCorpusFile(filepath.Join("testdata", "fuzz", r.target, r.name))
+			if err != nil {
+				t.Fatalf("the regression has no committed corpus file: %v", err)
+			}
+			if !bytes.Equal(committed, r.data) {
+				t.Fatalf("the corpus file holds %q, the table %q", committed, r.data)
+			}
+			if out, err := fzReplayInChild(r.target, r.data); err != nil {
+				fzReport(t, r.name, out, err)
+			}
+		})
+	}
+}
+
 // TestFuzzSubprocessContainsAStackOverflow proves the isolation works: a child that overflows its
 // stack fails its own run, with the runtime's fatal error in its output, and this test carries on.
 func TestFuzzSubprocessContainsAStackOverflow(t *testing.T) {

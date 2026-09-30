@@ -140,6 +140,10 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 		picked, _ = smallestMapEntries(v, boundedMaxElems)
 	} else {
 		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
+		// Keys are rendered in this order and each costs node budget, so when the budget runs out
+		// partway the entries cut to "<truncated>" must not depend on the order the runtime iterates
+		// the map. smallestMapEntries above already returns its window in this order.
+		sort.SliceStable(picked, func(i, j int) bool { return compareMapEntries(&picked[i], &picked[j]) < 0 })
 	}
 	entries := make([]renderedEntry, len(picked))
 	for i, e := range picked {
