@@ -148,6 +148,11 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 		picked, _ = smallestMapEntriesWith(v, boundedMaxElems, r.meter)
 	} else {
 		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
+		// Keys are rendered in this order and each costs node budget, so when the budget runs out
+		// partway the entries cut to "<truncated>" must not depend on the order the runtime iterates
+		// the map. sortEntries puts the entries in the total order of compareMapEntries and resolves
+		// the fingerprints of tied keys within the message budget; smallestMapEntriesWith above
+		// already returns its window in this order.
 		r.meter.sortEntries(picked)
 	}
 	entries := make([]renderedEntry, len(picked))

@@ -400,6 +400,8 @@ type fpMeter struct {
 	left    int // nodes still available to this message
 	visited int // nodes visited by this message's fingerprints so far
 	memo    map[fpMemoKey]fpMemoEntry
+	windows map[windowKey]mapWindow // windows of big maps already selected in this message
+	scans   int                     // maps scanned to select a window, for tests
 }
 
 func newFPMeter() *fpMeter { return &fpMeter{left: fingerprintMessageBudget} }

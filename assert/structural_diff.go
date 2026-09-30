@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,7 +31,38 @@ const (
 	renderMaxElems    = 4
 )
 
-type diffEntry struct{ path, detail string }
+// diffEntry is one difference: where it is (a symbolic path, formatted only for the lines shown) and
+// what differs there.
+type diffEntry struct {
+	path   *pathSeg
+	detail string
+}
+
+// segKind says what a pathSeg stands for.
+type segKind uint8
+
+const (
+	segRoot  segKind = iota // the root label (the value's type name, possibly empty)
+	segField                // .Name
+	segIndex                // [3]
+	segKey                  // [key], rendered and disambiguated once the shown lines are known
+)
+
+// pathSeg is one segment of a difference path, linked to its parent so extending a path costs one
+// node and entries share their prefixes. A map-key segment stays symbolic (level, position, key)
+// until the walk is over: which keys need an ordinal depends on the lines actually shown, and only
+// those keys are ever rendered.
+type pathSeg struct {
+	parent *pathSeg
+	kind   segKind
+	name   string        // segRoot, segField
+	idx    int           // segIndex: the index; segKey: the key's position in the map's sorted order
+	level  int           // segKey: identifies the map being walked (one per walkMap call)
+	key    reflect.Value // segKey
+}
+
+// keyID identifies one key of one walked map.
+type keyID struct{ level, pos int }
 
 type diffWalker struct {
 	meter   *fpMeter // the work budget of the message this walk belongs to
@@ -38,8 +70,11 @@ type diffWalker struct {
 	limit   int  // stop once more than limit entries exist
 	depth   int  // paths deeper than this are summarised
 	opaque  bool // when set, Stringer structs with hidden fields are walked, not treated as values
+	probe   bool // only whether a difference exists matters: no paths, no ordering, stop at the first
 	methods bool // both values passed safeForFmt, so rendering may use their String and Error text
 	visited map[refPair]bool
+	levels  int              // maps walked so far, the source of pathSeg.level
+	probed  map[refPair]bool // differs answers by reference pair, see differs
 }
 
 // structuralDiff returns the "differences:" section for expected versus actual, or "" when the diff
@@ -58,24 +93,99 @@ func structuralDiffWith(expected, actual any, meter *fpMeter) string {
 	}
 	w := &diffWalker{meter: meter, limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{},
 		methods: safeForFmt(ev) && safeForFmt(av)}
-	w.walk(ev, av, diffRootLabel(ev, av), 0)
+	w.walk(ev, av, &pathSeg{kind: segRoot, name: diffRootLabel(ev, av)}, 0)
 	if len(w.entries) == 0 {
 		return ""
 	}
+	shown := w.entries[:min(len(w.entries), diffMaxEntries)]
+	paths := w.formatPaths(shown)
 	var b strings.Builder
 	b.WriteString("differences:")
-	for i, e := range w.entries {
-		if i == diffMaxEntries {
-			fmt.Fprintf(&b, "\n  ... more differences not shown (limit %d)", diffMaxEntries)
-			break
-		}
-		path := e.path
+	for i, e := range shown {
+		path := paths[i]
 		if path == "" {
 			path = "<root>"
 		}
 		fmt.Fprintf(&b, "\n  %s: %s", path, e.detail)
 	}
+	if len(w.entries) > diffMaxEntries {
+		fmt.Fprintf(&b, "\n  ... more differences not shown (limit %d)", diffMaxEntries)
+	}
 	return b.String()
+}
+
+// segments returns the segments of p from the root down.
+func (p *pathSeg) segments() []*pathSeg {
+	n := 0
+	for s := p; s != nil; s = s.parent {
+		n++
+	}
+	segs := make([]*pathSeg, n)
+	for s := p; s != nil; s = s.parent {
+		n--
+		segs[n] = s
+	}
+	return segs
+}
+
+// formatPaths formats the paths of the entries that will be printed. Each distinct map key on those
+// paths is rendered once. Keys of the same map whose bounded labels are alike (long strings with a
+// common prefix, structs differing past the rendered fields, NaNs) get a 1-based ordinal among the
+// colliding keys shown in this message, in the map's sorted order: `["kkkk… #1]`, `["kkkk… #2]`.
+// The same key on several shown paths gets the same label on each, and a colliding key that is not
+// shown affects nothing. Labels that are unique are left exactly as rendered.
+func (w *diffWalker) formatPaths(entries []diffEntry) []string {
+	segs := make([][]*pathSeg, len(entries))
+	labels := map[keyID]string{}
+	for i, e := range entries {
+		segs[i] = e.path.segments()
+		for _, s := range segs[i] {
+			if id := (keyID{s.level, s.idx}); s.kind == segKey {
+				if _, ok := labels[id]; !ok {
+					labels[id] = w.render(s.key)
+				}
+			}
+		}
+	}
+	type levelLabel struct {
+		level int
+		label string
+	}
+	groups := map[levelLabel][]int{}
+	for id, l := range labels {
+		g := levelLabel{id.level, l}
+		groups[g] = append(groups[g], id.pos)
+	}
+	for g, positions := range groups {
+		if len(positions) < 2 {
+			continue
+		}
+		slices.Sort(positions)
+		for n, pos := range positions {
+			labels[keyID{g.level, pos}] = fmt.Sprintf("%s #%d", g.label, n+1)
+		}
+	}
+	out := make([]string, len(entries))
+	for i, ss := range segs {
+		var b strings.Builder
+		for _, s := range ss {
+			switch s.kind {
+			case segRoot:
+				b.WriteString(s.name)
+			case segField:
+				if b.Len() > 0 {
+					b.WriteByte('.')
+				}
+				b.WriteString(s.name)
+			case segIndex:
+				fmt.Fprintf(&b, "[%d]", s.idx)
+			case segKey:
+				fmt.Fprintf(&b, "[%s]", labels[keyID{s.level, s.idx}])
+			}
+		}
+		out[i] = b.String()
+	}
+	return out
 }
 
 func isDiffComposite(v reflect.Value) bool {
@@ -114,22 +224,50 @@ func (w *diffWalker) render(v reflect.Value) string {
 
 func (w *diffWalker) full() bool { return len(w.entries) > w.limit }
 
-func (w *diffWalker) add(path, detail string) {
+func (w *diffWalker) add(path *pathSeg, detail string) {
 	if !w.full() {
 		w.entries = append(w.entries, diffEntry{path, detail})
 	}
 }
 
+// diffRenders counts the values rendered for a diff line or a map key label: tests read it to prove
+// that a walk which has filled its entry limit stops rendering.
+var diffRenders atomic.Int64
+
+// probeWalks counts the subtrees differs walked rather than answered from its memo: tests read it to
+// prove that a shared subtree is walked once per message.
+var probeWalks atomic.Int64
+
 // differs reports whether a and b differ at all, stopping at the first difference. It is how the
 // depth limit and the opaque-struct rule decide whether a subtree needs an entry, without walking
 // or rendering it in full.
 func (w *diffWalker) differs(a, b reflect.Value) bool {
-	sub := &diffWalker{meter: w.meter, limit: 0, depth: 1 << 30, opaque: true, visited: map[refPair]bool{}}
-	sub.walk(a, b, "", 0)
-	return len(sub.entries) > 0
+	// A probe starts from an empty visited set, so its answer is a pure function of the two values
+	// and a reference pair asked about again (a shared subtree met under several paths) is answered
+	// from the first probe instead of walked again.
+	var key refPair
+	memo := false
+	switch a.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer:
+		key, memo = refPairOf(a, b), true
+		if d, ok := w.probed[key]; ok {
+			return d
+		}
+	}
+	probeWalks.Add(1)
+	sub := &diffWalker{meter: w.meter, limit: 0, depth: 1 << 30, opaque: true, probe: true, visited: map[refPair]bool{}}
+	sub.walk(a, b, nil, 0)
+	d := len(sub.entries) > 0
+	if memo {
+		if w.probed == nil {
+			w.probed = map[refPair]bool{}
+		}
+		w.probed[key] = d
+	}
+	return d
 }
 
-func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
+func (w *diffWalker) walk(a, b reflect.Value, path *pathSeg, depth int) {
 	if w.full() {
 		return
 	}
@@ -186,7 +324,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 }
 
 // walkElemTypes compares the dynamic values held by two interfaces, which may have different types.
-func (w *diffWalker) walkElemTypes(a, b reflect.Value, path string, depth int) {
+func (w *diffWalker) walkElemTypes(a, b reflect.Value, path *pathSeg, depth int) {
 	if a.Type() != b.Type() {
 		w.add(path, fmt.Sprintf("type mismatch: expected %s (%s), actual %s (%s)",
 			a.Type(), w.render(a), b.Type(), w.render(b)))
@@ -205,7 +343,7 @@ func (w *diffWalker) seen(a, b reflect.Value) bool {
 	return false
 }
 
-func (w *diffWalker) walkStruct(a, b reflect.Value, path string, depth int) {
+func (w *diffWalker) walkStruct(a, b reflect.Value, path *pathSeg, depth int) {
 	if !w.opaque && isOpaqueStruct(a) && a.CanInterface() && b.CanInterface() {
 		// time.Time and friends: their fields are an implementation detail, their String is the value.
 		if w.differs(a, b) {
@@ -214,8 +352,8 @@ func (w *diffWalker) walkStruct(a, b reflect.Value, path string, depth int) {
 		return
 	}
 	t := a.Type()
-	for i := 0; i < a.NumField(); i++ {
-		w.walk(a.Field(i), b.Field(i), joinField(path, t.Field(i).Name), depth+1)
+	for i := 0; i < a.NumField() && !w.full(); i++ {
+		w.walk(a.Field(i), b.Field(i), w.child(path, segField, t.Field(i).Name, 0), depth+1)
 	}
 }
 
@@ -239,14 +377,15 @@ func isOpaqueStruct(v reflect.Value) bool {
 	return false
 }
 
-func joinField(path, name string) string {
-	if path == "" {
-		return name
+// child extends path by one field or index segment. A probe never shows a path, so it builds none.
+func (w *diffWalker) child(path *pathSeg, kind segKind, name string, idx int) *pathSeg {
+	if w.probe {
+		return nil
 	}
-	return path + "." + name
+	return &pathSeg{parent: path, kind: kind, name: name, idx: idx}
 }
 
-func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
+func (w *diffWalker) walkList(a, b reflect.Value, path *pathSeg, depth int) {
 	if a.Kind() == reflect.Slice {
 		if a.IsNil() != b.IsNil() {
 			w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods, w.meter), describeNilness(b, w.methods, w.meter)))
@@ -266,23 +405,27 @@ func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 		w.add(path, fmt.Sprintf("length: expected %d, actual %d", la, lb))
 	}
 	common := min(la, lb)
-	for i := 0; i < common; i++ {
-		w.walk(a.Index(i), b.Index(i), fmt.Sprintf("%s[%d]", path, i), depth+1)
+	for i := 0; i < common && !w.full(); i++ {
+		w.walk(a.Index(i), b.Index(i), w.child(path, segIndex, "", i), depth+1)
 	}
-	for i := common; i < la; i++ {
-		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("missing in actual (expected %s)", w.render(a.Index(i))))
+	for i := common; i < la && !w.full(); i++ {
+		w.add(w.child(path, segIndex, "", i), fmt.Sprintf("missing in actual (expected %s)", w.render(a.Index(i))))
 	}
-	for i := common; i < lb; i++ {
-		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("unexpected in actual (%s)", w.render(b.Index(i))))
+	for i := common; i < lb && !w.full(); i++ {
+		w.add(w.child(path, segIndex, "", i), fmt.Sprintf("unexpected in actual (%s)", w.render(b.Index(i))))
 	}
 }
 
-func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
+func (w *diffWalker) walkMap(a, b reflect.Value, path *pathSeg, depth int) {
 	if a.IsNil() != b.IsNil() {
 		w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods, w.meter), describeNilness(b, w.methods, w.meter)))
 		return
 	}
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
+		return
+	}
+	if w.probe {
+		w.probeMap(a, b, depth)
 		return
 	}
 	// Entries keep each key with its value from MapRange. A key that is not equal to itself (NaN, or a
@@ -300,19 +443,24 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	}
 	w.meter.sortEntries(entries)
 	units := tiedUnits(entries)
-	keys := make([]reflect.Value, len(units))
-	for i, u := range units {
-		keys[i] = entries[u.first].key
+	// Keys stay symbolic: a line's label is rendered, and given an ordinal when it collides with
+	// another shown key of this map, only once the lines to print are known (see formatPaths).
+	w.levels++
+	level := w.levels
+	keySeg := func(i int) *pathSeg {
+		return &pathSeg{parent: path, kind: segKey, level: level, idx: i, key: entries[units[i].first].key}
 	}
-	labels := disambiguatedKeyLabels(keys, w.methods, w.meter)
 	for i, u := range units {
+		if w.full() {
+			return
+		}
 		e := entries[u.first]
-		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
-		if u.n > 1 {
-			w.add(keyPath, ambiguityDetail(entries[u.first:u.first+u.n]))
+		if u.n == 1 && !e.fromA {
 			continue
 		}
-		if !e.fromA {
+		keyPath := keySeg(i)
+		if u.n > 1 {
+			w.add(keyPath, ambiguityDetail(entries[u.first:u.first+u.n]))
 			continue
 		}
 		bv := b.MapIndex(e.key)
@@ -323,12 +471,33 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		w.walk(e.val, bv, keyPath, depth+1)
 	}
 	for i, u := range units {
+		if w.full() {
+			return
+		}
 		e := entries[u.first]
 		if u.n > 1 || e.fromA {
 			continue
 		}
-		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
-			fmt.Sprintf("unexpected in actual (%s)", w.render(e.val)))
+		w.add(keySeg(i), fmt.Sprintf("unexpected in actual (%s)", w.render(e.val)))
+	}
+}
+
+// probeMap is walkMap for a probe, which only needs to know whether the maps differ. The maps differ
+// exactly when their lengths differ or some key of a has no entry in b (a NaN key never has one) or
+// some pair of values differs, so nothing is sorted and nothing is labelled, and the walk stops at the
+// first difference.
+func (w *diffWalker) probeMap(a, b reflect.Value, depth int) {
+	if a.Len() != b.Len() {
+		w.add(nil, "length")
+		return
+	}
+	for it := a.MapRange(); it.Next() && !w.full(); {
+		bv := b.MapIndex(it.Key())
+		if !bv.IsValid() {
+			w.add(nil, "missing in actual")
+			return
+		}
+		w.walk(it.Value(), bv, nil, depth+1)
 	}
 }
 
@@ -431,31 +600,33 @@ func compareMapEntries(x, y *mapEntry) int {
 	return cmpBool(!x.fromA, !y.fromA)
 }
 
-// disambiguatedKeyLabels returns the bounded display label of each key, in order. A label shared by
-// two or more distinct keys (long strings with a common prefix, structs differing past the rendered
-// fields) gets its 1-based ordinal among the colliding keys appended after a space, inside the
-// brackets: `["kkkk… #1]`, `["kkkk… #2]`. Labels that are unique are left exactly as rendered.
-func disambiguatedKeyLabels(keys []reflect.Value, methods bool, meter *fpMeter) []string {
-	labels := make([]string, len(keys))
-	count := make(map[string]int, len(keys))
-	for i, k := range keys {
-		labels[i] = renderDiffValueWith(k, methods, meter)
-		count[labels[i]]++
-	}
-	seen := make(map[string]int)
-	for i, l := range labels {
-		if count[l] > 1 {
-			seen[l]++
-			labels[i] = fmt.Sprintf("%s #%d", l, seen[l])
-		}
-	}
-	return labels
-}
-
 // smallestMapEntries returns the k first entries of m in compareMapEntries order, and the number of
 // entries m holds, with a fingerprint budget of its own.
 func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 	return smallestMapEntriesWith(m, k, newFPMeter())
+}
+
+// windowMemoMinLen is the smallest map whose window is remembered: below it a scan costs about what
+// remembering does.
+const windowMemoMinLen = 64
+
+// windowKey identifies the window of the k smallest entries of one map.
+type windowKey struct {
+	ref refKey
+	k   int
+}
+
+type mapWindow struct {
+	top   []mapEntry
+	total int
+}
+
+func windowKeyOf(m reflect.Value, k int) (windowKey, bool) {
+	if m.Len() < windowMemoMinLen {
+		return windowKey{}, false
+	}
+	ref, ok := refIdentity(m)
+	return windowKey{ref: ref, k: k}, ok
 }
 
 // mapScan walks a map with MapRange. Iterating with it.Key and it.Value copies every entry, so a huge
@@ -525,6 +696,27 @@ func (s *mapScan) entry() mapEntry {
 // as many as the window still has room for. An entry that ties a kept entry while truncated cannot be
 // told apart from it: both are flagged ambiguous and print no value.
 func smallestMapEntriesWith(m reflect.Value, k int, meter *fpMeter) (top []mapEntry, total int) {
+	// A big map met again in the same message (a shared or self-containing map is rendered once per
+	// path that reaches it) is scanned once: the window found the first time is the window every
+	// later render of it gets, which also makes the map print the same everywhere in the message.
+	key, memo := windowKeyOf(m, k)
+	if memo {
+		if w, ok := meter.windows[key]; ok {
+			return slices.Clone(w.top), w.total
+		}
+	}
+	meter.scans++
+	top, total = selectSmallestMapEntries(m, k, meter)
+	if memo {
+		if meter.windows == nil {
+			meter.windows = map[windowKey]mapWindow{}
+		}
+		meter.windows[key] = mapWindow{top: slices.Clone(top), total: total}
+	}
+	return top, total
+}
+
+func selectSmallestMapEntries(m reflect.Value, k int, meter *fpMeter) (top []mapEntry, total int) {
 	top = make([]mapEntry, 0, min(m.Len(), k))
 	counts := make([]int, 0, cap(top))
 	scan := newMapScan(m)
@@ -571,6 +763,9 @@ func smallestMapEntriesWith(m reflect.Value, k int, meter *fpMeter) (top []mapEn
 	kept := make([][]mapEntry, len(top))
 	var scratch fpBuilder
 	for scan := newMapScan(m); scan.next(); {
+		if len(top) == k && compareMapKeys(scan.key, top[len(top)-1].key) > 0 {
+			continue // past the last class of the window: one comparison for most of a big map
+		}
 		ci := sort.Search(len(top), func(i int) bool { return compareMapKeys(top[i].key, scan.key) >= 0 })
 		if ci == len(top) || need[ci] == 0 || compareMapKeys(top[ci].key, scan.key) != 0 {
 			continue
@@ -796,6 +991,7 @@ func renderDiffLimited(v reflect.Value, lim renderLimits, methods bool) string {
 }
 
 func renderDiffLimitedWith(v reflect.Value, lim renderLimits, methods bool, meter *fpMeter) string {
+	diffRenders.Add(1)
 	r := diffRenderer{lim: lim, methods: methods, nodes: nodeBudget{left: lim.nodeBudget}, meter: meter}
 	s := r.render(v, 0)
 	if r := []rune(s); len(r) > diffMaxValueRunes {
