@@ -390,6 +390,27 @@ func TestStructuralDiffTerminatesOnSelfContainingSlices(t *testing.T) {
 	}
 }
 
+// Two views of one backing array share a data pointer and a type. The header's cycle check must tell
+// them apart by length: registering the short, acyclic view must not hide the long view's cycle, or
+// the header falls back to %v and overflows the stack.
+func TestStructuralDiffHeaderDetectsCyclesInLongerViewsOfASharedBackingArray(t *testing.T) {
+	const env = "GO_SPECS_SHARED_BACKING_CYCLE_CHILD"
+	if os.Getenv(env) == "1" {
+		backing := make([]any, 2)
+		short, long := backing[:1], backing[:2]
+		backing[0], backing[1] = 0, long
+		fmt.Println("MSG-BEGIN")
+		fmt.Println(EqualFailureMessage([]any{}, []any{short, long}))
+		fmt.Println(EqualFailureMessage([]any{}, []any{long, short}))
+		fmt.Println("MSG-END")
+		return
+	}
+	out := runInSubprocess(t, "TestStructuralDiffHeaderDetectsCyclesInLongerViewsOfASharedBackingArray", env)
+	if !strings.Contains(out, "MSG-END") || strings.Count(out, "to equal") != 2 {
+		t.Fatalf("child did not render both failure messages:\n%s", out)
+	}
+}
+
 func TestStructuralDiffOrdersKeysSharingALongPrefixByFullKey(t *testing.T) {
 	prefix := strings.Repeat("k", diffMaxValueRunes*2)
 	var first string

@@ -639,6 +639,11 @@ func cycleWalk(v reflect.Value, onPath map[diffVisit]bool) bool {
 			return false
 		}
 		key := diffVisit{a: v.Pointer(), typ: v.Type()}
+		if v.Kind() == reflect.Slice {
+			// Views of one backing array share a pointer and a type; only the length tells a short,
+			// acyclic view from a longer one that reaches itself.
+			key.na = v.Len()
+		}
 		if inProgress, seen := onPath[key]; seen {
 			return inProgress
 		}
