@@ -680,10 +680,19 @@ before a general one wins until its count is used up, then the general one takes
 
 **Counts.** Without a count an expectation means `Times(1)`. `Times(n)` is exact, `AtLeast(n)` has no
 upper bound, `AtMost(n)` allows none up to `n`, `AnyTimes()` allows any number, and `Never()` (`Times(0)`)
-turns any matching call into a failure. `AtLeast` and `AtMost` combine into a range in either order,
-so `AtLeast(2).AtMost(5)` and `AtMost(5).AtLeast(2)` both mean two to five calls. Any other pair
-replaces the earlier count: the last one wins. A negative count, or a range whose minimum exceeds its
-maximum, panics at declaration.
+turns any matching call into a failure. They combine by this rule:
+
+- `Times(n)`, `Never()` and `AnyTimes()` set a complete configuration (both bounds) and replace
+  whatever count was set before.
+- `AtLeast(n)` sets only the minimum and `AtMost(n)` only the maximum. If the current configuration is
+  a range built by earlier `AtLeast`/`AtMost` calls, the other bound is kept: `AtLeast(2).AtMost(5).AtLeast(3)`
+  is 3..5 and `AtMost(5).AtLeast(2).AtMost(3)` is 2..3. If the previous configuration came from
+  `Times`/`Never`/`AnyTimes`, or nothing was set (the default of exactly 1), `AtLeast`/`AtMost` start a
+  new range and the other bound resets to its default (minimum 0, maximum unbounded), so
+  `Times(2).AtLeast(1)` is "1 or more".
+- Every `AtLeast`/`AtMost` validates the resulting range, zero bounds included, and panics when the
+  minimum exceeds the maximum (`AtMost(0).AtLeast(1)`: "AtLeast(1) exceeds the maximum of 0"). A
+  negative `n` panics. A panicking call leaves the expectation unchanged.
 
 **Return values.** `Return(values...)` configures one response. Calling it repeatedly builds a
 sequence: the n-th matched call gets the n-th response, and once the sequence is used up the last
@@ -720,6 +729,19 @@ yourself earlier is allowed and does not duplicate the report. Because it goes t
 the message reaches `SpecResultEvent.Message` on every engine. On `Builder.ItParallel` a spec records
 only its first failure (that engine's contract), so when the body fails before `Verify` runs, the case
 still fails but the unmet-expectation text is not the message; fix the first failure and it appears.
+
+### Controllers and `ctx.Go` tasks
+
+On every engine (`Spec.It`, `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`) a controller can be
+used in either of two ways from concurrent code:
+
+- **Created with the spec's `ctx`** (`mock.NewController(ctx)`) and called from `ctx.Go` tasks. Its
+  reports go through `ctx.Errorf`, which is safe from tasks and is folded into the spec (see the
+  message rule under `ctx.Errorf`), so many tasks can make unexpected calls at once.
+- **Created inside a task** with the task's `Context`
+  (`ctx.Go(func(task *specs.Context) { ctrl := mock.NewController(task); ... })`). Its cleanup
+  verification runs when the task's spec ends and still fails the spec: an expectation never met
+  inside the task is reported with the method, matcher and declaration site.
 
 ### Unexpected calls
 
