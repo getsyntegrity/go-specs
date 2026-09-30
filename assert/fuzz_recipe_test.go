@@ -147,6 +147,7 @@ type fzGraph struct {
 	nodes    []fzNode
 	rd       *fzReader // positioned at the tail; use tail() for a fresh reader
 	addrKeys bool      // some map is keyed by a pointer: its text may legitimately depend on addresses
+	data     []byte    // the recipe
 	heavy    int       // elements the wide kinds may still allocate in this graph
 }
 
@@ -178,7 +179,7 @@ func nanFromByte(x byte) float64 {
 func fzBuild(data []byte) *fzGraph {
 	rd := &fzReader{data: data}
 	n := 1 + int(rd.next())%fzMaxNodes
-	g := &fzGraph{n: n, rd: rd, nodes: make([]fzNode, n), heavy: fzHeavyBudget}
+	g := &fzGraph{n: n, rd: rd, data: data, nodes: make([]fzNode, n), heavy: fzHeavyBudget}
 	g.a, g.b = g.target(rd.next()), g.target(rd.next())
 	for i := range g.nodes {
 		g.nodes[i].kind = fzKind(rd.next()) % fkKinds
@@ -263,9 +264,14 @@ func (g *fzGraph) allocate(nd *fzNode) {
 		nd.ptr = new(any)
 		nd.val = nd.ptr
 	case fkWideMap:
-		nd.mInt = make(map[int]any)
 		nd.count = g.spend(1025 + p*4)
-		nd.val = nd.mInt
+		if p%2 == 0 {
+			nd.mAny = map[any]any{}
+			nd.val = nd.mAny
+		} else {
+			nd.mInt = make(map[int]any)
+			nd.val = nd.mInt
+		}
 	case fkBigInts:
 		s := make([]int, g.spend(p*100))
 		for i := range s {
@@ -362,11 +368,15 @@ func (g *fzGraph) wire(nd *fzNode) {
 	case fkWideMap:
 		v := child(0)
 		for i, count := 0, nd.count; i < count; i++ {
+			var val any = i
 			if i%3 == 0 {
-				nd.mInt[i] = v
-			} else {
-				nd.mInt[i] = i
+				val = v
 			}
+			if nd.mAny == nil {
+				nd.mInt[i] = val
+				continue
+			}
+			nd.mAny[wideKey(i)] = val
 		}
 	case fkChain:
 		*nd.chain[len(nd.chain)-1] = child(0)
@@ -376,6 +386,26 @@ func (g *fzGraph) wire(nd *fzNode) {
 			nd.arr[i] = v
 		}
 	}
+}
+
+// wideKey is the key of entry i of an even-param wide map: keys of every ordered kind, so the
+// selection of the smallest keys of a large map has to compare across kinds, NaN keys included.
+func wideKey(i int) any {
+	switch i % 7 {
+	case 0:
+		return i
+	case 1:
+		return "s" + strconv.Itoa(i)
+	case 2:
+		return float64(i) / 2
+	case 3:
+		return nanFromByte(byte(i))
+	case 4:
+		return i%2 == 0
+	case 5:
+		return uint(i)
+	}
+	return fzKeyStruct{F: float64(i % 9), S: "a"}
 }
 
 // fzKey picks a map key from the key byte. Keys are always hashable. NaN keys never equal
@@ -586,3 +616,35 @@ func fzRecipePtrKey() []byte {
 // tail returns a reader over the bytes after the graph. Every run of a diagnostic takes its own, so
 // running one twice on the same graph reads the same parameters.
 func (g *fzGraph) tail() *fzReader { return &fzReader{data: g.rd.data, pos: g.rd.pos} }
+
+// twin returns the graph of this recipe with one leaf node changed, so its operands have the same
+// shape as this graph's and differ in one scalar: what an equality failure between two values of one
+// type looks like, and what the structural diff walks field by field. tl supplies the node and the
+// change; a node that is not a leaf is left alone and the twin is an exact copy (equal, at other
+// addresses). A recipe shorter than its own node table has nothing to change.
+func (g *fzGraph) twin(tl *fzReader) *fzGraph {
+	i, x := int(tl.next())%g.n, tl.next()|1
+	data := append([]byte(nil), g.data...)
+	kind, param := 3+2*i, 3+2*i+1
+	if param < len(data) {
+		switch fzKind(data[kind]) % fkKinds {
+		case fkInt, fkStr, fkNaN, fkFloat, fkBool, fkPub:
+			data[param] ^= x
+		}
+	}
+	return fzBuild(data)
+}
+
+// operandB is the second operand of a diagnostic, chosen by one tail byte: node b of this graph, or
+// node a or b of its twin. It returns the graph the operand lives in (g itself when there is no twin).
+func (g *fzGraph) operandB(tl *fzReader) (any, *fzGraph) {
+	switch tl.next() % 3 {
+	case 1:
+		t := g.twin(tl)
+		return t.value(g.a, 0), t
+	case 2:
+		t := g.twin(tl)
+		return t.value(g.b, 0), t
+	}
+	return g.expected(), g
+}

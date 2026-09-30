@@ -62,6 +62,10 @@ func TestFuzzBuildReachesTheHardShapes(t *testing.T) {
 		if m := wide.actual().(map[int]any); len(m) <= mapSortCap {
 			t.Fatalf("wide map has %d entries, want > %d", len(m), mapSortCap)
 		}
+		mixed := fzBuild(fzRecipeLimits(fkWideMap, 200))
+		if m := mixed.actual().(map[any]any); len(m) <= mapSortCap {
+			t.Fatalf("mixed-key wide map has %d entries, want > %d", len(m), mapSortCap)
+		}
 		big := fzBuild(fzRecipeLimits(fkBigInts, 255))
 		if s := big.actual().([]int); len(s) <= boundedNodeBudget {
 			t.Fatalf("big slice has %d elements, want > %d", len(s), boundedNodeBudget)
@@ -90,5 +94,30 @@ func TestFuzzOracleCountsUnrolledNodes(t *testing.T) {
 	}
 	if n := fzUnrolled(reflect.ValueOf(make([]int, 500)), 10_000); n < 500 {
 		t.Fatalf("scalar slice counted %d, want at least its length", n)
+	}
+}
+
+func TestFuzzTwinDiffersInOneLeaf(t *testing.T) {
+	data := fzRecipeNestedMaps()
+	g := fzBuild(data)
+	// Node 4 is an int; change it through the tail: mode 1, node 4, change 2.
+	tl := &fzReader{data: []byte{1, 4, 2}}
+	other, twin := g.operandB(tl)
+	if twin == g {
+		t.Fatal("mode 1 must build a twin")
+	}
+	if !reflect.DeepEqual(g.shape(), twin.shape()) {
+		t.Fatalf("a twin keeps the shape: %v vs %v", g.shape(), twin.shape())
+	}
+	if g.nodes[4].val == twin.nodes[4].val {
+		t.Fatalf("the twin's leaf is unchanged: %v", g.nodes[4].val)
+	}
+	if other == nil {
+		t.Fatal("the twin operand is nil")
+	}
+	// A node that is not a leaf is left alone: the twin is an exact copy.
+	_, same := g.operandB(&fzReader{data: []byte{1, 0, 2}})
+	if !reflect.DeepEqual(g.shape(), same.shape()) {
+		t.Fatal("twinning a container must keep the shape")
 	}
 }

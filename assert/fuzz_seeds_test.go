@@ -32,6 +32,14 @@ func fzSeeds() []fzSeed {
 		{"array-holding-cycle", fzRecipeArrayCycle()},
 		{"nested-heterogeneous-maps", fzRecipeNestedMaps()},
 		{"actual-and-expected-differ-by-cycle", fzRecipeTwoCycles()},
+		{"wide-map-int-keys", fzRecipeLimits(fkWideMap, 201)},
+		{"twin-struct-cycle", fzWithTail(fzRecipeStructCycle(), 1, 0, 2)},
+		{"twin-self-slice", fzWithTail(fzRecipeSelfSlice(), 1, 1, 6)},
+		{"twin-nested-maps", fzWithTail(fzRecipeNestedMaps(), 1, 4, 2)},
+		{"twin-nan-ties", fzWithTail(fzRecipeNaNTies(), 2, 1, 4)},
+		{"twin-tree-cycle", fzWithTail(fzRecipeTreeCycle(), 1, 1, 8)},
+		{"twin-of-a-map-that-holds-itself", fzWithTail(fzRecipeSelfMap(), 1, 1, 2)},
+		{"twin-array-holding-cycle", fzWithTail(fzRecipeArrayCycle(), 1, 2, 3)},
 		{"poll-eventually-times-out", fzRecipeSelfMapPoll(0, 1, 1, 6, 0, 0)},
 		{"poll-consistently-mismatch", fzRecipeSelfMapPoll(1, 2, 0, 9, 3, 0)},
 		{"poll-callback-panics-with-a-cycle", fzRecipeSelfMapPoll(0, 1, 2, 11, 0, 2)},
@@ -142,3 +150,8 @@ func fzRecipeSelfMapPoll(mode, interval, advance, timeout, at, panicAt byte) []b
 	r.node(fkInt, 7)
 	return r.withTail(mode, interval, advance, timeout, at, panicAt).bytes()
 }
+
+// fzWithTail appends tail bytes to a recipe. A diagnostic that compares two values reads, first, the
+// twin selector: 0 for node b of the same graph, 1 or 2 for node a or b of a twin followed by the
+// node to change and how (see fzGraph.twin).
+func fzWithTail(recipe []byte, tail ...byte) []byte { return append(recipe, tail...) }

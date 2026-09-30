@@ -263,9 +263,10 @@ func fzIsNil(v any) bool {
 
 func fzDiagEqual(g *fzGraph) *fzDiag {
 	d := &fzDiag{}
-	actual, expected := g.actual(), g.expected()
+	actual := g.actual()
+	expected, twin := g.operandB(g.tail())
 	ops := fzOps(actual, expected)
-	shape := g.shape()
+	shape, twinShape := g.shape(), twin.shape()
 	want := fzRefEqual(expected, actual)
 	if got := ValuesEqual(expected, actual); got != want {
 		d.bad("ValuesEqual = %v, the reference says %v", got, want)
@@ -307,6 +308,9 @@ func fzDiagEqual(g *fzGraph) *fzDiag {
 	if after := g.shape(); !reflect.DeepEqual(after, shape) {
 		d.bad("building the diagnostic modified the graph: %v -> %v", shape, after)
 	}
+	if after := twin.shape(); !reflect.DeepEqual(after, twinShape) {
+		d.bad("building the diagnostic modified the twin graph: %v -> %v", twinShape, after)
+	}
 	return d
 }
 
@@ -337,11 +341,12 @@ type fzComposition struct {
 
 func fzDiagMatchers(g *fzGraph) *fzDiag {
 	d := &fzDiag{}
-	actual, other := g.actual(), g.expected()
+	actual := g.actual()
 	tl := g.tail()
+	other, twin := g.operandB(tl)
 	lenN := int(tl.next()) % 40
 	flag := tl.next()%2 == 0
-	shape := g.shape()
+	shape, twinShape := g.shape(), twin.shape()
 	eqBefore := ValuesEqual(other, actual)
 
 	var target error
@@ -522,6 +527,9 @@ func fzDiagMatchers(g *fzGraph) *fzDiag {
 	}
 	if after := g.shape(); !reflect.DeepEqual(after, shape) {
 		d.bad("building diagnostics modified the graph: %v -> %v", shape, after)
+	}
+	if after := twin.shape(); !reflect.DeepEqual(after, twinShape) {
+		d.bad("building diagnostics modified the twin graph: %v -> %v", twinShape, after)
 	}
 	return d
 }
