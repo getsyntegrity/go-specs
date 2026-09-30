@@ -344,16 +344,22 @@ func (g *fzGraph) wire(nd *fzNode) {
 	case fkTree:
 		nd.tree.L, nd.tree.R, nd.tree.V = g.treeOf(nd.kids[0][1]), g.treeOf(nd.kids[1][1]), child(2)
 	case fkMapAny:
+		ties := fzTies{}
 		for j, k := range nd.kids {
-			nd.mAny[g.fzKey(nd.kind, k[0])] = child(j)
+			if key := g.fzKey(nd.kind, k[0]); ties.admit(key) {
+				nd.mAny[key] = child(j)
+			}
 		}
 	case fkMapStr:
 		for j, k := range nd.kids {
 			nd.mStr[g.fzKey(nd.kind, k[0]).(string)] = child(j)
 		}
 	case fkMapFloat:
+		ties := fzTies{}
 		for j, k := range nd.kids {
-			nd.mFloat[g.fzKey(nd.kind, k[0]).(float64)] = child(j)
+			if key := g.fzKey(nd.kind, k[0]).(float64); ties.admit(key) {
+				nd.mFloat[key] = child(j)
+			}
 		}
 	case fkMapInt:
 		for j, k := range nd.kids {
@@ -366,7 +372,7 @@ func (g *fzGraph) wire(nd *fzNode) {
 	case fkPtr:
 		*nd.ptr = child(0)
 	case fkWideMap:
-		v := child(0)
+		v, ties := child(0), fzTies{}
 		for i, count := 0, nd.count; i < count; i++ {
 			var val any = i
 			if i%3 == 0 {
@@ -376,7 +382,9 @@ func (g *fzGraph) wire(nd *fzNode) {
 				nd.mInt[i] = val
 				continue
 			}
-			nd.mAny[wideKey(i)] = val
+			if key := wideKey(i); ties.admit(key) {
+				nd.mAny[key] = val
+			}
 		}
 	case fkChain:
 		*nd.chain[len(nd.chain)-1] = child(0)
@@ -386,6 +394,41 @@ func (g *fzGraph) wire(nd *fzNode) {
 			nd.arr[i] = v
 		}
 	}
+}
+
+// fzMaxNaNTies caps how many entries of one map may share a NaN key bit pattern. Entries whose keys
+// tie are ordered by a bounded fingerprint of their values (tiebreak.go), and building it for each
+// of up to 1,024 tied entries with large values takes seconds, which the fuzzing engine reads as a
+// hung worker. That cost is recorded as finding 2 (TestFuzzFindingTieBreakFingerprintCost); the
+// recipes keep the ties that matter for correctness (two or three entries with one payload) and
+// leave the cost to that test.
+const fzMaxNaNTies = 3
+
+// fzTies counts the NaN-keyed entries of one map by key bit pattern.
+type fzTies map[string]int
+
+// admit reports whether the key may be inserted, and counts it if it is a NaN key.
+func (t fzTies) admit(key any) bool {
+	var id string
+	switch k := key.(type) {
+	case float64:
+		if k != k {
+			id = "f" + strconv.FormatUint(math.Float64bits(k), 16)
+		}
+	case fzKeyStruct:
+		if k.F != k.F {
+			id = "s" + strconv.FormatUint(math.Float64bits(k.F), 16)
+		}
+	case [1]float64:
+		if k[0] != k[0] {
+			id = "a" + strconv.FormatUint(math.Float64bits(k[0]), 16)
+		}
+	}
+	if id == "" {
+		return true
+	}
+	t[id]++
+	return t[id] <= fzMaxNaNTies
 }
 
 // wideKey is the key of entry i of an even-param wide map: keys of every ordered kind, so the
