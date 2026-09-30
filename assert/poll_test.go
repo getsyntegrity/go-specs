@@ -7,6 +7,9 @@ package assert
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -378,3 +381,70 @@ func TestPollReleasesEveryTimerOnEachExitPath(t *testing.T) {
 	}
 }
 
+// neverMatches fails with a fixed message, so these tests exercise PollResult.Message alone and not
+// the failure message of a matcher (Satisfy, for one, renders its actual with a plain %v).
+type neverMatches struct{}
+
+func (neverMatches) Match(any) bool            { return false }
+func (neverMatches) FailureMessage(any) string { return "never matches" }
+
+const cycleChildEnv = "GO_SPECS_POLL_CYCLE_CHILD"
+
+// runCycleChild re-executes this test binary running only the calling test with cycleChildEnv set, so a
+// stack overflow (which no recover can catch) fails one test instead of killing the whole suite.
+func runCycleChild(t *testing.T, name string, observe func() any) {
+	t.Helper()
+	if os.Getenv(cycleChildEnv) == name {
+		clock := NewManualClock()
+		res := Eventually(func() any { clock.Advance(tick); return observe() }, neverMatches{}, WithClock(clock), WithTimeout(tick), WithInterval(tick))
+		fmt.Println("MESSAGE:", res.Message())
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), cycleChildEnv+"="+name)
+	out, err := cmd.CombinedOutput()
+	head := string(out)
+	if len(head) > 2000 {
+		head = head[:2000]
+	}
+	if err != nil {
+		t.Fatalf("child failed: %v\n%s", err, head)
+	}
+	if !strings.Contains(string(out), "<cycle>") {
+		t.Fatalf("message lacks the cycle marker:\n%s", head)
+	}
+}
+
+func TestPollMessageRendersACyclicMapSafely(t *testing.T) {
+	runCycleChild(t, "map", func() any {
+		m := map[string]any{}
+		m["self"] = m
+		return m
+	})
+}
+
+func TestPollMessageRendersACyclicSliceSafely(t *testing.T) {
+	runCycleChild(t, "slice", func() any {
+		s := make([]any, 1)
+		s[0] = s
+		return s
+	})
+}
+
+func TestPollMessageRendersACyclicPointerStructSafely(t *testing.T) {
+	type node struct{ next *node }
+	runCycleChild(t, "struct", func() any {
+		n := &node{}
+		n.next = n
+		return n
+	})
+}
+
+func TestPollMessageKeepsGoSyntaxForOrdinaryValues(t *testing.T) {
+	clock := NewManualClock()
+	res := Eventually(func() any { clock.Advance(tick); return map[string]int{"a": 1} }, neverMatches{},
+		WithClock(clock), WithTimeout(tick), WithInterval(tick))
+	if want := `last observed: map[string]int{"a":1}`; !strings.Contains(res.Message(), want) {
+		t.Fatalf("message = %q, want it to contain %q", res.Message(), want)
+	}
+}

@@ -127,7 +127,7 @@ func (r PollResult) Message() string {
 		fmt.Fprintf(&b, "%s: failed (%s) after %v (%s)", r.mode, r.Termination, r.Elapsed, attempts)
 	}
 	if r.Attempts > 0 && (r.Termination != TerminatedPanic || r.Last != nil) {
-		fmt.Fprintf(&b, "\n  last observed: %s", fmt.Sprintf("%#v", r.Last))
+		fmt.Fprintf(&b, "\n  last observed: %s", renderObserved(r.Last))
 	}
 	if r.Failure != "" {
 		fmt.Fprintf(&b, "\n  matcher failure: %s", r.Failure)
