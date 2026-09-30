@@ -56,6 +56,7 @@ func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) 
 	defer func() {
 		recoverSpecFailure(ctx, recover(), "panic")
 		ctx.settleTasks(false) // wait for ctx.Go tasks (#318)
+		ctx.runCleanups()      // ctx.Cleanup functions run last (#357)
 		ctx.recycleTasks()     // this engine reuses ctx for the next spec
 	}()
 	for i := start; i < end; i++ {

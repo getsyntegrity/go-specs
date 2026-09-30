@@ -572,6 +572,10 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 			if m, o := ctx.settleTasks(true); message == "" {
 				message, output = m, o
 			}
+			// ctx.Cleanup functions run last, after the tasks and AfterEach (#357).
+			if m, o := ctx.runCleanups(); message == "" {
+				message, output = m, o
+			}
 			return
 		}
 		if recovered == nil {
@@ -579,6 +583,10 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 			// control to the loop below, so the remaining after hooks do not run, same as before #235.
 			// Tasks already started are still awaited: the Context must not be released under them.
 			if m, o := ctx.settleTasks(true); message == "" {
+				message, output = m, o
+			}
+			// ctx.Cleanup functions run last, after the tasks and AfterEach (#357).
+			if m, o := ctx.runCleanups(); message == "" {
 				message, output = m, o
 			}
 			return
@@ -589,6 +597,9 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 			message, output = remMessage, remOutput
 		}
 		if m, o := ctx.settleTasks(true); message == "" {
+			message, output = m, o
+		}
+		if m, o := ctx.runCleanups(); message == "" {
 			message, output = m, o
 		}
 	}()
@@ -615,7 +626,12 @@ func runSpecWithHooks(ctx *Context, before []step, s step, after []step) (messag
 	if m, o := ctx.settleTasks(true); message == "" {
 		message, output = m, o
 	}
+	// completed comes first: a cleanup that ends the goroutine (a fatal assertion on a real
+	// testing.T) must not send the defer above through its Goexit-in-after-hook branch (#357).
 	completed = true
+	if m, o := ctx.runCleanups(); message == "" {
+		message, output = m, o
+	}
 	return
 }
 
