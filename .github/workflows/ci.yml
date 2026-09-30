@@ -17,8 +17,9 @@
 #
 # Static and release-shape checks: flow (only develop or hotfix/* may target main, and the version
 # a merge to main would publish), verify (module path, gofmt, vet, build,
-# release script tests), lint, tidy, api (apidiff), vuln, goreleaser (config check + snapshot
-# release), dependency-review (PRs only).
+# release script tests), lint, tidy, api (apidiff), vuln, dependency-review (PRs only).
+# GoReleaser does not run here: it runs only in release.yml, on the merge to main that tags a
+# release (release.yml validates .goreleaser.yaml before it pushes the tag).
 #
 # Go-specific jobs kept from the previous pipeline: bench-smoke (runs every benchmark once and
 # race-checks the goroutine-spawning ones) and report-cli (runs the documented go-specs-report flow
@@ -602,33 +603,6 @@ jobs:
           go-version-file: .go-version
           repo-checkout: false
 
-  # `goreleaser check` only validates the config's schema; it does not resolve `main:` build paths,
-  # so it would not have caught .goreleaser.yaml pointing `builds` at an entrypoint that never
-  # existed (the bug fixed in #130). Only a real `--snapshot` release attempt does, on every PR
-  # instead of on the first release, where release.yml would otherwise discover it while creating
-  # a real tag.
-  goreleaser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0  # goreleaser needs tag history to compute the changelog
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: .go-version
-          cache: false
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          install-only: true
-      - name: Check config
-        run: goreleaser check
-      - name: Dry-run release
-        run: goreleaser release --snapshot --clean
-
   # PR-only: there is no PR diff to review on a push. `ci-ok` treats the skip as fine.
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -661,7 +635,7 @@ jobs:
   # A failed or timed-out job does not cancel the workflow, so ci-ok still runs and fails then.
   ci-ok:
     if: ${{ !cancelled() }}
-    needs: [flow, verify, lint, plan, test, test-report, race, modules, bench-smoke, report-cli, tidy, api, vuln, goreleaser, dependency-review]
+    needs: [flow, verify, lint, plan, test, test-report, race, modules, bench-smoke, report-cli, tidy, api, vuln, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

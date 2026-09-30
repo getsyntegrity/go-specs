@@ -74,6 +74,25 @@ jobs:
           .github/scripts/next-version.sh "$head_ref" "$labels" | tee -a "$GITHUB_OUTPUT"
           echo "tagged=false" >> "$GITHUB_OUTPUT"
 
+      # Validate .goreleaser.yaml BEFORE the tag is pushed, so a broken config stops the run while
+      # nothing is published yet (ci.yml no longer runs GoReleaser on pull requests). `check` only
+      # validates the schema; it does not resolve `main:` build paths, so it would not have caught
+      # .goreleaser.yaml pointing `builds` at an entrypoint that never existed (#130). A
+      # `--snapshot` release does; it publishes nothing. The real release step below still passes
+      # `--clean`, which wipes the dist/ this leaves behind.
+      - name: Install GoReleaser
+        if: steps.version.outputs.tagged == 'false'
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+      - name: Validate GoReleaser config
+        if: steps.version.outputs.tagged == 'false'
+        run: |
+          goreleaser check
+          goreleaser release --snapshot --clean --skip=publish
+
       - name: Create tag
         if: steps.version.outputs.tagged == 'false'
         env:
