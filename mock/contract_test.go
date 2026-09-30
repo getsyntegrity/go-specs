@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/mock"
@@ -227,6 +228,58 @@ var passingCases = []contractCase{
 			})
 		}
 	}},
+	{"task controller satisfied", func(ctx *specs.Context) {
+		ctx.Go(func(task *specs.Context) {
+			ctrl := mock.NewController(task)
+			ctrl.Method("Save").Expect("x").Return(nil)
+			ctrl.Method("Save").Call("x")
+		})
+	}},
+	{"task controller unused with AnyTimes", func(ctx *specs.Context) {
+		ctx.Go(func(task *specs.Context) {
+			ctrl := mock.NewController(task)
+			ctrl.Method("Save").Expect("x").AnyTimes()
+		})
+	}},
+	{"count bounds green", func(ctx *specs.Context) {
+		for _, calls := range []int{3, 5} { // AtLeast(2).AtMost(5).AtLeast(3) is 3..5
+			ctrl := mock.NewController(ctx)
+			ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtLeast(2).AtMost(5).AtLeast(3)
+			putN(store{ctrl}, calls)
+			ctrl.Verify()
+		}
+		for _, calls := range []int{2, 3} { // AtMost(5).AtLeast(2).AtMost(3) is 2..3
+			ctrl := mock.NewController(ctx)
+			ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtMost(5).AtLeast(2).AtMost(3)
+			putN(store{ctrl}, calls)
+			ctrl.Verify()
+		}
+		// Zero bounds: no call is the only way to satisfy them.
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect("a", mock.Any()).AtMost(0)
+		ctrl.Method("Put").Expect("b", mock.Any()).AtLeast(0).AtMost(0)
+		ctrl.Method("Put").Expect("c", mock.Any()).Never()
+		ctrl.Verify()
+	}},
+	{"count bound declaration panics", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		e := ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtMost(0)
+		msg := func() (msg string) {
+			defer func() { msg = fmt.Sprint(recover()) }()
+			e.AtLeast(1)
+			return "no panic"
+		}()
+		ctx.Expect(strings.Contains(msg, "AtLeast(1) exceeds the maximum of 0")).To(specs.BeTrue())
+		// The panicking call left the expectation unchanged: still "never".
+		ctx.Expect(len(ctrl.Method("Put").Calls())).ToEqual(0)
+	}},
+}
+
+// putN makes n calls to Put through the adapter.
+func putN(st store, n int) {
+	for range n {
+		_ = st.Put("k", "v")
+	}
 }
 
 // checkDenseSequence fails t unless calls carry the sequence numbers 1..len(calls), each once, in order.
@@ -332,29 +385,89 @@ var failingCases = []contractCase{
 		_, _ = st.Get(context.Background(), "k")
 		_ = st.Put("k", "v")
 	}},
+	// P1b: a controller created inside a task with the task's Context. Its cleanup verification
+	// still fails the spec.
+	{"task unmet", func(ctx *specs.Context) {
+		ctx.Go(func(task *specs.Context) {
+			ctrl := mock.NewController(task)
+			ctrl.Method("Save").Expect("x") // DECL_TASK_UNMET
+		})
+	}},
+	{"task unexpected", func(ctx *specs.Context) {
+		ctx.Go(func(task *specs.Context) {
+			ctrl := mock.NewController(task)
+			ctrl.Method("Save").Call("y")
+		})
+	}},
+	// P2: count bounds through a real spec.
+	{"bounds 3..5 with 2 calls", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtLeast(2).AtMost(5).AtLeast(3) // DECL_B35_2
+		putN(store{ctrl}, 2)
+	}},
+	{"bounds 3..5 with 6 calls", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtLeast(2).AtMost(5).AtLeast(3) // DECL_B35_6
+		putN(store{ctrl}, 6)
+	}},
+	{"bounds 2..3 with 1 call", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtMost(5).AtLeast(2).AtMost(3) // DECL_B23_1
+		putN(store{ctrl}, 1)
+	}},
+	{"bounds 2..3 with 4 calls", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtMost(5).AtLeast(2).AtMost(3) // DECL_B23_4
+		putN(store{ctrl}, 4)
+	}},
+	{"bounds AtMost(0) called", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtMost(0) // DECL_B0_A
+		putN(store{ctrl}, 1)
+	}},
+	{"bounds AtLeast(0).AtMost(0) called", func(ctx *specs.Context) {
+		ctrl := mock.NewController(ctx)
+		ctrl.Method("Put").Expect(mock.Any(), mock.Any()).AtLeast(0).AtMost(0) // DECL_B0_B
+		putN(store{ctrl}, 1)
+	}},
 }
 
 const contractEnv = "GO_SPECS_MOCK_CONTRACT"
 
-func TestContractFailures(t *testing.T) {
-	if name := os.Getenv(contractEnv); name != "" {
-		for _, e := range engines {
-			if e.name == name {
-				rep := &recorder{}
-				e.run(t, rep, failingCases)
-				for _, f := range rep.finished {
-					fmt.Printf("RESULT %s failed=%v msg=%q\n", f.Name, f.Failed, f.Message)
-				}
+// runInSubprocess runs cases on the engine named by contractEnv and prints one RESULT line per
+// finished spec. It reports false when this process is not the subprocess.
+func runInSubprocess(t *testing.T, cases []contractCase) bool {
+	t.Helper()
+	name := os.Getenv(contractEnv)
+	if name == "" {
+		return false
+	}
+	for _, e := range engines {
+		if e.name == name {
+			rep := &recorder{}
+			e.run(t, rep, cases)
+			for _, f := range rep.finished {
+				fmt.Printf("RESULT %s failed=%v msg=%q\n", f.Name, f.Failed, f.Message)
 			}
 		}
-		return
 	}
-	forEachEngine(t, func(t *testing.T, e engine) { checkFailureOutput(t, e.name, runFailures(t, e.name)) })
+	return true
 }
 
-func runFailures(t *testing.T, engineName string) string {
+func TestContractFailures(t *testing.T) {
+	if runInSubprocess(t, failingCases) {
+		return
+	}
+	forEachEngine(t, func(t *testing.T, e engine) {
+		checkFailureOutput(t, e.name, runSubprocess(t, e.name, "TestContractFailures"))
+	})
+}
+
+// runSubprocess re-runs this test binary on one test, on one engine, and returns its combined output.
+// Every case in it fails on purpose, so a passing run is itself a defect.
+func runSubprocess(t *testing.T, engineName, test string) string {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestContractFailures$")
+	cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^"+test+"$")
 	cmd.Env = append(os.Environ(), contractEnv+"="+engineName)
 	raw, err := cmd.CombinedOutput()
 	out := string(raw)
@@ -365,6 +478,24 @@ func runFailures(t *testing.T, engineName string) string {
 		t.Fatalf("the run crashed the test binary:\n%s", out)
 	}
 	return out
+}
+
+// resultOf returns the RESULT line of the named case, with its message unquoted, and fails unless the
+// case finished exactly once (a corrupted report would duplicate or lose it).
+func resultOf(t *testing.T, out, name string) string {
+	t.Helper()
+	all := regexp.MustCompile(`(?m)^RESULT `+regexp.QuoteMeta(name)+` (.*)$`).FindAllStringSubmatch(out, -1)
+	if len(all) != 1 {
+		t.Fatalf("case %q finished %d times, want exactly 1:\n%s", name, len(all), out)
+	}
+	m := all[0]
+	// The message was printed with %q: turn it back into the text the reporter received.
+	if i := strings.Index(m[1], " msg="); i >= 0 {
+		if msg, err := strconv.Unquote(m[1][i+len(" msg="):]); err == nil {
+			return m[1][:i] + " msg=" + msg
+		}
+	}
+	return m[1]
 }
 
 // markerLine returns the 1-based line of this file that carries the marker comment.
@@ -386,19 +517,7 @@ func markerLine(t *testing.T, marker string) int {
 
 func checkFailureOutput(t *testing.T, engineName, out string) {
 	t.Helper()
-	result := func(name string) string {
-		m := regexp.MustCompile(`(?m)^RESULT ` + regexp.QuoteMeta(name) + ` (.*)$`).FindStringSubmatch(out)
-		if m == nil {
-			t.Fatalf("no RESULT for case %q:\n%s", name, out)
-		}
-		// The message was printed with %q: turn it back into the text the reporter received.
-		if i := strings.Index(m[1], " msg="); i >= 0 {
-			if msg, err := strconv.Unquote(m[1][i+len(" msg="):]); err == nil {
-				return m[1][:i] + " msg=" + msg
-			}
-		}
-		return m[1]
-	}
+	result := func(name string) string { return resultOf(t, out, name) }
 	contains := func(what, hay string, wants ...string) {
 		t.Helper()
 		for _, w := range wants {
@@ -447,6 +566,27 @@ func checkFailureOutput(t *testing.T, engineName, out string) {
 	contains("order", result("order"),
 		"mock: order violation: expected Put(", "before Get(", "observed sequence: #1 Get(", "#2 Put(")
 
+	// Task-created controller (P1b): the unmet expectation and the unexpected call inside the task
+	// both fail the spec and reach SpecResultEvent.Message with method, matcher and declaration site.
+	contains("task unmet", result("task unmet"),
+		"mock: unmet expectation Save(", `equal to "x"`, "want 1, got 0", "declared at "+decl("DECL_TASK_UNMET"))
+	contains("task unexpected", result("task unexpected"),
+		`mock: unexpected call Save("y")`, "no expectations declared for this method")
+
+	// Count bounds (P2) through a real spec.
+	contains("bounds 3..5 with 2 calls", result("bounds 3..5 with 2 calls"),
+		"mock: unmet expectation Put(", "want 3..5, got 2", "declared at "+decl("DECL_B35_2"))
+	contains("bounds 3..5 with 6 calls", result("bounds 3..5 with 6 calls"),
+		"mock: unexpected call Put(", "matched but at capacity (want 3..5, got 5)", "declared at "+decl("DECL_B35_6"))
+	contains("bounds 2..3 with 1 call", result("bounds 2..3 with 1 call"),
+		"mock: unmet expectation Put(", "want 2..3, got 1", "declared at "+decl("DECL_B23_1"))
+	contains("bounds 2..3 with 4 calls", result("bounds 2..3 with 4 calls"),
+		"mock: unexpected call Put(", "matched but at capacity (want 2..3, got 3)", "declared at "+decl("DECL_B23_4"))
+	contains("bounds AtMost(0) called", result("bounds AtMost(0) called"),
+		"mock: unexpected call Put(", "the expectation says never", "declared at "+decl("DECL_B0_A"))
+	contains("bounds AtLeast(0).AtMost(0) called", result("bounds AtLeast(0).AtMost(0) called"),
+		"mock: unexpected call Put(", "the expectation says never", "declared at "+decl("DECL_B0_B"))
+
 	// Attribution: a call reported through mock points at the adapter line, never into mock/. On real
 	// testing.T engines this is testing's own "file:line:" prefix (Helper marking through
 	// ctx.Testing()); on Builder.ItParallel it is the stack walk that skips go-specs and mock frames.
@@ -457,6 +597,122 @@ func checkFailureOutput(t *testing.T, engineName, out string) {
 	for _, bad := range []string{"controller.go:", "expectation.go:", "counts.go:", "stub.go:"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("a report is attributed into the mock package (%q):\n%s", bad, out)
+		}
+	}
+}
+
+// --- concurrent reports (P1a): a controller created with the spec's ctx, called from many ctx.Go tasks ---
+
+const (
+	concTasks = 16
+	concCalls = 20
+)
+
+// unexpectedCounter forwards to the spec's Context and counts the "unexpected call" reports the
+// mock makes, so the contract can compare what the mock reported with what the engine delivered.
+type unexpectedCounter struct {
+	*specs.Context
+	n *atomic.Int64
+}
+
+func (u unexpectedCounter) Errorf(format string, args ...any) {
+	if strings.Contains(fmt.Sprintf(format, args...), "unexpected call") {
+		u.n.Add(1)
+	}
+	u.Context.Errorf(format, args...)
+}
+
+// concurrentCase builds a case whose tasks all call Save, which has no expectation, at the same time
+// (a start gate makes them truly concurrent: CI's -race run checks this path). tail runs on the spec
+// goroutine after the tasks were released and decides what else the case does wrong.
+func concurrentCase(label string, tail func(ctx *specs.Context, ctrl *mock.Controller)) contractCase {
+	return contractCase{label, func(ctx *specs.Context) {
+		var n atomic.Int64
+		ctrl := mock.NewController(unexpectedCounter{ctx, &n})
+		ctx.Cleanup(func() { fmt.Printf("COUNT %s %d\n", label, n.Load()) })
+		start := make(chan struct{})
+		for w := range concTasks {
+			ctx.Go(func(task *specs.Context) {
+				<-start
+				for i := range concCalls {
+					ctrl.Method("Save").Call(label, w, i)
+				}
+				if w == 0 {
+					tailTask(label, task)
+				}
+			})
+		}
+		close(start)
+		tail(ctx, ctrl)
+	}}
+}
+
+// tailTask lets one task fail an assertion of its own in the case that asks for it.
+func tailTask(label string, task *specs.Context) {
+	if label == "conc task assertion" {
+		task.Expect("task-side").ToEqual("task-expected")
+	}
+}
+
+var concurrentCases = []contractCase{
+	concurrentCase("conc body assertion", func(ctx *specs.Context, _ *mock.Controller) {
+		ctx.Expect("body-side").ToEqual("body-expected")
+	}),
+	concurrentCase("conc body expectation", func(_ *specs.Context, ctrl *mock.Controller) {
+		ctrl.Method("Get").Expect(mock.Any(), "never-read") // never called: unmet at cleanup
+	}),
+	concurrentCase("conc task assertion", func(*specs.Context, *mock.Controller) {}),
+}
+
+func TestContractConcurrentReports(t *testing.T) {
+	if runInSubprocess(t, concurrentCases) {
+		return
+	}
+	forEachEngine(t, func(t *testing.T, e engine) {
+		checkConcurrentOutput(t, e.name, runSubprocess(t, e.name, "TestContractConcurrentReports"))
+	})
+}
+
+func checkConcurrentOutput(t *testing.T, engineName, out string) {
+	t.Helper()
+	const total = concTasks * concCalls
+	keepsFirst := engineName == "Builder.ItParallel"
+	for _, c := range concurrentCases {
+		r := resultOf(t, out, c.name)
+		if !strings.Contains(r, "failed=true") {
+			t.Errorf("%s must fail: %s", c.name, r)
+		}
+		// The mock reported every call: nothing is lost before the engine.
+		if want := fmt.Sprintf("COUNT %s %d\n", c.name, total); !strings.Contains(out, want) {
+			t.Errorf("%s: the mock did not report %d unexpected calls (want line %q) in:\n%s", c.name, total, want, out)
+		}
+		// The engine delivers all of them, or keeps the first (Builder.ItParallel records one failure).
+		delivered := len(regexp.MustCompile(`mock: unexpected call Save\("`+regexp.QuoteMeta(c.name)+`", `).FindAllString(out, -1))
+		switch {
+		case keepsFirst && delivered > 1:
+			// The only occurrence is the kept message itself (RESULT line).
+			t.Errorf("%s: %d reports reached an engine that keeps only the first failure", c.name, delivered)
+		case keepsFirst && c.name == "conc body expectation" && delivered != 1:
+			t.Errorf("%s: no unexpected-call report reached the backend (want the kept first failure)", c.name)
+		case !keepsFirst && delivered != total:
+			t.Errorf("%s: %d unexpected-call reports delivered, want exactly %d", c.name, delivered, total)
+		}
+		// Message rule (docs/DSL.md, ctx.Errorf): an assertion the spec goroutine recorded, else a
+		// task's failed assertion, else a deferred Errorf.
+		switch c.name {
+		case "conc body assertion":
+			if !strings.Contains(r, "body-expected") || strings.Contains(r, "mock:") {
+				t.Errorf("%s: the message must be the body's failed assertion: %s", c.name, r)
+			}
+		case "conc task assertion":
+			if !strings.Contains(r, "task-expected") || strings.Contains(r, "mock:") {
+				t.Errorf("%s: the message must be the task's failed assertion: %s", c.name, r)
+			}
+		case "conc body expectation":
+			if !strings.Contains(r, `mock: unexpected call Save("conc body expectation", `) &&
+				!strings.Contains(r, "mock: unmet expectation Get(") {
+				t.Errorf("%s: the message must be a mock diagnostic: %s", c.name, r)
+			}
 		}
 	}
 }
