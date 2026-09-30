@@ -89,7 +89,8 @@ func TestDSL_buildSuiteThenRun(t *testing.T) {
 func TestDSL_pendingIt(t *testing.T) {
 	specs.Describe(t, "refunds", func(s *specs.Spec) {
 		s.It("refunds a full payment", func(ctx *specs.Context) {
-			ctx.Expect(100 - 100).ToEqual(0)
+			refund, paid := 100, 100
+			ctx.Expect(paid - refund).ToEqual(0)
 		})
 		s.PendingIt("refunds a partial payment", nil)
 	})

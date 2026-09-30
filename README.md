@@ -27,6 +27,10 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
 go get github.com/getsyntegrity/go-specs
 ```
 
+## Usage reference
+
+[examples/README.md](examples/README.md) is the usage reference: an index of every feature (DSL, hooks, tables, matchers, polling, mocks and spies, snapshots, reporting, property testing) with a runnable example file for each. Run them all with `go test ./examples/...`.
+
 ## Basic example
 
 ```go
@@ -78,14 +82,14 @@ unless `GO_SPECS_ALLOW_FOCUS=1` opts out. `s.SkipIt` and `s.PendingIt` keep a sp
 report as skipped or pending without running its body. See
 [docs/DSL.md](docs/DSL.md#committed-focus-fails-the-enclosing-test).
 
-See [examples/basic](examples/basic), [examples/hooks](examples/hooks) and
-[examples/suite_hooks](examples/suite_hooks) for runnable examples.
+See [examples/dsl_test.go](examples/dsl_test.go), [examples/hooks_test.go](examples/hooks_test.go)
+for runnable examples, and the [examples index](examples/README.md) for every feature.
 
 A reusable set of specs applied to several implementations of one interface — a "shared
 behavior" — needs no DSL primitive of its own: it is an ordinary `func(*specs.Spec, ...)` that
 registers on the `*Spec` it is handed, called from each `Describe` that needs it. See
 [docs/DSL.md](docs/DSL.md#shared-behaviors-reusing-specs-across-implementations) and
-[examples/shared_behaviors](examples/shared_behaviors).
+[examples/shared_behaviors_test.go](examples/shared_behaviors_test.go).
 
 ## Benchmarks
 
@@ -226,10 +230,10 @@ go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) int
 - **specs** — Core DSL, runner, context, and execution plan
 - **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, ContainAllOf, BeOneOf, BeGreaterThan, BeBetween, BeZero, Satisfy, etc.) and composition (Not, All, Any)
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
-- **mock** — Spies, argument matchers and `Controller` expectations for interface mocks ([examples/mocks](examples/mocks))
+- **mock** — Spies, argument matchers and `Controller` expectations for interface mocks ([examples/mocks_test.go](examples/mocks_test.go), [examples/spies_test.go](examples/spies_test.go))
 - **snapshots** — Snapshot testing support
 - **property** — Property testing with shrinking and replay, a separate Go module that depends on `pgregory.net/rapid` ([docs/PROPERTY_TESTING.md](docs/PROPERTY_TESTING.md))
-- **examples** — Example tests (basic, hooks, parallel, and more)
+- **examples** — The usage reference: one runnable file per feature, indexed in [examples/README.md](examples/README.md). Property testing examples are in [property/examples](property/examples)
 
 ## Running benchmarks
 

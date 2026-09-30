@@ -371,8 +371,8 @@ type mocksUser struct {
 }
 
 var (
-	mocksErrNotFound = errors.New("user not found")
-	mocksErrExists   = errors.New("user already exists")
+	errMocksNotFound = errors.New("user not found")
+	errMocksExists   = errors.New("user already exists")
 )
 
 // mocksUserRepository is the persistence port. A real implementation would use a database.
@@ -393,15 +393,15 @@ type mocksOnboarding struct {
 	BaseURL string
 }
 
-// Register creates the user id. It fails with mocksErrExists when the id is taken. The avatar comes
+// Register creates the user id. It fails with errMocksExists when the id is taken. The avatar comes
 // from GET {BaseURL}/api/users/{id}: a transport error is retried once, and a non-200 answer leaves
 // the avatar empty. Two transport errors in a row abort the registration before anything is saved.
 func (o mocksOnboarding) Register(ctx context.Context, id, name string) (*mocksUser, error) {
 	existing, err := o.Repo.Find(ctx, id)
 	switch {
 	case err == nil && existing != nil:
-		return nil, mocksErrExists
-	case err != nil && !errors.Is(err, mocksErrNotFound):
+		return nil, errMocksExists
+	case err != nil && !errors.Is(err, errMocksNotFound):
 		return nil, fmt.Errorf("find %s: %w", id, err)
 	}
 	avatar, err := o.fetchAvatar(ctx, id)
@@ -510,7 +510,7 @@ func TestMocks_interfaceDoubles(t *testing.T) {
 		s.It("saves the user with the avatar the profile service returned", func(ctx *specs.Context) {
 			f := newMocksFixture(ctx)
 			saved := mock.NewCaptor[*mocksUser]()
-			find := f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), "u1").Return(nil, mocksErrNotFound)
+			find := f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), "u1").Return(nil, errMocksNotFound)
 			get := f.ctrl.Method("HTTPClient.Do").
 				Expect(mock.MatchT("a GET to /api/users/u1", func(r *http.Request) bool {
 					return r.Method == http.MethodGet && r.URL.Path == "/api/users/u1"
@@ -539,12 +539,12 @@ func TestMocks_interfaceDoubles(t *testing.T) {
 
 			_, err := f.svc.Register(bg, "u1", "Ada")
 
-			ctx.Expect(errors.Is(err, mocksErrExists)).To(specs.BeTrue())
+			ctx.Expect(errors.Is(err, errMocksExists)).To(specs.BeTrue())
 		})
 
 		s.It("retries a transport error once: sequential responses", func(ctx *specs.Context) {
 			f := newMocksFixture(ctx)
-			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).AtLeast(1).Return(nil, mocksErrNotFound)
+			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).AtLeast(1).Return(nil, errMocksNotFound)
 			// The first matching call gets the first Return, the second call the second one.
 			f.ctrl.Method("HTTPClient.Do").Expect(mock.Any()).Times(2).
 				Return(nil, errors.New("connection reset")).
@@ -559,7 +559,7 @@ func TestMocks_interfaceDoubles(t *testing.T) {
 
 		s.It("gives up after two transport errors and saves nothing", func(ctx *specs.Context) {
 			f := newMocksFixture(ctx)
-			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, mocksErrNotFound)
+			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, errMocksNotFound)
 			// One Return with Times(2): the last (here the only) response repeats.
 			f.ctrl.Method("HTTPClient.Do").Expect(mock.Any()).Times(2).Return(nil, errors.New("timeout"))
 			f.ctrl.Method("UserRepository.Save").Expect(mock.Any(), mock.Any()).Never()
@@ -572,7 +572,7 @@ func TestMocks_interfaceDoubles(t *testing.T) {
 
 		s.It("computes the answer from the request: Do", func(ctx *specs.Context) {
 			f := newMocksFixture(ctx)
-			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, mocksErrNotFound)
+			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, errMocksNotFound)
 			f.ctrl.Method("HTTPClient.Do").Expect(mock.Any()).Do(func(args []any) []any {
 				req := args[0].(*http.Request)
 				id := req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]
@@ -591,7 +591,7 @@ func TestMocks_interfaceDoubles(t *testing.T) {
 		// Every engine works: the controller only needs a Context, and it is safe for concurrent use.
 		s.ItParallel("keeps the avatar empty on a non-200 answer (parallel case)", func(ctx *specs.Context) {
 			f := newMocksFixture(ctx)
-			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, mocksErrNotFound)
+			f.ctrl.Method("UserRepository.Find").Expect(mock.Any(), mock.Any()).Return(nil, errMocksNotFound)
 			f.ctrl.Method("HTTPClient.Do").Expect(mock.Any()).Return(mocksJSONResponse(404, `{}`), nil)
 			f.ctrl.Method("UserRepository.Save").Expect(mock.Any(), mock.Any()).Return(nil)
 

@@ -2,6 +2,8 @@
 
 Status: accepted (issue #361). This record was written before any engine code, as the issue asks.
 
+Runnable examples: [property/examples/property_test.go](../property/examples/property_test.go), indexed in [examples/README.md](../examples/README.md).
+
 ## The problem
 
 go-specs has no property-testing API. A property is an invariant that must hold for every input a

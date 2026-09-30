@@ -123,11 +123,16 @@ func Example_beNil() {
 	// false
 }
 
+// typedNilPointer returns a nil *int stored in an interface.
+func typedNilPointer() any {
+	var p *int
+	return p
+}
+
 // A typed nil stored in an interface is the classic Go trap: `iface == nil` is false, but BeNil
 // still reports it as nil because it looks at the value inside.
 func Example_beNilTypedNilInInterface() {
-	var p *int
-	var iface any = p
+	iface := typedNilPointer()
 	fmt.Println(iface == nil)
 	fmt.Println(assert.BeNil().Match(iface))
 	_, failure := assert.Evaluate(assert.BeNil(), 7)

@@ -1,5 +1,7 @@
 # Semantic JSON equality: `MatchJSON`
 
+Runnable examples: [examples/json_matchers_test.go](../examples/json_matchers_test.go), indexed in [examples/README.md](../examples/README.md).
+
 `MatchJSON(expected)` checks that a JSON document (a response body, a request payload, a fixture) means the same thing as another, regardless of how it was formatted. It lives in `assert/json_matchers.go` and is re-exported as `specs.MatchJSON`.
 
 ```go
