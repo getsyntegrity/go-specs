@@ -80,15 +80,29 @@ func (m *equalMatcher) Description() string {
 	return fmt.Sprintf("equal to %v", m.expected)
 }
 
-// EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. It is
+// EqualFailureMessage renders the failure for a mismatch under ValuesEqual's semantics. When the
+// values are composites (struct, map, slice, array, pointer) a "differences:" section follows the
+// first line, listing the path, expected value and actual value of each difference; see
+// structural_diff.go for the bounds. Errors and scalars keep their single-line messages. It is
 // exported so the DSL's inlined comparison paths report identically to the matcher — a divergence
 // between the two wordings is exactly as confusing as a divergence between the two comparisons.
 func EqualFailureMessage(expected, actual any) string {
 	if expectedErr, actualErr, ok := errorOperands(expected, actual); ok {
 		return errorMismatchMessage(expectedErr, actualErr)
 	}
-	renderedActual, renderedExpected := describeMismatch(actual, expected)
-	return fmt.Sprintf("expected %s to equal %s", renderedActual, renderedExpected)
+	var renderedActual, renderedExpected string
+	if containsCycle(reflect.ValueOf(actual)) || containsCycle(reflect.ValueOf(expected)) {
+		// %v would recurse forever through a self-containing map or slice; the diff renderer is bounded.
+		renderedActual = renderDiffValue(reflect.ValueOf(actual), 0)
+		renderedExpected = renderDiffValue(reflect.ValueOf(expected), 0)
+	} else {
+		renderedActual, renderedExpected = describeMismatch(actual, expected)
+	}
+	msg := fmt.Sprintf("expected %s to equal %s", renderedActual, renderedExpected)
+	if diff := structuralDiff(expected, actual); diff != "" {
+		msg += "\n" + diff
+	}
+	return msg
 }
 
 // describeMismatch renders both sides, falling back to type-qualified forms when %v alone makes
