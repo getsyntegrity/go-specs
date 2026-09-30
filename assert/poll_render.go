@@ -34,89 +34,19 @@ func renderBounded(v any, verb string) string {
 	if !rv.IsValid() {
 		return fmt.Sprintf(verb, v) // an untyped nil, spelled by fmt as before
 	}
-	w := walker{path: map[visit]bool{}, budget: boundedNodeBudget}
-	if w.safe(rv) {
+	if safeForFmt(rv) {
 		return fmt.Sprintf(verb, v)
 	}
 	var b strings.Builder
-	r := renderer{path: map[visit]bool{}, b: &b}
+	r := renderer{path: map[refKey]bool{}, b: &b}
 	r.write(rv, 0)
 	return b.String()
-}
-
-// visit identifies a reference: the same type, address and length is the same slice, map or pointer.
-type visit struct {
-	typ reflect.Type
-	ptr uintptr
-	n   int
-}
-
-func refVisit(v reflect.Value) (visit, bool) {
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map:
-		if v.IsNil() {
-			return visit{}, false
-		}
-		return visit{typ: v.Type(), ptr: v.Pointer()}, true
-	case reflect.Slice:
-		if v.IsNil() || v.Len() == 0 {
-			return visit{}, false
-		}
-		return visit{typ: v.Type(), ptr: v.Pointer(), n: v.Len()}, true
-	}
-	return visit{}, false
-}
-
-// walker reports whether a value can be handed to fmt: no reference cycle and a bounded size.
-type walker struct {
-	path   map[visit]bool
-	budget int
-}
-
-func (w *walker) safe(v reflect.Value) bool {
-	if w.budget--; w.budget < 0 {
-		return false
-	}
-	if key, ok := refVisit(v); ok {
-		if w.path[key] {
-			return false
-		}
-		w.path[key] = true
-		defer delete(w.path, key)
-	}
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		if v.IsNil() {
-			return true
-		}
-		return w.safe(v.Elem())
-	case reflect.Map:
-		iter := v.MapRange()
-		for iter.Next() {
-			if !w.safe(iter.Key()) || !w.safe(iter.Value()) {
-				return false
-			}
-		}
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if !w.safe(v.Index(i)) {
-				return false
-			}
-		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if !w.safe(v.Field(i)) {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // renderer prints a value with a depth limit, an element limit and cycle detection. It reads values
 // by kind, never through Interface, so it also works on unexported struct fields.
 type renderer struct {
-	path map[visit]bool
+	path map[refKey]bool
 	b    *strings.Builder
 }
 
@@ -129,7 +59,7 @@ func (r *renderer) write(v reflect.Value, depth int) {
 		r.b.WriteString("...")
 		return
 	}
-	if key, ok := refVisit(v); ok {
+	if key, ok := refIdentity(v); ok {
 		if r.path[key] {
 			r.b.WriteString(cycleMarker)
 			return

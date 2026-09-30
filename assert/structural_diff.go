@@ -35,14 +35,7 @@ type diffWalker struct {
 	limit   int  // stop once more than limit entries exist
 	depth   int  // paths deeper than this are summarised
 	opaque  bool // when set, Stringer structs with hidden fields are walked, not treated as values
-	visited map[diffVisit]bool
-}
-
-// diffVisit identifies a pointer-like pair already under comparison, as reflect.DeepEqual does.
-type diffVisit struct {
-	a, b   uintptr
-	na, nb int // slice lengths, so slices sharing a backing array but not a length stay distinct
-	typ    reflect.Type
+	visited map[refPair]bool
 }
 
 // structuralDiff returns the "differences:" section for expected versus actual, or "" when the diff
@@ -53,7 +46,7 @@ func structuralDiff(expected, actual any) string {
 	if !isDiffComposite(ev) && !isDiffComposite(av) {
 		return ""
 	}
-	w := &diffWalker{limit: diffMaxEntries, depth: diffMaxDepth, visited: map[diffVisit]bool{}}
+	w := &diffWalker{limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{}}
 	w.walk(ev, av, diffRootLabel(ev, av), 0)
 	if len(w.entries) == 0 {
 		return ""
@@ -115,7 +108,7 @@ func (w *diffWalker) add(path, detail string) {
 // depth limit and the opaque-struct rule decide whether a subtree needs an entry, without walking
 // or rendering it in full.
 func (w *diffWalker) differs(a, b reflect.Value) bool {
-	sub := &diffWalker{limit: 0, depth: 1 << 30, opaque: true, visited: map[diffVisit]bool{}}
+	sub := &diffWalker{limit: 0, depth: 1 << 30, opaque: true, visited: map[refPair]bool{}}
 	sub.walk(a, b, "", 0)
 	return len(sub.entries) > 0
 }
@@ -188,10 +181,7 @@ func (w *diffWalker) walkElemTypes(a, b reflect.Value, path string, depth int) {
 
 // seen records a pointer-like pair and reports whether it was already being compared.
 func (w *diffWalker) seen(a, b reflect.Value) bool {
-	key := diffVisit{a: a.Pointer(), b: b.Pointer(), typ: a.Type()}
-	if a.Kind() == reflect.Slice {
-		key.na, key.nb = a.Len(), b.Len()
-	}
+	key := refPairOf(a, b)
 	if w.visited[key] {
 		return true
 	}
@@ -613,112 +603,6 @@ func renderValue(v reflect.Value, depth int) string {
 	}
 }
 
-// needsBoundedRender reports whether the failure header must use the bounded, deterministic renderer
-// instead of fmt's %v: either v reaches itself through pointers, maps or slices (fmt follows maps and
-// slices without a cycle check, printing only nested pointers as addresses, so a self-containing map
-// would overflow the stack), or a map has a NaN-bearing key (fmt sorts NaN keys as a tie, so their
-// order would depend on map iteration).
-func needsBoundedRender(v reflect.Value) bool {
-	return cycleWalk(v, map[diffVisit]bool{})
-}
-
-// cycleWalk marks a value true while it is on the current path, so meeting it again is a cycle, and
-// leaves it false-but-present afterwards so a shared (acyclic) reference is not walked twice.
-func cycleWalk(v reflect.Value, onPath map[diffVisit]bool) bool {
-	if !v.IsValid() {
-		return false
-	}
-	switch v.Kind() {
-	case reflect.Interface:
-		return !v.IsNil() && cycleWalk(v.Elem(), onPath)
-	case reflect.Pointer, reflect.Map, reflect.Slice:
-		if v.IsNil() || (v.Kind() != reflect.Pointer && v.Len() == 0) {
-			return false
-		}
-		if v.Kind() == reflect.Slice && isScalarKind(v.Type().Elem().Kind()) {
-			return false
-		}
-		key := diffVisit{a: v.Pointer(), typ: v.Type()}
-		if v.Kind() == reflect.Slice {
-			// Views of one backing array share a pointer and a type; only the length tells a short,
-			// acyclic view from a longer one that reaches itself.
-			key.na = v.Len()
-		}
-		if inProgress, seen := onPath[key]; seen {
-			return inProgress
-		}
-		onPath[key] = true
-		defer func() { onPath[key] = false }()
-		switch v.Kind() {
-		case reflect.Pointer:
-			return cycleWalk(v.Elem(), onPath)
-		case reflect.Map:
-			it := v.MapRange()
-			for it.Next() {
-				if containsNaN(it.Key()) || cycleWalk(it.Key(), onPath) || cycleWalk(it.Value(), onPath) {
-					return true
-				}
-			}
-		default:
-			for i := 0; i < v.Len(); i++ {
-				if cycleWalk(v.Index(i), onPath) {
-					return true
-				}
-			}
-		}
-	case reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if cycleWalk(v.Index(i), onPath) {
-				return true
-			}
-		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if cycleWalk(v.Field(i), onPath) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// containsNaN reports whether a map key is, or holds by value, a floating-point or complex NaN. Such a
-// key is not equal to itself. Pointers are not followed: they compare by address.
-func containsNaN(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.Float32, reflect.Float64:
-		return v.Float() != v.Float()
-	case reflect.Complex64, reflect.Complex128:
-		c := v.Complex()
-		return real(c) != real(c) || imag(c) != imag(c)
-	case reflect.Interface:
-		return !v.IsNil() && containsNaN(v.Elem())
-	case reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if containsNaN(v.Index(i)) {
-				return true
-			}
-		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if containsNaN(v.Field(i)) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isScalarKind(k reflect.Kind) bool {
-	switch k {
-	case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
-		return true
-	}
-	return false
-}
-
 // deepCompareBudget bounds the nodes one compareDeepValues call visits, so a tie-break over a huge
 // value costs a fixed amount. Past it the comparison reports a tie.
 const deepCompareBudget = 10_000
@@ -737,18 +621,15 @@ func compareDeepValues(a, b reflect.Value) int {
 
 type deepComparer struct {
 	budget  int
-	visited map[diffVisit]bool
+	visited map[refPair]bool
 }
 
 // revisit records a pointer-like pair and reports whether it was already visited.
 func (d *deepComparer) revisit(a, b reflect.Value) bool {
 	if d.visited == nil {
-		d.visited = make(map[diffVisit]bool)
+		d.visited = make(map[refPair]bool)
 	}
-	key := diffVisit{a: a.Pointer(), b: b.Pointer(), typ: a.Type()}
-	if a.Kind() == reflect.Slice {
-		key.na, key.nb = a.Len(), b.Len()
-	}
+	key := refPairOf(a, b)
 	if d.visited[key] {
 		return true
 	}
