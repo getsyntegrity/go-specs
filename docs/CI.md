@@ -1,185 +1,170 @@
 # CI/CD pipeline guide
 
-This is a from-scratch guide to how this repository's GitHub Actions pipeline works, written so it
-can also serve as a starting point for another repository (see "Porting to another repository" at
-the end). It assumes no prior context beyond CONTRIBUTING.md's Branching Model.
+How this repository's GitHub Actions pipeline works. It is modeled on the pipeline of the `ego`
+repository, so both are operated the same way, and it keeps the go-specs-only pieces (GoReleaser,
+the `go-specs-report` flow check, benchmarks, fuzzing). It assumes no prior context beyond
+CONTRIBUTING.md's Branching Model. The design notes and the decisions behind it are in
+`docs/investigations/odd-tasks/ego-style-pipeline.md`.
 
 ## Goals
 
-- **The pull request is the only CI/CodeQL gate.** A commit reaching `develop` or `main` has
-  already been validated once, by the pull request (or merge-queue entry) that put it there; no
-  workflow re-runs the same check against the same tree afterward just because a `push` event also
-  fired. **One exception:** `release-prep.yml`'s `chore(release): prepare vX.Y.Z` commit is pushed
-  straight onto `develop` by the release GitHub App (a ruleset bypass actor), so it lands there
-  before `ci.yml` has run on it; the release PR's `pull_request: synchronize` run validates it
-  afterward, and `ci-ok` must pass on it before it can reach `main`. The exception is kept narrow on
-  purpose: `release-prep.yml` refuses to push unless that commit changes `CHANGELOG.md` and nothing
-  else, on top of a `develop` tip a pull request already validated, and no build, test, lint, or
-  GoReleaser step reads `CHANGELOG.md`. See `docs/investigations/odd-tasks/pr-gated-pipeline.md`
-  (Decision 5) for why, and for the event-to-workflow matrix.
-- **One required status check name.** A branch ruleset names `ci-ok`, never an individual job, so
-  adding, renaming, or splitting a job inside `ci.yml` never also means editing the ruleset.
-- **Every third-party action is pinned to a commit SHA**, not a mutable tag, so a re-pointed tag
-  cannot silently start running inside a job that reads a secret (the release GitHub App's
-  installation token, code-scanning's `security-events: write`).
-- **Releasing is a pull request, not a command.** There is no `workflow_dispatch` release path;
-  merging `develop` into `main` (or a `hotfix/*` branch into `main`) is the release.
+- **Two required checks, one of them aggregating.** Rulesets name `ci-ok` (every job of `ci.yml`)
+  and `pr-meta` (`pr-meta.yml`), never an individual job, so adding, renaming or splitting a job
+  never means editing a ruleset.
+- **`develop` and `main` only change through pull requests, for bots too.** No workflow pushes to
+  either branch. `release.yml` pushes a tag and a `sync/*` branch; `benchmark-charts.yml` pushes a
+  `chore/*` branch; both open ordinary pull requests.
+- **Releasing is a merge.** Merging `develop` (or a `hotfix/*` branch) into `main` tags and
+  publishes; there is no separate release command and no "prepare" step that must run first.
+- **Every third-party action is pinned to a commit SHA**, not a mutable tag.
+- **Heavy scanning stays off the PR path** (`security.yml`).
 
 ## Workflow inventory
 
 | File | Trigger(s) | Job(s) | Purpose |
 |---|---|---|---|
-| `ci.yml` | `pull_request` (`develop`, `main`), `merge_group`, `workflow_dispatch` | `verify`, `unit`, `race`, `bench-smoke`, `report-cli`, `lint`, `govulncheck`, `goreleaser`, `dependency-review` (PR-only), `ci-ok` | The gate. Static checks (including a read-only `tools/release validate` of `CHANGELOG.md`'s `[Unreleased]` structure), the full test suite, the race detector, a smoke-run of every benchmark, a real run of the documented `go-specs-report` CLI flow, lint, `govulncheck`, a GoReleaser dry run, and a dependency-advisory diff — each its own job, each its own line in the PR's status list, aggregated by `ci-ok`. |
-| `codeql.yml` | `pull_request` (`develop`, `main`), `merge_group`, `push` (`develop` only), weekly `schedule`, `workflow_dispatch` | `analyze` (matrix: `go`, `actions`) | Static security/quality analysis, two legs: `go` scans this repository's Go source, `actions` scans the workflow YAML itself for the script-injection class of problem. `push: [develop]` maintains the default-branch alert baseline GitHub's PR alert-diffing needs; it is a deliberate exception to "PR is the only gate" (see `pr-gated-pipeline.md` Decision 4). |
-| `fuzz.yml` | weekly `schedule`, `workflow_dispatch` (`duration` input, default `5m`) | `fuzz` (matrix: `FuzzEqualFailureMessage`, `FuzzMatcherDiagnostics`, `FuzzPollMessage`) | Coverage-guided fuzzing of the assertion diagnostics (`assert/fuzz_diagnostics_test.go`), one job per target, `contents: read` only, failing inputs uploaded as an artifact. Not a gate and not part of `ci.yml`: an open-ended search would lengthen every pull request. Pull requests already replay the seed corpus through `go test ./...`. Trigger it with `gh workflow run fuzz.yml -f duration=10m`. |
-| `benchmarks.yml` | `push` (`develop` only), `workflow_dispatch` | `ratio-guard` | A post-merge trend signal (Runner/Describe cost vs. a hand-written no-framework loop, same process, same run), not a merge gate — nothing requires it to pass before a PR merges. |
-| `benchmark-charts.yml` | `push` (`develop` only, `paths-ignore` on its own chart output), `workflow_dispatch` | `bench` → `chart` → `publish` | Regenerates `benchmarks/results/*.png` and rolls the result into a single reused pull request (`chore/benchmark-charts` → `develop`) instead of committing directly — `main`/`develop` only change through pull requests. Three jobs so the release App's installation token exists only in `publish`, the one job that pushes anything. |
-| `release-prep.yml` | `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`; `main` only) | `prepare` | While a `develop` → `main` or `hotfix/*` → `main` PR is open, computes the next version from Conventional Commits and rewrites `CHANGELOG.md`'s `[Unreleased]` section into a dated release heading, pushed back onto the PR's own head branch — so the version and changelog are visible in the PR before it merges. For a release PR that head is `develop` itself, which makes this push the one exception to the PR-only gate; the push is refused unless the commit changes only `CHANGELOG.md` (see Goals). |
-| `release.yml` | `pull_request` (`closed`; `main` only) | `release`, `hotfix-sync` (`needs: release`, hotfix-only) | On a genuine merge, re-derives the version, cross-checks it against what `release-prep.yml` wrote, tags the merge commit, runs GoReleaser, and verifies the published tag is externally installable. For a hotfix, `hotfix-sync` additionally pushes a disposable `sync/hotfix-vX.Y.Z` branch and opens (or reuses) a PR from it into `develop`. |
+| `ci.yml` | `pull_request` (`develop`, `main`), `push` (`develop`), `workflow_dispatch` | `flow`, `verify`, `lint`, `plan`, `test (shard N)`, `test-report`, `race`, `modules (property)`, `bench-smoke`, `report-cli`, `tidy`, `api`, `vuln`, `goreleaser`, `dependency-review` (PR-only), `ci-ok` | The gate. See "What `ci.yml` checks". |
+| `pr-meta.yml` | `pull_request` (`develop`, `main`) | `pr-meta` | A PR must change `CHANGELOG.md` unless exempt (`skip-changelog` or `kind/deps` label, a `sync/*`, `dependabot/*` or `chore/benchmark-charts` branch, or the `develop` → `main` release PR). |
+| `release.yml` | `push` (`main`), `workflow_dispatch` (re-run) | `release`, `sync-develop`, `notify` | Tag, GitHub Release, installability check, then a pull request into `develop`. See "Release flow". |
+| `security.yml` | `push` (`develop`), nightly `schedule`, `workflow_dispatch` | `codeql (go)`, `codeql (actions)`, `govulncheck-strict`, `notify` | Static analysis and strict vulnerability scan. Warns, never blocks. The `actions` leg scans the workflow YAML itself for script injection. |
+| `fuzz.yml` | weekly `schedule`, `workflow_dispatch` (`duration`, default `5m`) | `fuzz` (matrix: one job per fuzz target) | Coverage-guided fuzzing of the assertion diagnostics. Not a gate; pull requests already replay the seed corpus through `go test ./...`. Run it with `gh workflow run fuzz.yml -f duration=10m`. |
+| `benchmarks.yml` | `push` (`develop`), `workflow_dispatch` | `ratio-guard` | Post-merge trend signal: Runner/Describe cost against a hand-written no-framework loop in the same process. Not a gate. |
+| `benchmark-charts.yml` | `push` (`develop`, `paths-ignore` on its own chart output), `workflow_dispatch` | `bench` → `chart` → `publish` | Regenerates `benchmarks/results/*.png` and rolls the result into one reused pull request (`chore/benchmark-charts` → `develop`). |
+
+Composite actions: `.github/actions/go-setup` (toolchain from `.go-version`, the `go.mod` drift
+check, the Go build cache; every Go job uses it) and `.github/actions/notify` (Slack message; does
+nothing unless `SLACK_BOT_TOKEN` and the `SLACK_CHANNEL` variable exist).
+
+Scripts in `.github/scripts`: `next-version.sh`, `release-changelog.sh`, `test-matrix.sh`,
+`api-check.sh`, `check-go-version.sh`, `labels.sh` (creates the labels). `make test-ci-scripts`
+runs `.github/scripts/test/run.sh`, which tests `next-version.sh` and `release-changelog.sh` in
+throwaway git repositories (`ci.yml`'s `verify` job runs it too).
+
+## What `ci.yml` checks
+
+- **`flow`**: only a PR from `develop` or `hotfix/*` may target `main`. For a PR to `main` it also
+  prints the version the merge would publish and a preview of the release notes, and fails early if
+  the version cannot be published.
+- **`verify`**: module path equals the repository path, `gofmt` (`make fmt-check`), `go vet`,
+  `go build`, `go run ./tools/release validate -file CHANGELOG.md`, and the release script tests.
+- **`plan`, `test`, `test-report`**: tests run in shards planned from the timings of previous runs
+  (`test-matrix.sh`; timings are saved by `test-report` and cached, and `push` to `develop` keeps
+  them fresh). `plan` skips the compile-heavy jobs for a PR that only touches top-level Markdown,
+  `docs/` or the issue/PR templates; `ci-ok` still reports, because a skipped job counts as
+  success.
+- **`race`**, **`modules`** (the nested `property` module: build, vet, test, race), **`bench-smoke`**
+  (every benchmark once, plus a race-checked run of the goroutine-spawning ones), **`report-cli`**
+  (runs the `go-specs-report` flow documented in `docs/REPORTING.md` for real, against the
+  `report/coordination` fixtures; green only when `go test` is red and `finalize` succeeds with the
+  expected totals), **`tidy`**, **`vuln`** (`govulncheck`), **`goreleaser`** (`goreleaser check`
+  plus a `--snapshot` release), **`dependency-review`** (moderate and above fails; PR-only), **`lint`**
+  (golangci-lint, pinned), **`api`** (`apidiff`: informational against `develop`; against the latest
+  tag on a PR to `main` it blocks an incompatible change without `release:major` once the tag is
+  `v1`+, and only warns on `v0.x`).
 
 ## Branch model
 
-- `develop` is the default branch. Every feature, fix, refactor, and doc change targets it.
-- `main` holds releases and hotfixes only, and only moves through a pull request: `develop` → `main`
-  for an ordinary release, or `hotfix/*` → `main` for a hotfix. A hotfix is synced back down into
-  `develop` automatically by `release.yml`'s `hotfix-sync` job.
+- `develop` is the default branch. Every feature, fix, refactor and doc change targets it.
+- `main` holds releases and hotfixes only: `develop` → `main` for an ordinary release, or
+  `hotfix/*` → `main` for a hotfix. The follow-up to either goes back into `develop` through the
+  `sync/release-vX.Y.Z` pull request that `release.yml` opens.
 - Never open a feature PR against `main`.
 
-Full detail, including the version-bump rules and the changelog-conflict caveat on a hotfix's sync
-PR, is in CONTRIBUTING.md's Branching Model and Releasing sections.
+Full detail, including the version-bump rules and the changelog conflict a hotfix sync can carry,
+is in CONTRIBUTING.md's Branching Model and Releasing sections.
 
 ## Required checks and ruleset settings
 
 Two GitHub rulesets, one per protected branch:
 
-- **`protect-develop`**: pull request required to merge; 0 required approvals (single-maintainer
-  repository); merge and squash allowed (not rebase, so history stays legible per commit); "require
-  branches to be up to date before merging" (strict) — an out-of-date PR must be updated before it
-  can merge, which re-triggers an ordinary `pull_request: synchronize` run rather than needing a
-  merge queue.
-- **`protect-main`**: pull request required, **merge only** — squash is disallowed on this branch
-  specifically, because CONTRIBUTING.md requires a merge commit (not a squash) when syncing
-  `develop` into `main`: a squash creates a commit on `main` that does not exist on `develop`, and
-  the branches diverge again the moment the release lands.
-- **Both rulesets**: no branch deletion, no force push.
-- **Bypass actor**: the release GitHub App only, on both rulesets — never a human, including the
-  maintainer. This is what lets `release-prep.yml` push its prepare commit and `hotfix-sync` push
-  its sync branch directly, without opening a hole a human could also use to push straight to
-  `develop`/`main`.
+- **`protect-develop`**: pull request required; 0 required approvals (single-maintainer
+  repository); "require branches to be up to date before merging".
+- **`protect-main`**: pull request required, **merge commit only** (squash disallowed, because a
+  squash creates a commit on `main` that does not exist on `develop`).
+- **Both rulesets**: no branch deletion, no force push, **no bypass actor**. Nothing in the pipeline
+  needs one any more.
 
-Required status checks:
+Required status checks on both: **`ci-ok`** and **`pr-meta`**. `analyze (go)` and
+`analyze (actions)` are no longer PR checks (CodeQL moved to `security.yml`) and must be removed
+from the required list.
 
-- **`ci-ok`** — the single name `ci.yml`'s own `ci-ok` job reports; see Goals above for why nothing
-  else in that file is named individually.
-- **`analyze (go)`** and **`analyze (actions)`** — the two legs of `codeql.yml`'s `analyze` matrix;
-  GitHub Actions names a matrix job `<job id> (<matrix value>)` automatically, so these are the
-  literal required-check names, not a description.
-
-## Release/hotfix flow
+## Release flow
 
 **Ordinary release:**
 
-1. Open a `develop` → `main` PR. `release-prep.yml` runs immediately (and again on every later push
-   to `develop` while the PR stays open), computing the next version and rewriting
-   `CHANGELOG.md`.
-2. Review the prepared commit — version and changelog are both visible in the PR diff.
-3. Merge with a merge commit, not a squash.
-4. `release.yml`'s `release` job runs automatically on the `closed` event, re-derives the version,
-   cross-checks it against what was prepared, tags the merge commit, and runs GoReleaser. `main` and
-   `develop` end up identical, so no sync PR is needed.
+1. Open a `develop` → `main` PR. `flow` shows the version and the release notes preview. Add a
+   `release:*` label only to override the default (minor).
+2. Merge with a merge commit. `release.yml` runs on the push: version from `next-version.sh`, tag
+   `vX.Y.Z` pushed with the workflow token, notes from `CHANGELOG.md`, GoReleaser creates the
+   GitHub Release, and `go get <module>@<tag>` is verified from a clean module. Re-running the
+   workflow on the same commit reuses the tag and skips a release that already exists.
+3. `sync-develop` opens the pull request `sync/release-vX.Y.Z` → `develop` that stamps
+   `CHANGELOG.md`. Merge it with a merge commit.
 
-**Hotfix:**
+**Hotfix:** branch `hotfix/<name>` from `main`, add a `CHANGELOG.md` entry, PR into `main`, merge.
+Same release job (a patch by default), and `sync-develop` opens the main → develop pull request that
+carries the fix and the stamp. The release notes exclude any entry the previous tag already
+published, which is what makes a hotfix cut from an unstamped `main` safe.
 
-1. Branch from `main`, open a PR back into `main` (never through `develop`).
-2. `release-prep.yml` prepares the version with `-patch-only` — it fails if the commit range
-   contains a breaking change or a `feat`, since a hotfix must not change the API.
-3. On merge, `release.yml`'s `release` job tags and publishes exactly like an ordinary release, and
-   `hotfix-sync` (gated `needs: release`, hotfix-only) pushes a disposable `sync/hotfix-vX.Y.Z`
-   branch and opens a PR from it into `develop`, completing the "merged down into `develop`" step
-   CONTRIBUTING.md's Branching Model requires.
+## Secrets and variables
 
-Full step-by-step detail, including the exact version-bump table and the `CHANGELOG.md` conflict a
-hotfix sync PR can carry, lives in CONTRIBUTING.md's Releasing section — this guide only covers the
-pipeline mechanics, not the contributor-facing walkthrough.
-
-## Secrets
-
-- `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY` — the release GitHub App's ID and private key.
-  `release-prep.yml`, `release.yml`'s `hotfix-sync` job, and `benchmark-charts.yml`'s `publish` job
-  each mint a short-lived installation token from these at the start of the one job that needs to
-  push or open a PR, rather than reading a long-lived credential. A `GITHUB_TOKEN`-authored push or
-  PR does not retrigger required checks, which is why the App exists at all instead of relying on
-  the workflow's own default token.
-- No other secret is used by any workflow in this repository. `GITHUB_TOKEN` (ephemeral, scoped by
-  each job's `permissions:` block) covers everything else, including `release.yml`'s own tag push,
-  which stays attributed to `github-actions[bot]` rather than the App.
+- `ORG_CHECKOUT_TOKEN` (optional): an organization token, used by `release.yml`'s `sync-develop` and
+  `benchmark-charts.yml`'s `publish` to open pull requests that trigger CI. Without it they fall back
+  to `github.token`, and the pull request has to be closed and reopened to run CI.
+- `SLACK_BOT_TOKEN` (secret) and `SLACK_CHANNEL` (variable), both optional: enable `notify`.
+- Nothing else. There is no release GitHub App any more: `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`
+  and the App's bypass entries on the rulesets can be deleted.
 
 ## Repository settings
 
-Declared as code in `.github/settings.yml` (applied by the Probot Settings App — see that file's
-own header for what happens if the app is not installed):
+Declared as code in `.github/settings.yml` (applied by the Probot Settings App; see that file's own
+header for what happens if the app is not installed):
 
 - `default_branch: develop`.
-- `delete_branch_on_merge: true` — every disposable branch this pipeline creates
-  (`chore/benchmark-charts`, `sync/hotfix-vX.Y.Z`) is meant to be deleted once its PR merges.
-- `allow_squash_merge`, `allow_merge_commit`, and `allow_rebase_merge` all stay available at the
-  repository level; the per-branch ruleset (above) is what actually restricts `main` to merge-only.
+- `delete_branch_on_merge: true`: every disposable branch this pipeline creates
+  (`chore/benchmark-charts`, `sync/release-vX.Y.Z`) is meant to be deleted once its PR merges.
+- `allow_squash_merge`, `allow_merge_commit` and `allow_rebase_merge` all stay available at the
+  repository level; the per-branch rulesets restrict `main`.
 - `enable_vulnerability_alerts` and `enable_automated_security_fixes` (Dependabot alerts and
-  security updates) — enabled directly under `repository:`, since `probot/settings`' documented
-  schema exposes these two as plain booleans there.
-- Secret scanning and push protection are **not** declared in `settings.yml`: GitHub exposes them
-  through the `security_and_analysis` object, which `probot/settings`' documented schema does not
-  cover. They are enabled directly in Settings → Code security and analysis instead, and
-  `settings.yml` documents the omission rather than guessing at an unverified key.
+  security updates).
+- Secret scanning and push protection are not declared there (the Probot schema does not cover
+  them); enable them in Settings, Code security and analysis.
+
+Labels used by the pipeline (`kind/*`, `skip-changelog`, `release:major|minor|patch`,
+`needs-triage`) are created by `.github/scripts/labels.sh`; run it once with an authenticated `gh`.
 
 ## SHA-pin policy
 
 Every `uses: owner/repo@...` in `.github/workflows` and `.github/actions` is pinned to a 40-character
-commit SHA with a trailing `# vX.Y.Z` comment, never a bare `@vN` tag — a re-pointed mutable tag
-could otherwise start running inside a job that mints the release App's installation token or reads
-code-scanning secrets. Each SHA is resolved with:
+commit SHA with a trailing `# vX.Y.Z` comment, never a bare `@vN` tag. Each SHA is resolved with:
 
 ```
 git ls-remote --tags https://github.com/<owner>/<repo> 'refs/tags/vN*'
 ```
 
 taken to the action's most specific current release tag within the major already in use, with the
-peeled `^{}` commit used for an annotated tag. `.github/dependabot.yml`'s `github-actions` ecosystem
-keeps these pins current: Dependabot resolves a pinned action's new SHA itself and opens a PR that
-bumps both the SHA and its version comment together, so a pin is never stale just because it is
-never a moving tag.
-
-Verify the whole repository has no unpinned action left with:
+peeled `^{}` commit used for an annotated tag. `.github/dependabot.yml`'s `github-actions`
+ecosystem keeps the pins current by opening a PR that bumps the SHA and its version comment
+together. Verify that no unpinned action is left with:
 
 ```
-rg -n 'uses: [^.].*@v[0-9]' .github
+rg -n 'uses: [^.].*@' .github | rg -v '@[0-9a-f]{40}'
 ```
 
-which must return nothing.
+which must print nothing. The same rule covers tools fetched with `go install` / `go run`: they are
+pinned to a version (`gotestsum`, `govulncheck`, `apidiff`).
 
 ## Porting to another repository
 
-This pipeline is largely repository-agnostic, but not entirely. Before reusing it elsewhere, change:
-
-- **The module path check** (`ci.yml`'s `verify` job, "Verify module path matches repository"):
-  hardcodes the assumption that `go list -m` should equal `github.com/${GITHUB_REPOSITORY}`. Correct
-  as a general Go-module check, but confirm the target repository is also hosted at the path its
-  `go.mod` declares.
-- **The Go version pin file**: this pipeline reads `.go-version` (via `actions/setup-go`'s
-  `go-version-file` input and `.github/scripts/check-go-version.sh`'s drift check against `go.mod`).
-  A repository without that file, or one on a different toolchain-pin convention, needs either that
-  file added or every `go-version-file: .go-version` reference changed.
-  `.github/actions/setup-go/action.yml` is the one place the pin is actually read from.
-- **`ci.yml`'s `report-cli` job is go-specs-specific.** It runs this repository's own documented
-  `go-specs-report` CLI flow against two fixture packages
-  (`report/coordination/internal/e2efixture/producera`/`producerb`) that only exist here. Drop this
-  job entirely in a repository that does not vendor `go-specs-report`.
-- **`benchmark-charts.yml` and `benchmarks.yml` are optional.** They assume `benchmarks/results/*.png`
-  and a `make bench-ratio-guard`/`make bench-smoke` target exist. A repository with no
-  benchmark suite (or no interest in tracking one over time) can drop both files and `ci.yml`'s
-  `bench-smoke` job without affecting anything else in this pipeline.
-- **The release App and its two rulesets are the one piece every port must set up by hand** — a
-  GitHub App is scoped per-installation, so a new repository needs its own App (or its own
-  installation of a shared one), its own `RELEASE_APP_ID`/`RELEASE_APP_PRIVATE_KEY` secrets, and its
-  own `protect-develop`/`protect-main` rulesets naming that App as the sole bypass actor. None of
-  this is expressible in a workflow file.
+- **The module path check** (`ci.yml`'s `verify` job) assumes `go list -m` equals
+  `github.com/${GITHUB_REPOSITORY}`.
+- **The Go version pin file**: every job reads `.go-version` through
+  `.github/actions/go-setup/action.yml`, the one place the pin is read from.
+- **`report-cli`, `bench-smoke`, `benchmarks.yml`, `benchmark-charts.yml` and `fuzz.yml` are
+  go-specs-specific**: they assume this repository's fixtures, benchmark suite and fuzz targets.
+  Drop them elsewhere.
+- **`release-changelog.sh` only matters where `CHANGELOG.md` is hand-written** with a Keep a
+  Changelog `## [Unreleased]` section and `tools/release`. A repository that generates notes from
+  PRs (as `ego` does) does not need it.
+- **What is not expressible in a workflow file**: the two rulesets, the required check names, the
+  optional `ORG_CHECKOUT_TOKEN` and Slack secrets, and the labels.

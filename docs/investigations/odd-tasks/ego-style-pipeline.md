@@ -182,10 +182,12 @@ change touches no Go file; removing it can be a follow-up.
   v0.4.0, `hotfix/x` gives v0.3.2 (local tags stop at v0.3.1), `release:patch` gives a patch and
   `release:major` gives v1.0.0; `release-changelog.sh` against the real `CHANGELOG.md` produced a
   27-line notes file from the current `[Unreleased]` section.
-- [ ] T4 — `security.yml` (CodeQL folded in, strict govulncheck, notify); delete `codeql.yml`;
+- [x] T4 — `security.yml` (CodeQL folded in, strict govulncheck, notify); delete `codeql.yml`;
   token swap in `benchmark-charts.yml`; composite switch in `benchmarks.yml` and `fuzz.yml`;
   `dependabot.yml`. Check: actionlint; no unpinned `uses:`.
-- [ ] T5 — Docs: `CONTRIBUTING.md` (Branching Model, Releasing, hotfix, benchmark charts, Pull
+  Commit: `a1d5749`. actionlint clean; no unpinned `uses:`; no `RELEASE_APP` or App-token
+  reference left in `.github/`.
+- [x] T5 — Docs: `CONTRIBUTING.md` (Branching Model, Releasing, hotfix, benchmark charts, Pull
   Requests) and `docs/CI.md` rewritten for the new pipeline. Check: every workflow and script named
   in the docs exists; no reference to `release-prep` or the App remains outside investigation
   notes.
@@ -205,6 +207,22 @@ change touches no Go file; removing it can be a follow-up.
 actionlint (latest), shellcheck, `bash .github/scripts/test/run.sh`, local runs of
 `next-version.sh` and `test-matrix.sh`, `make check-go-version`,
 `go run ./tools/release validate -file CHANGELOG.md`, `go build ./...`.
+
+## Needs a human before merging
+
+- Rulesets `protect-develop` and `protect-main`: required checks become `ci-ok` and `pr-meta`;
+  remove `analyze (go)` and `analyze (actions)`; remove the App as bypass actor.
+- Run `.github/scripts/labels.sh` once (creates `skip-changelog`, `kind/*`, `release:*`). This PR
+  itself needs the `skip-changelog` label for `pr-meta`.
+- Make sure `ORG_CHECKOUT_TOKEN` is available to this repository (org secret), otherwise the sync
+  and chart pull requests need a close/reopen to run CI. `RELEASE_APP_ID` and
+  `RELEASE_APP_PRIVATE_KEY` can be deleted.
+- None of the workflows could be run here; only actionlint, shellcheck, the script tests and local
+  dry runs of the scripts. The first real runs are the check.
+- Comments in `tools/release/*.go` still mention `release-prep.yml`; Go files were out of scope.
+  `next-version` and `latest-heading` of that tool are now unused by CI.
+- The Engram mirror `odd/ego-style-pipeline/tasks` could not be written (the memory server asked
+  for a session id); this file is the only copy.
 
 ## Progress
 

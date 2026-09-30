@@ -17,7 +17,7 @@
 #
 #   gh workflow run fuzz.yml -f duration=10m
 #
-# Weekly: Wednesdays at 04:41 UTC, an off-the-hour time like codeql.yml's, so it does not compete with
+# Weekly: Wednesdays at 04:41 UTC, an off-the-hour time like security.yml's, so it does not compete with
 # every other repository's queued "top of the hour" scheduled workflows for runner capacity.
 #
 # When a target fails, Go writes the failing input under assert/testdata/fuzz/<Target>/ in the runner's
