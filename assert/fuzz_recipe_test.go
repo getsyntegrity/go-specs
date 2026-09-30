@@ -121,11 +121,12 @@ func fzKidCount(k fzKind, p byte) int {
 }
 
 type fzNode struct {
-	kind fzKind
-	p    byte
-	kids [][2]byte
-	val  any // set for scalars and reference kinds; other kinds are built on demand by fzGraph.value
-	set  bool
+	kind  fzKind
+	p     byte
+	kids  [][2]byte
+	val   any // set for scalars and reference kinds; other kinds are built on demand by fzGraph.value
+	set   bool
+	count int // entries of a wide map
 
 	mAny   map[any]any
 	mStr   map[string]any
@@ -144,8 +145,19 @@ type fzNode struct {
 type fzGraph struct {
 	n, a, b  int
 	nodes    []fzNode
-	rd       *fzReader
-	addrKeys bool // some map is keyed by a pointer: its text may legitimately depend on addresses
+	rd       *fzReader // positioned at the tail; use tail() for a fresh reader
+	addrKeys bool      // some map is keyed by a pointer: its text may legitimately depend on addresses
+	heavy    int       // elements the wide kinds may still allocate in this graph
+}
+
+// fzHeavyBudget bounds the elements of every wide map and big slice in one graph, so a recipe that
+// names many of them still builds in milliseconds; the first ones get their full size.
+const fzHeavyBudget = 30_000
+
+func (g *fzGraph) spend(n int) int {
+	n = min(n, g.heavy)
+	g.heavy -= n
+	return n
 }
 
 func (g *fzGraph) actual() any   { return g.value(g.a, 0) }
@@ -166,7 +178,7 @@ func nanFromByte(x byte) float64 {
 func fzBuild(data []byte) *fzGraph {
 	rd := &fzReader{data: data}
 	n := 1 + int(rd.next())%fzMaxNodes
-	g := &fzGraph{n: n, rd: rd, nodes: make([]fzNode, n)}
+	g := &fzGraph{n: n, rd: rd, nodes: make([]fzNode, n), heavy: fzHeavyBudget}
 	g.a, g.b = g.target(rd.next()), g.target(rd.next())
 	for i := range g.nodes {
 		g.nodes[i].kind = fzKind(rd.next()) % fkKinds
@@ -252,9 +264,10 @@ func (g *fzGraph) allocate(nd *fzNode) {
 		nd.val = nd.ptr
 	case fkWideMap:
 		nd.mInt = make(map[int]any)
+		nd.count = g.spend(1025 + p*4)
 		nd.val = nd.mInt
 	case fkBigInts:
-		s := make([]int, p*100)
+		s := make([]int, g.spend(p*100))
 		for i := range s {
 			s[i] = i
 		}
@@ -348,7 +361,7 @@ func (g *fzGraph) wire(nd *fzNode) {
 		*nd.ptr = child(0)
 	case fkWideMap:
 		v := child(0)
-		for i, count := 0, 1025+int(nd.p)*4; i < count; i++ {
+		for i, count := 0, nd.count; i < count; i++ {
 			if i%3 == 0 {
 				nd.mInt[i] = v
 			} else {
@@ -569,3 +582,7 @@ func fzRecipePtrKey() []byte {
 	r.node(fkMapAny, 0, fzKid(7, 0))
 	return r.bytes()
 }
+
+// tail returns a reader over the bytes after the graph. Every run of a diagnostic takes its own, so
+// running one twice on the same graph reads the same parameters.
+func (g *fzGraph) tail() *fzReader { return &fzReader{data: g.rd.data, pos: g.rd.pos} }
