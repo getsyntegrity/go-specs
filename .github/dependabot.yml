@@ -3,15 +3,22 @@
 # through a develop -> main release/hotfix PR, so an update PR opened against main would sit
 # outside that flow and never get released the ordinary way.
 #
+# Every PR carries `kind/deps`, which is the one label pr-meta.yml requires and puts the PR under
+# "Dependency" in the release notes. (The label must exist: .github/scripts/labels.sh creates it.)
+#
 # Both ecosystems group their own minor and patch updates into a single PR, leaving major bumps
 # ungrouped -- a major version can carry a breaking change worth reviewing (and bisecting, if it
 # regresses something) on its own, while a minor/patch bump is routine enough that one PR per
 # dependency per week is pure review overhead for no extra safety.
 version: 2
 updates:
+  # The root module and the nested property module (property/go.mod).
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/property"
     target-branch: "develop"
+    labels: ["kind/deps"]
     schedule:
       interval: "weekly"
     groups:
@@ -24,13 +31,17 @@ updates:
   # commit SHA with a trailing `# vX.Y.Z` comment (github.com/getsyntegrity/go-specs -- resolved
   # with `git ls-remote https://github.com/<owner>/<repo> refs/tags/vN refs/tags/vN^{}`, using the
   # peeled `^{}` SHA for an annotated tag), never a bare `@vN` -- a re-pointed mutable tag would
-  # run inside jobs that mint the release GitHub App's installation token or read code-scanning
-  # secrets. Dependabot still understands a SHA-pinned action (it resolves the new tag's SHA
-  # itself) and opens a PR that bumps both the SHA and its version comment together, so the pin
-  # never goes stale even though it is never a moving tag.
+  # run inside jobs that hold a write token or read code-scanning secrets. Dependabot still
+  # understands a SHA-pinned action (it resolves the new tag's SHA itself) and opens a PR that
+  # bumps both the SHA and its version comment together, so the pin never goes stale even though
+  # it is never a moving tag.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/go-setup"
+      - "/.github/actions/notify"
     target-branch: "develop"
+    labels: ["kind/deps"]
     schedule:
       interval: "weekly"
     groups:

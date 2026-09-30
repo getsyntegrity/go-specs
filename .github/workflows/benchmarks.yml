@@ -55,10 +55,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: ./.github/actions/go-setup
         with:
-          go-version-file: .go-version
-          cache: false
+          cache-key: ratio-guard
 
       - name: Benchmark ratio guard
         run: make bench-ratio-guard

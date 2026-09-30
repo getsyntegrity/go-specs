@@ -1,0 +1,50 @@
+name: notify
+description: >
+  Pipeline notification. Today: Slack. To add another destination (Teams, email),
+  add a step here; the workflows that use it do not change.
+  Never breaks the pipeline: on failure it leaves a warning. It does nothing when
+  no Slack token or channel is configured.
+inputs:
+  status:
+    description: success | failure | cancelled
+    required: true
+  title:
+    required: true
+  details:
+    default: ""
+  slack-token:
+    description: Slack bot token (SLACK_BOT_TOKEN). Empty = the notification is skipped.
+    default: ""
+  channel:
+    description: Slack channel (vars.SLACK_CHANNEL). Empty = the notification is skipped.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Slack
+      if: inputs.slack-token != '' && inputs.channel != ''
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-token }}
+        STATUS: ${{ inputs.status }}
+        TITLE: ${{ inputs.title }}
+        DETAILS: ${{ inputs.details }}
+        CHANNEL: ${{ inputs.channel }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+      run: |
+        if [ "$STATUS" = "success" ]; then color="5bae61"; icon=":white_check_mark:"
+        else color="a43024"; icon=":alert:"; fi
+        header="${icon} *${TITLE}* (${STATUS}) — <${REPO_URL}|${GITHUB_REPOSITORY}>"
+        summary=$(printf '%s' "$DETAILS" | head -n1)
+        body=$(printf '%s\nCommit `%s` · <%s|view run>' "$summary" "${GITHUB_SHA::7}" "$RUN_URL" | sed '/^$/d')
+        payload=$(jq -n --arg ch "$CHANNEL" --arg h "$header" --arg b "$body" --arg c "$color" '{
+          channel: $ch, text: $h,
+          blocks: [{type:"section", text:{type:"mrkdwn", text:$h}}],
+          attachments: [{color:$c, blocks:[{type:"section", text:{type:"mrkdwn", text:$b}}]}]
+        }')
+        resp=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+          -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+          -H "Content-type: application/json; charset=utf-8" \
+          --data "$payload" || echo '{"ok":false,"error":"curl"}')
+        echo "$resp" | jq -e '.ok' >/dev/null || echo "::warning::Slack failed: $(echo "$resp" | jq -r '.error')"

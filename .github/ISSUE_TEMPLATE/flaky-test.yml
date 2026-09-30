@@ -1,0 +1,55 @@
+name: Flaky test or broken CI
+description: A test or CI job that fails without any code change
+labels: ["kind/flake"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use it only for failures that do **not** come from a code change: tests that pass and fail
+        for no reason, jobs that hang, or runner problems.
+
+  - type: input
+    id: job
+    attributes:
+      label: Job and test
+      placeholder: "ci / test (shard 1) → TestDescribe/parallel"
+    validations:
+      required: true
+
+  - type: input
+    id: run
+    attributes:
+      label: Link to the failed run
+      placeholder: https://github.com/getsyntegrity/go-specs/actions/runs/...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type of failure
+      options:
+        - "Flaky: sometimes passes and sometimes fails"
+        - "Always fails since some point"
+        - "Infrastructure: runner, network, queue, timeout"
+    validations:
+      required: true
+
+  - type: input
+    id: since
+    attributes:
+      label: Since when?
+      placeholder: "since the merge of #123 / since 2026-09-20"
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Error
+      description: The relevant part of the log.
+      render: shell
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Possible cause
+      description: If you have a suspicion (test order, timing, network, shared state...).

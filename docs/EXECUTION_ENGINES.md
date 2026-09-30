@@ -89,7 +89,7 @@ removal question itself.
 | Reachable from `Describe` | **No** |
 | Non-test consumers | `ShardBCProgram` only (`specs/sharding.go:180`) |
 | Benchmarks | **None** |
-| Docs | **None** in README, `docs/`, or `examples/` — only a `CHANGELOG.md:182` migration-table mention |
+| Docs | **None** in README, `docs/`, or `examples/` — only a `CHANGELOG/CHANGELOG-0.1.md` migration-table mention |
 | Reason to exist | It flattens hooks at build time like the canonical compiler does, but reports nothing and isolates nothing. It duplicates `ExecutionPlan`'s model with strictly fewer capabilities. **No performance claim backs it: it has no benchmark.** |
 
 ### 1.5 `BlockRunner`
@@ -112,7 +112,7 @@ removal question itself.
 | Files | `specs/scheduler.go`, `specs/scheduler_batch.go` |
 | Public surface | `RunShard`, `RunShardWithReporter`, `DefaultChunkSize` — core is unexported |
 | Role | The shared worker pool behind `MinimalRunner.RunParallel*`, `BytecodeRunner.RunParallel`, and (via `parallelStep`) Builder's `ItParallel`. `RunShard` is unrelated: it shards a `*Program` and delegates to `Runner`. |
-| Note | `CHANGELOG.md:184` already states the worker pool was "never part of the supported public surface". |
+| Note | `CHANGELOG/CHANGELOG-0.1.md` already states the worker pool was "never part of the supported public surface". |
 
 **Conclusion:** there are **two** engines with full semantics (ExecutionPlan, Builder/Runner), **three**
 flat spec-list executors (Minimal, Block, Bytecode), and **one** shared parallel substrate. The three flat
@@ -158,7 +158,7 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 | `ExecutionPlan` + `CompiledSuite` | **Canonical** | The `Describe` path. Every invariant lands here first. |
 | `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/parallel`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
 | `MinimalRunner` | **Compatibility surface (narrow)** | Named in README, benchmarked, and the documented partner of `ShardSpecs`. Keep `Run`/`RunParallel`/`RunParallelBatched`; do not grow it. |
-| Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG.md:184`. Keep unexported. |
+| Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG/CHANGELOG-0.1.md`. Keep unexported. |
 | `BytecodeRunner` / `BCProgram` / `BCBuilder` | **Experimental → deprecate** | Zero documentation, zero benchmarks, zero consumers beyond `ShardBCProgram`. A strictly weaker duplicate of the canonical model with no measured justification. |
 | `BlockRunner` | **Removable** | Zero documentation, zero benchmarks, zero callers, and an unusable exported signature (`specBlock`). |
 

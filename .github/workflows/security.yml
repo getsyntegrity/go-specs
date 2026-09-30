@@ -1,0 +1,111 @@
+# Heavy security scanning, kept off the PR path (ego's design). It warns, it does not block: none of
+# these jobs is a required check. The per-PR vulnerability gate is `vuln` in ci.yml and the
+# dependency advisory diff is `dependency-review` there.
+#
+# CodeQL used to be its own workflow (codeql.yml) that ran on every PR. Folding it in here means
+# `analyze (go)` and `analyze (actions)` are no longer PR checks; `push` to develop keeps the
+# default-branch alert baseline GitHub's code scanning needs, and the nightly run applies newly
+# published queries to code that has not changed.
+name: security
+
+on:
+  push:
+    branches: [develop]
+  schedule:
+    # An off-the-hour time on purpose, so it does not compete with every other repository's queued
+    # "top of the hour" scheduled workflow for runner capacity.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A scheduled or push run is the record of what was scanned: never cancel one.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  # Two parallel legs under one job id: `go` scans this repository's Go source, `actions` scans the
+  # workflow YAML in .github/workflows and .github/actions itself (the script-injection class: a
+  # branch name or a label pasted into a `run:` script). Only `go` needs a toolchain and a build.
+  codeql:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: ./.github/actions/go-setup
+        with:
+          cache-key: codeql
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          # go: manual, because the explicit build below (not autobuild, which ignores the
+          # toolchain pinned in .go-version) is what CodeQL's tracer wraps. actions: no build.
+          build-mode: ${{ matrix.language == 'go' && 'manual' || 'none' }}
+          # security-and-quality is a superset of security-extended: it adds
+          # maintainability and reliability queries on top of the vulnerability-focused suite.
+          queries: security-and-quality
+      - if: matrix.language == 'go'
+        name: Build all modules
+        run: |
+          for mod in $(git ls-files '*go.mod' ':!:vendor/**'); do
+            dir=$(dirname "$mod")
+            echo "::group::go build ($dir)"
+            (cd "$dir" && go build ./...)
+            echo "::endgroup::"
+          done
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  # Strict mode: also fails on vulnerabilities in dependencies the code does not call
+  # ("Informational" findings), which the PR-path `vuln` job deliberately ignores. govulncheck is
+  # pinned to a version instead of `@latest`.
+  govulncheck-strict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/go-setup
+        with:
+          cache-key: vuln
+      - run: |
+          set -o pipefail
+          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./... | tee vuln_out.txt
+          if grep -q "=== Informational ===" vuln_out.txt; then exit 1; fi
+
+  notify:
+    if: failure() && github.event_name == 'schedule'
+    needs: [codeql, govulncheck-strict]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+      - uses: ./.github/actions/notify
+        with:
+          status: failure
+          title: ${{ github.event.repository.name }} security nightly
+          details: CodeQL or govulncheck reported findings.
+          slack-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ vars.SLACK_CHANNEL }}
