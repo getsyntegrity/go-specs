@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,8 +39,10 @@ type diffWalker struct {
 	limit   int  // stop once more than limit entries exist
 	depth   int  // paths deeper than this are summarised
 	opaque  bool // when set, Stringer structs with hidden fields are walked, not treated as values
+	probe   bool // only whether a difference exists matters: no paths, no ordering, stop at the first
 	methods bool // both values passed safeForFmt, so rendering may use their String and Error text
 	visited map[refPair]bool
+	probed  map[refPair]bool // differs answers by reference pair, see differs
 }
 
 // structuralDiff returns the "differences:" section for expected versus actual, or "" when the diff
@@ -120,13 +123,37 @@ func (w *diffWalker) add(path, detail string) {
 	}
 }
 
+// probeWalks counts the subtrees differs walked rather than answered from its memo: tests read it to
+// prove that a shared subtree is walked once per message.
+var probeWalks atomic.Int64
+
 // differs reports whether a and b differ at all, stopping at the first difference. It is how the
 // depth limit and the opaque-struct rule decide whether a subtree needs an entry, without walking
 // or rendering it in full.
 func (w *diffWalker) differs(a, b reflect.Value) bool {
-	sub := &diffWalker{meter: w.meter, limit: 0, depth: 1 << 30, opaque: true, visited: map[refPair]bool{}}
+	// A probe starts from an empty visited set, so its answer is a pure function of the two values
+	// and a reference pair asked about again (a shared subtree met under several paths) is answered
+	// from the first probe instead of walked again.
+	var key refPair
+	memo := false
+	switch a.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer:
+		key, memo = refPairOf(a, b), true
+		if d, ok := w.probed[key]; ok {
+			return d
+		}
+	}
+	probeWalks.Add(1)
+	sub := &diffWalker{meter: w.meter, limit: 0, depth: 1 << 30, opaque: true, probe: true, visited: map[refPair]bool{}}
 	sub.walk(a, b, "", 0)
-	return len(sub.entries) > 0
+	d := len(sub.entries) > 0
+	if memo {
+		if w.probed == nil {
+			w.probed = map[refPair]bool{}
+		}
+		w.probed[key] = d
+	}
+	return d
 }
 
 func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
@@ -285,6 +312,10 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
 		return
 	}
+	if w.probe {
+		w.probeMap(a, b, depth)
+		return
+	}
 	// Entries keep each key with its value from MapRange. A key that is not equal to itself (NaN, or a
 	// struct or array holding one) can never be looked up again, so MapIndex on the source map would
 	// return an invalid Value; only keys that are used to probe the OTHER map go through MapIndex, and
@@ -329,6 +360,25 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		}
 		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
 			fmt.Sprintf("unexpected in actual (%s)", w.render(e.val)))
+	}
+}
+
+// probeMap is walkMap for a probe, which only needs to know whether the maps differ. The maps differ
+// exactly when their lengths differ or some key of a has no entry in b (a NaN key never has one) or
+// some pair of values differs, so nothing is sorted and nothing is labelled, and the walk stops at the
+// first difference.
+func (w *diffWalker) probeMap(a, b reflect.Value, depth int) {
+	if a.Len() != b.Len() {
+		w.add("", "length")
+		return
+	}
+	for it := a.MapRange(); it.Next() && !w.full(); {
+		bv := b.MapIndex(it.Key())
+		if !bv.IsValid() {
+			w.add("", "missing in actual")
+			return
+		}
+		w.walk(it.Value(), bv, "", depth+1)
 	}
 }
 
@@ -458,6 +508,29 @@ func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 	return smallestMapEntriesWith(m, k, newFPMeter())
 }
 
+// windowMemoMinLen is the smallest map whose window is remembered: below it a scan costs about what
+// remembering does.
+const windowMemoMinLen = 64
+
+// windowKey identifies the window of the k smallest entries of one map.
+type windowKey struct {
+	ref refKey
+	k   int
+}
+
+type mapWindow struct {
+	top   []mapEntry
+	total int
+}
+
+func windowKeyOf(m reflect.Value, k int) (windowKey, bool) {
+	if m.Len() < windowMemoMinLen {
+		return windowKey{}, false
+	}
+	ref, ok := refIdentity(m)
+	return windowKey{ref: ref, k: k}, ok
+}
+
 // mapScan walks a map with MapRange. Iterating with it.Key and it.Value copies every entry, so a huge
 // map would still allocate in proportion to its size. When the map may be read through Set (it was
 // not reached through an unexported field), each key and value is loaded into one reusable slot
@@ -525,6 +598,27 @@ func (s *mapScan) entry() mapEntry {
 // as many as the window still has room for. An entry that ties a kept entry while truncated cannot be
 // told apart from it: both are flagged ambiguous and print no value.
 func smallestMapEntriesWith(m reflect.Value, k int, meter *fpMeter) (top []mapEntry, total int) {
+	// A big map met again in the same message (a shared or self-containing map is rendered once per
+	// path that reaches it) is scanned once: the window found the first time is the window every
+	// later render of it gets, which also makes the map print the same everywhere in the message.
+	key, memo := windowKeyOf(m, k)
+	if memo {
+		if w, ok := meter.windows[key]; ok {
+			return slices.Clone(w.top), w.total
+		}
+	}
+	meter.scans++
+	top, total = selectSmallestMapEntries(m, k, meter)
+	if memo {
+		if meter.windows == nil {
+			meter.windows = map[windowKey]mapWindow{}
+		}
+		meter.windows[key] = mapWindow{top: slices.Clone(top), total: total}
+	}
+	return top, total
+}
+
+func selectSmallestMapEntries(m reflect.Value, k int, meter *fpMeter) (top []mapEntry, total int) {
 	top = make([]mapEntry, 0, min(m.Len(), k))
 	counts := make([]int, 0, cap(top))
 	scan := newMapScan(m)
@@ -571,6 +665,9 @@ func smallestMapEntriesWith(m reflect.Value, k int, meter *fpMeter) (top []mapEn
 	kept := make([][]mapEntry, len(top))
 	var scratch fpBuilder
 	for scan := newMapScan(m); scan.next(); {
+		if len(top) == k && compareMapKeys(scan.key, top[len(top)-1].key) > 0 {
+			continue // past the last class of the window: one comparison for most of a big map
+		}
 		ci := sort.Search(len(top), func(i int) bool { return compareMapKeys(top[i].key, scan.key) >= 0 })
 		if ci == len(top) || need[ci] == 0 || compareMapKeys(top[ci].key, scan.key) != 0 {
 			continue

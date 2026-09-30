@@ -57,6 +57,19 @@ func TestFuzzBuildReachesTheHardShapes(t *testing.T) {
 			t.Fatalf("only one NaN payload: %v", bits)
 		}
 	})
+	t.Run("many NaN keys of one payload in one map", func(t *testing.T) {
+		m, ok := fzBuild(fzRecipeManyNaNTies()).actual().(map[float64]any)
+		if !ok || len(m) != 24 {
+			t.Fatalf("root is %T with %d entries, want map[float64]any with 24 tied NaN entries", fzBuild(fzRecipeManyNaNTies()).actual(), len(m))
+		}
+		bits := map[uint64]bool{}
+		for k := range m {
+			bits[math.Float64bits(k)] = true
+		}
+		if len(bits) != 1 {
+			t.Fatalf("want one NaN payload, got %d", len(bits))
+		}
+	})
 	t.Run("limits: wide map, big slice, deep chain, long string", func(t *testing.T) {
 		wide := fzBuild(fzRecipeLimits(fkWideMap, 255))
 		if m := wide.actual().(map[int]any); len(m) <= mapSortCap {
