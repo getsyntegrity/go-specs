@@ -165,11 +165,12 @@ change touches no Go file; removing it can be a follow-up.
 
 ## Tasks
 
-- [ ] T1 — Composite action `go-setup` (renamed from `setup-go`), ego's scripts
+- [x] T1 — Composite action `go-setup` (renamed from `setup-go`), ego's scripts
   (`next-version.sh`, `test-matrix.sh`, `api-check.sh`, `labels.sh`), the new
   `release-changelog.sh`, the `notify` action, issue and PR templates, and script tests.
   Check: shellcheck on every script; `bash .github/scripts/test/run.sh`.
-  Commit: pending.
+  Commit: `5d0fb5c`. RED observed first (release-changelog.sh missing: 6 failures), then GREEN
+  (13/13). shellcheck clean after quoting the bump values in `next-version.sh` (SC2209).
 - [ ] T2 — `ci.yml` in ego's shape (`flow`, `plan`, sharded `test`, `test-report`, `modules`,
   `tidy`, `api`, `ci-ok`) with the go-specs jobs ported in. Check: actionlint.
 - [ ] T3 — `release.yml` (push to `main`, notes from `CHANGELOG.md`, `sync-develop`, `notify`),
