@@ -252,7 +252,7 @@ func TestStructuralDiffStopsRenderingOncePastItsLimit(t *testing.T) {
 			msg := EqualFailureMessage(tc.expected, tc.ac)
 			renders := diffRenders.Load() - before
 			t.Logf("renders=%d", renders)
-			if renders > int64(diffLabelWindow+3*diffMaxEntries) { // label window + line values + the two header renders
+			if renders > int64(3*diffMaxEntries) { // line values + the shown key labels + the two header renders
 				t.Errorf("rendered %d values for a message that shows %d differences", renders, diffMaxEntries)
 			}
 			i := strings.Index(msg, "differences:")
