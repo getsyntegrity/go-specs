@@ -6,6 +6,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+## [v0.3.2] - 2026-09-30
+
 ### Added
 
 - `HaveLen(n)` and `BeEmpty()` matchers (`assert` and re-exported from `specs`) for the length of a string, slice, array, map or chan. A nil slice, map or chan is empty. An actual with no length fails with a `HaveLen: int has no length` style message instead of panicking or reporting a bogus length, and both compose with `Not`, `All` and `Any`. See `docs/DSL.md`.
@@ -1187,7 +1189,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
 
-[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.3.2...HEAD
+[v0.3.2]: https://github.com/getsyntegrity/go-specs/compare/v0.3.1...v0.3.2
 [v0.3.1]: https://github.com/getsyntegrity/go-specs/compare/v0.3.0...v0.3.1
 [v0.3.0]: https://github.com/getsyntegrity/go-specs/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/getsyntegrity/go-specs/compare/v0.1.0...v0.2.0
