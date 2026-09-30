@@ -14,6 +14,10 @@ type Call struct {
 type Spy struct {
 	mu    sync.Mutex
 	calls []Call
+
+	// sink, when set (Controller.Spy), also receives every call so it joins the controller's
+	// global order. nil for spies from NewSpy and Mock.Spy.
+	sink func(args []any)
 }
 
 // NewSpy returns a new spy.
@@ -30,6 +34,16 @@ func (s *Spy) Call(args ...any) {
 	recorded := append([]any(nil), args...)
 	s.mu.Lock()
 	s.calls = append(s.calls, Call{Args: recorded})
+	s.mu.Unlock()
+	if s.sink != nil {
+		s.sink(recorded)
+	}
+}
+
+// reset drops the recorded calls (used by Controller.Reset).
+func (s *Spy) reset() {
+	s.mu.Lock()
+	s.calls = nil
 	s.mu.Unlock()
 }
 
