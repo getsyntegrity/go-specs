@@ -208,6 +208,30 @@ s.It("adds numbers", func(ctx *specs.Context) {
 
 Each `It` is compiled into a step sequence: before hooks (outer to inner), then the spec body, then after hooks (inner to outer).
 
+## Table-driven specs: `specs.Table` and `specs.TableParallel`
+
+`Table` registers one spec per typed row. It is shorthand for a `for` loop around `It`, which stays fully supported; it is not a second execution engine.
+
+```go
+specs.Describe(t, "add", func(s *specs.Spec) {
+    specs.Table(s, cases, func(c addCase) string { return c.name },
+        func(ctx *specs.Context, c addCase) {
+            ctx.Expect(add(c.a, c.b)).ToEqual(c.want)
+        })
+})
+```
+
+Every row is an ordinary `It`: its own Go subtest (`go test -run 'TestAdd/add/negative'` runs one row), wrapped by the enclosing `BeforeEach`/`AfterEach`, reported as its own spec and failing on its own. `Table` adds no hierarchy segment (the row above is `add/negative`); wrap it in `s.When` if you want a grouping segment. `examples/table` walks through migrating a plain `t.Run` table test.
+
+Rules, all checked before any row is registered (a rejected table registers nothing, and the panic names the rows by index):
+
+- A row name must not be empty.
+- Row names must be unique. A duplicate would be disambiguated as `name#01` by `go test` and make `-run` ambiguous, so it is a registration panic. Names that differ only by whitespace versus `_` also count as duplicates, because `go test` rewrites spaces to underscores.
+- `name` and `body` must not be nil.
+- `rows` is copied when `Table` is called and each body call gets its own copy of the row; pointers, slices and maps inside a row stay shared. `name` runs once per row at registration.
+
+`TableParallel` registers rows with `ItParallel`, so consecutive rows run concurrently under the semantics described in the `ItParallel` section. Rows must not write shared state without their own synchronization.
+
 ## Shared behaviors: reusing specs across implementations
 
 A "shared behavior" — the same set of specs applied to several implementations of one interface —
@@ -1174,6 +1198,44 @@ specs.ContainTheSameElementsAs([]int{1, 1, 2}).FailureMessage([]int{1, 2, 2})
 
 Elements compare with `ValuesEqual`, the comparison `Equal` and `Contain` use: `1` is not `int64(1)`, an error matches by identity, and everything else is structural. A collection is a slice or an array; `ContainAllOf` and `ContainAnyOf` also accept a string, where each element must be a string and is looked up as a substring (a non-string element is just never found). `ContainTheSameElementsAs` does not accept a string, and its two sides may have different types (`[]int` against `[]any` works when the elements are equal). It is multiset equality, so duplicates count, and elements are paired greedily one to one: exact for ordinary equality, best-effort for exotic equality such as errors matching through wrapping. With no elements, `ContainAllOf()` matches any collection (nothing is required) while `ContainAnyOf()` and `BeOneOf()` never match. An actual that is not a collection fails with a `ContainAllOf: int is not a string, slice or array` style message, and, as with `HaveLen`, `Not(ContainAllOf(1))` succeeds on it. `[]int`, `[]string`, `[]float64` and `[]any` are allocation-free fast paths.
 
+### Quantified and ordered collection matchers
+
+`ContainAllOf` and friends compare elements with values. When the expectation is a condition on the elements (every order line shipped, exactly two lines backordered, the events in this order), use a quantified matcher: it judges each element with a child matcher and, on failure, names the failing elements by index.
+
+`EveryElement(m)`, `AnyElement(m)` and `NoElement(m)` need all, at least one, or none of the elements to match `m`. `ExactlyNElements(n, m)`, `AtLeastNElements(n, m)` and `AtMostNElements(n, m)` count the matching elements. `HaveElementsInOrder(m1, m2, ...)` matches an **exact sequence**: the collection has as many elements as there are matchers and element `i` matches `mi`. `ContainElementsInOrder(m1, m2, ...)` matches a **subsequence**: the matchers match elements in that order, with anything, or nothing, in between.
+
+```go
+type Line struct {
+    SKU     string
+    Shipped bool
+}
+
+shipped := specs.Satisfy("a shipped line", func(v any) bool { l, ok := v.(Line); return ok && l.Shipped })
+lines := []Line{{"pen", true}, {"ink", false}, {"pad", true}}
+
+ctx.Expect(lines).To(specs.AnyElement(shipped))
+ctx.Expect(lines).To(specs.ExactlyNElements(2, shipped))
+ctx.Expect(lines).To(specs.Not(specs.EveryElement(shipped)))
+ctx.Expect([]string{"created", "paid", "packed", "shipped"}).To(specs.ContainElementsInOrder(specs.Equal("paid"), specs.Equal("shipped")))
+
+specs.EveryElement(shipped).FailureMessage(lines)
+// `EveryElement: 1 of 3 elements failed — [1] {ink false}: "expected {ink false} to satisfy \"a shipped line\""`
+specs.ExactlyNElements(1, shipped).FailureMessage(lines)
+// "ExactlyNElements: expected exactly 1 of 3 elements to match, 2 did — matching indices [0 2]"
+specs.HaveElementsInOrder(specs.Equal("a"), specs.Equal("c")).FailureMessage([]string{"a", "b", "c"})
+// `HaveElementsInOrder: expected 2 elements, got 3 — unexpected [2] c; 1 of 2 positions failed — [1] b: "expected b to equal c"`
+```
+
+Semantics, the same for every matcher in this family:
+
+- **Supported values.** A slice or array of any element type; a nil slice is an empty collection. Anything else (untyped `nil`, a string, a map, a pointer to a slice, a number) never matches and fails with an `EveryElement: int is not a slice or array` style message. As with `HaveLen`, `Not(EveryElement(m))` therefore succeeds on an unsupported value.
+- **Empty and nil input** follows logic. `EveryElement` and `NoElement` hold vacuously, `AnyElement` does not, `ExactlyNElements(0, m)`, `AtLeastNElements(0, m)` and every `AtMostNElements(n, m)` with `n >= 0` hold, `HaveElementsInOrder()` matches only an empty collection and `ContainElementsInOrder()` matches any supported collection.
+- **Nil child matchers and negative counts** never match, on an empty collection too: a nil child is a mistake that vacuous truth must not hide. A nil child is never called.
+- **Duplicates.** Each element is judged on its own, so a value that appears three times counts three times. In `ContainElementsInOrder` each element is consumed by at most one matcher, so `ContainElementsInOrder(m, m)` needs two matching elements. The matchers are consumed greedily from the left, which is exact because each matcher judges a single element.
+- **Single pass.** The child is asked about each element at most once per evaluation, through `assert.Evaluate`, so a child with a side effect (`MatchErrorAs`) is not run again to build the message, and a composite child stays single-pass too. A verdict that is already a success stops early (`AnyElement` at its first match, `AtLeastNElements` at its n-th); a failure judges every element, because the message names every culprit. Like `Not`, `All` and `Any`, the `Match` and `FailureMessage` methods of the public interface are built on the same evaluation, and the DSL calls `assert.Evaluate`.
+- **Diagnostics** list at most 10 elements and summarise the rest (`... 90 more not shown`). Indices are zero-based.
+- **Composition.** They are ordinary matchers, so they nest with `Not`, `All`, `Any` and each other (`EveryElement(Satisfy(..., order has items))`).
+
 ### `BeGreaterThan`, `BeLessThan`, `BeBetween` and `BeCloseTo`
 
 `BeGreaterThan(x)`, `BeGreaterThanOrEqual(x)`, `BeLessThan(x)` and `BeLessThanOrEqual(x)` compare the actual with `x`. `BeBetween(lo, hi)` expects `lo <= actual <= hi`, **inclusive on both ends**. `BeCloseTo(target, delta)` expects `|actual - target| <= delta` (also inclusive).
@@ -1219,6 +1281,47 @@ specs.Satisfy("is even", nil).FailureMessage(3)     // `Satisfy: no predicate gi
 `BeZero` follows `reflect.Value.IsZero`: `0`, `""`, `false`, a nil pointer, slice, map, chan or func, and a struct or array whose every field or element is zero. `nil` itself (an untyped nil, or a nil `error`) is zero. An empty but non-nil slice or map is **not** zero (use `BeEmpty` for that), a float `-0.0` is zero (it equals `0`), and a zero `time.Time{}` is zero.
 
 `Satisfy`'s description names the expectation in its own failure message and in the messages `Not`, `All` and `Any` build from it, so make it read as a phrase (`"is even"`, not `"even check"`); an empty description falls back to "the given predicate". The predicate receives the actual as is (including `nil`) and is called once per assertion. A panic inside it propagates: swallowing it would hide the bug in the predicate. A `nil` predicate does not panic; the matcher never matches and its failure says no predicate was given.
+
+### Checking a field: `Project`
+
+`Satisfy` can check a field of a domain object, but it turns the check into a boolean, so a failure can only say `expected {...} to satisfy "status is paid"`. `Project(name, project, child)` ([#362](https://github.com/getsyntegrity/go-specs/issues/362)) maps the actual to a field or a derived value with `project` and applies an ordinary matcher to it, so the failure keeps the child's own explanation and starts with the path of the field.
+
+```go
+type Item struct{ SKU string; Quantity int }
+type Order struct {
+    Status string
+    Items  []Item
+}
+
+status := specs.Project("Status", func(o Order) string { return o.Status }, specs.Equal("paid"))
+ctx.Expect(order).To(status)
+// Status: expected open to equal paid
+
+// every item, without a hand-written boolean: one projection per index, nested one level
+checks := []specs.Matcher{status}
+for i := range order.Items {
+    checks = append(checks, specs.Project(fmt.Sprintf("Items[%d]", i),
+        func(o Order) Item { return o.Items[i] },
+        specs.Project("Quantity", func(it Item) int { return it.Quantity }, specs.BeGreaterThan(0))))
+}
+ctx.Expect(order).To(specs.All(checks...))
+// All: #1: "Status: expected open to equal paid"; #3: "Items[1].Quantity: expected 0 to be greater than 0"
+```
+
+`Project` returns a plain `Matcher`, so it composes with `Not`, `All`, `Any` and with any matcher that takes a matcher, such as a quantified collection matcher once one exists; nothing in `Project` depends on it. Projections nest, and the names join into one path (`Items[1].Quantity`). `name` is shown in every failure; an empty name reads as `projection`.
+
+Every input that is not a plain match is defined:
+
+| Input | Result |
+| --- | --- |
+| actual is not a `T`, or is an untyped `nil` | never matches; projection and child are not called; `Status: expected input of type assert.Order, got string` (or `got nil`) |
+| a typed nil, such as a `nil` `*Order` for `T = *Order` | it is a `T`, so it reaches the projection; if that dereferences it, the panic is reported as below |
+| `project` is `nil` | never matches; `Status: no projection function given` |
+| `child` is `nil` (untyped or typed) | never matches; `Status: nil matcher (never matches)` |
+| `project` panics | recovered and reported: `Status: projection panicked: <value>`; the suite keeps running |
+| `child` panics | not recovered, like `Satisfy` |
+
+Under `ctx.Expect(...).To(...)` and `assert.Evaluate`, the projection and the child matcher each run once per assertion. The projected value reaches the child as an `any`, so an interface-typed projection that returns `nil` reaches it as an untyped `nil`. Calling `FailureMessage` on its own, as any matcher allows, projects again.
 
 ### Matcher composition: `Not`, `All`, `Any`
 
