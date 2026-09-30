@@ -66,6 +66,11 @@ type goState struct {
 	// closed is set by the final settle; a ctx.Go after it panics. Atomic because a task may read it
 	// while the spec goroutine sets it.
 	closed atomic.Bool
+	// cleanups is the ctx.Cleanup list, in registration order, drained last first by the engines at
+	// the end of the case (context_cleanup.go). cleanupsDone is set when a drain finished, so a
+	// Cleanup on a finished case panics. Both are guarded by mu: a task may register a cleanup.
+	cleanups     []func()
+	cleanupsDone bool
 }
 
 func (gs *goState) reset() {
@@ -73,6 +78,8 @@ func (gs *goState) reset() {
 	gs.rec = failureRecord{}
 	gs.panicMsg, gs.panicOut = "", ""
 	gs.panicReported, gs.replayed = false, false
+	clear(gs.cleanups) // drop the closures, keep the backing array for the pooled Context
+	gs.cleanups, gs.cleanupsDone = gs.cleanups[:0], false
 	gs.mu.Unlock()
 	gs.closed.Store(false)
 }
@@ -288,6 +295,10 @@ func (c *Context) replayTaskFailure(rec failureRecord) {
 // the report classify it as an error, not a failure).
 func settleParallelTasks(ctx *Context, results *[]failureRecord, idx int) (output string) {
 	message, out := ctx.awaitTasks()
+	// ctx.Cleanup functions run last, after the tasks; a cleanup panic ranks after a task panic (#357).
+	if m, o := ctx.runCleanupsQuiet(); message == "" {
+		message, out = m, o
+	}
 	// Worker engines reuse one Context across the specs of a chunk, so recycle rather than close.
 	ctx.recycleTasks()
 	if message != "" && !(*results)[idx].Failed {
