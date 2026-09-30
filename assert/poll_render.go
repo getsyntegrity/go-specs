@@ -31,8 +31,15 @@ func renderObserved(v any) string { return formatUserValue(v, "%#v") }
 // renderFallback prints v with the bounded renderer: depth, element and node limits, a marker on a
 // cycle, and no user method ever called.
 func renderFallback(v reflect.Value) string {
+	return renderFallbackWith(v, newFPMeter())
+}
+
+// renderFallbackWith is renderFallback spending the fingerprint budget of meter: the tie-break
+// fingerprints of the whole message, however often a map is met, visit at most
+// fingerprintMessageBudget nodes together.
+func renderFallbackWith(v reflect.Value, meter *fpMeter) string {
 	var b strings.Builder
-	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}}
+	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}, meter: meter}
 	r.write(v, 0)
 	return b.String()
 }
@@ -44,6 +51,7 @@ type renderer struct {
 	path  map[refKey]bool
 	b     *strings.Builder
 	nodes *nodeBudget
+	meter *fpMeter
 }
 
 func (r *renderer) write(v reflect.Value, depth int) {
@@ -137,14 +145,15 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 	var picked []mapEntry
 	total := v.Len()
 	if total > mapSortCap {
-		picked, _ = smallestMapEntries(v, boundedMaxElems)
+		picked, _ = smallestMapEntriesWith(v, boundedMaxElems, r.meter)
 	} else {
 		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
+		r.meter.sortEntries(picked)
 	}
 	entries := make([]renderedEntry, len(picked))
 	for i, e := range picked {
 		var kb strings.Builder
-		kr := renderer{path: r.path, b: &kb, nodes: r.nodes}
+		kr := renderer{path: r.path, b: &kb, nodes: r.nodes, meter: r.meter}
 		kr.write(e.key, depth+1)
 		entries[i] = renderedEntry{kb.String(), e}
 	}
@@ -154,8 +163,15 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 		if c := strings.Compare(entries[i].key, entries[j].key); c != 0 {
 			return c < 0
 		}
-		return compareMapEntries(entries[i].pair, entries[j].pair) < 0
+		return compareMapEntries(&entries[i].pair, &entries[j].pair) < 0
 	})
+	// Entries with the same key whose values the fingerprint cannot tell apart print no value: which
+	// of them comes first is arbitrary, so showing either would make the text depend on it.
+	for i := 1; i < len(entries); i++ {
+		if indistinguishable(&entries[i-1].pair, &entries[i].pair) {
+			entries[i-1].pair.ambiguous, entries[i].pair.ambiguous = true, true
+		}
+	}
 	for i, e := range entries {
 		if i > 0 {
 			r.b.WriteString(", ")
@@ -165,7 +181,11 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 			break
 		}
 		r.b.WriteString(e.key + ":")
-		r.write(e.pair.val, depth+1)
+		if e.pair.ambiguous {
+			r.b.WriteString(ambiguousValueMarker)
+		} else {
+			r.write(e.pair.val, depth+1)
+		}
 		if r.nodes.hit {
 			r.b.WriteString("}")
 			return
