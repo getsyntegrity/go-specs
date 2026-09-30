@@ -1220,6 +1220,47 @@ specs.Satisfy("is even", nil).FailureMessage(3)     // `Satisfy: no predicate gi
 
 `Satisfy`'s description names the expectation in its own failure message and in the messages `Not`, `All` and `Any` build from it, so make it read as a phrase (`"is even"`, not `"even check"`); an empty description falls back to "the given predicate". The predicate receives the actual as is (including `nil`) and is called once per assertion. A panic inside it propagates: swallowing it would hide the bug in the predicate. A `nil` predicate does not panic; the matcher never matches and its failure says no predicate was given.
 
+### Checking a field: `Project`
+
+`Satisfy` can check a field of a domain object, but it turns the check into a boolean, so a failure can only say `expected {...} to satisfy "status is paid"`. `Project(name, project, child)` ([#362](https://github.com/getsyntegrity/go-specs/issues/362)) maps the actual to a field or a derived value with `project` and applies an ordinary matcher to it, so the failure keeps the child's own explanation and starts with the path of the field.
+
+```go
+type Item struct{ SKU string; Quantity int }
+type Order struct {
+    Status string
+    Items  []Item
+}
+
+status := specs.Project("Status", func(o Order) string { return o.Status }, specs.Equal("paid"))
+ctx.Expect(order).To(status)
+// Status: expected open to equal paid
+
+// every item, without a hand-written boolean: one projection per index, nested one level
+checks := []specs.Matcher{status}
+for i := range order.Items {
+    checks = append(checks, specs.Project(fmt.Sprintf("Items[%d]", i),
+        func(o Order) Item { return o.Items[i] },
+        specs.Project("Quantity", func(it Item) int { return it.Quantity }, specs.BeGreaterThan(0))))
+}
+ctx.Expect(order).To(specs.All(checks...))
+// All: #1: "Status: expected open to equal paid"; #3: "Items[1].Quantity: expected 0 to be greater than 0"
+```
+
+`Project` returns a plain `Matcher`, so it composes with `Not`, `All`, `Any` and with any matcher that takes a matcher, such as a quantified collection matcher once one exists; nothing in `Project` depends on it. Projections nest, and the names join into one path (`Items[1].Quantity`). `name` is shown in every failure; an empty name reads as `projection`.
+
+Every input that is not a plain match is defined:
+
+| Input | Result |
+| --- | --- |
+| actual is not a `T`, or is an untyped `nil` | never matches; projection and child are not called; `Status: expected input of type assert.Order, got string` (or `got nil`) |
+| a typed nil, such as a `nil` `*Order` for `T = *Order` | it is a `T`, so it reaches the projection; if that dereferences it, the panic is reported as below |
+| `project` is `nil` | never matches; `Status: no projection function given` |
+| `child` is `nil` (untyped or typed) | never matches; `Status: nil matcher (never matches)` |
+| `project` panics | recovered and reported: `Status: projection panicked: <value>`; the suite keeps running |
+| `child` panics | not recovered, like `Satisfy` |
+
+Under `ctx.Expect(...).To(...)` and `assert.Evaluate`, the projection and the child matcher each run once per assertion. The projected value reaches the child as an `any`, so an interface-typed projection that returns `nil` reaches it as an untyped `nil`. Calling `FailureMessage` on its own, as any matcher allows, projects again.
+
 ### Matcher composition: `Not`, `All`, `Any`
 
 `assert` ships a fixed set of matchers (`Equal`, `NotEqual`, `BeNil`, `BeTrue`, `BeFalse`, `Contain`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HaveValue`, `HavePair`, `ContainAllOf`, `ContainAnyOf`, `ContainTheSameElementsAs`, `BeOneOf`, `BeGreaterThan`, `BeGreaterThanOrEqual`, `BeLessThan`, `BeLessThanOrEqual`, `BeBetween`, `BeCloseTo`, `BeZero`, `Satisfy`, `MatchError`, `MatchErrorAs`). Without composition, combining them logically means hand-writing a new matcher type for every combination — which is exactly what `NotEqual` is: `Equal` negated by hand, in its own type, with its own message. `specs.Not`, `specs.All` and `specs.Any` (re-exported from `assert`) let a call site combine existing matchers instead ([#209](https://github.com/getsyntegrity/go-specs/issues/209)).
