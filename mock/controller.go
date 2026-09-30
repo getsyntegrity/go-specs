@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"testing"
 )
 
 // TB is what the mock needs from a test: *testing.T, *testing.B, testing.TB and *specs.Context
@@ -143,7 +144,7 @@ func (c *Controller) Verify() {
 	if c == nil {
 		return
 	}
-	c.t.Helper()
+	testingTB(c.t).Helper()
 	c.mu.Lock()
 	if c.verified {
 		c.mu.Unlock()
@@ -237,7 +238,7 @@ func (m *Method) Call(args ...any) Result {
 		return Result{}
 	}
 	c := m.c
-	c.t.Helper()
+	testingTB(c.t).Helper()
 	rc := c.record(m.name, args, m)
 
 	// Run matchers outside the lock on the recorded copy.
@@ -300,4 +301,18 @@ func copyCalls(in []RecordedCall) []RecordedCall {
 		out[i] = RecordedCall{Seq: rc.Seq, Method: rc.Method, Args: append([]any(nil), rc.Args...)}
 	}
 	return out
+}
+
+// testingTB returns the real testing.TB behind t when t exposes one through a Testing() method, as
+// *specs.Context does, and t itself otherwise. Every mock function that reports calls
+// testingTB(c.t).Helper() in its own body: Helper marks the function that calls it, so calling it on
+// the wrapper would only mark the wrapper's own Helper method and leave the mock frame visible in the
+// reported file:line on a real *testing.T. testingTB must not call Helper itself for the same reason.
+func testingTB(t TB) interface{ Helper() } {
+	if x, ok := t.(interface{ Testing() testing.TB }); ok {
+		if tb := x.Testing(); tb != nil {
+			return tb
+		}
+	}
+	return t
 }
