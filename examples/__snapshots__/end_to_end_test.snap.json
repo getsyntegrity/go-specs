@@ -1,0 +1,18 @@
+{
+  "transfer_rejected":   {
+    "fromBefore": 5,
+    "toBefore": 50,
+    "amount": 10,
+    "fromAfter": 5,
+    "toAfter": 50,
+    "status": "rejected: insufficient funds"
+  },
+  "transfer_result":   {
+      "fromBefore": 100,
+      "toBefore": 50,
+      "amount": 10,
+      "fromAfter": 90,
+      "toAfter": 60,
+      "status": "completed"
+    }
+}
