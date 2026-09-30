@@ -1,0 +1,39 @@
+{
+  "checkout-request":   {
+            "cart": [
+              "sku-1",
+              "sku-2"
+            ],
+            "coupon": null
+          },
+  "checkout-response":   {
+          "status": "accepted",
+          "total": 42.5
+        },
+  "create-user":   {
+                "id": 123,
+                "name": "alice"
+              },
+  "empty-and-nil-slices":   {
+        "empty": [],
+        "nil": null
+      },
+  "parallel-first":   {
+    "n": 1
+  },
+  "parallel-second":   {
+      "n": 2
+    },
+  "profile-struct":   {
+              "id": 7,
+              "name": "Ada Lovelace",
+              "emails": [
+                "ada@example.com",
+                "ada@work.example"
+              ],
+              "address": {
+                "street": "12 Analytical Way",
+                "city": "London"
+              }
+            }
+}
