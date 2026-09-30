@@ -76,7 +76,9 @@ jobs:
 
   # Strict mode: also fails on vulnerabilities in dependencies the code does not call
   # ("Informational" findings), which the PR-path `vuln` job deliberately ignores. govulncheck is
-  # pinned to a version instead of `@latest`.
+  # pinned to a version instead of `@latest`. It runs on the toolchain in .go-version with
+  # GOTOOLCHAIN=local, so the pin must be a release whose go.mod floor that toolchain satisfies:
+  # v1.8.0 needs go >= 1.26.0 and failed before scanning. Bump this together with .go-version.
   govulncheck-strict:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -89,7 +91,7 @@ jobs:
           cache-key: vuln
       - run: |
           set -o pipefail
-          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./... | tee vuln_out.txt
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./... | tee vuln_out.txt
           if grep -q "=== Informational ===" vuln_out.txt; then exit 1; fi
 
   notify:
