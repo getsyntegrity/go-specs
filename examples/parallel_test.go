@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/getsyntegrity/go-specs/assert"
 	"github.com/getsyntegrity/go-specs/specs"
 )
 
@@ -35,28 +36,54 @@ func TestParallel_itParallelRunsIndependentSpecs(t *testing.T) {
 }
 
 // Hooks still wrap each parallel spec, and every spec gets its own Context, so shared counters
-// need their own synchronization (here an atomic-free mutex).
+// need their own synchronization (here a mutex). No spec asserts on what a sibling did: each one
+// only checks that its own BeforeEach has already run, which holds whether it runs alone or with
+// others. The exact counts are checked once, in t.Cleanup, over whichever specs actually ran.
 func TestParallel_hooksWrapEachSpec(t *testing.T) {
 	var mu sync.Mutex
-	before := 0
+	before, after, ran := 0, 0, 0
+
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if before != ran || after != ran {
+			t.Errorf("hooks must wrap every spec that ran: ran=%d BeforeEach=%d AfterEach=%d", ran, before, after)
+		}
+	})
+
+	count := func(n *int) {
+		mu.Lock()
+		*n++
+		mu.Unlock()
+	}
+	// started reports whether this spec's own BeforeEach has already run.
+	started := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		ran++
+		return before
+	}
 
 	specs.Describe(t, "with hooks", func(s *specs.Spec) {
-		s.BeforeEach(func(ctx *specs.Context) {
-			mu.Lock()
-			before++
-			mu.Unlock()
+		s.BeforeEach(func(ctx *specs.Context) { count(&before) })
+		s.AfterEach(func(ctx *specs.Context) { count(&after) })
+		s.ItParallel("one", func(ctx *specs.Context) {
+			ctx.Expect(started()).To(assert.BeGreaterThan(0)) // its own BeforeEach ran first
 		})
-		s.ItParallel("one", func(ctx *specs.Context) { ctx.Expect(1 + 1).ToEqual(2) })
-		s.ItParallel("two", func(ctx *specs.Context) { ctx.Expect(2 + 2).ToEqual(4) })
-		s.It("counts both hooks after the batch", func(ctx *specs.Context) {
-			ctx.Expect(before).ToEqual(3) // the hook ran for both parallel specs and for this one
+		s.ItParallel("two", func(ctx *specs.Context) {
+			ctx.Expect(started()).To(assert.BeGreaterThan(0))
+		})
+		s.It("runs after the batch", func(ctx *specs.Context) {
+			ctx.Expect(started()).To(assert.BeGreaterThan(0))
 		})
 	})
 }
 
 // ctx.Go runs a function on its own goroutine as part of the current spec. The spec waits for
 // every task before its AfterEach hooks run, and a failed assertion inside a task fails the spec.
-// Always start goroutines that assert with ctx.Go, never with a bare `go` statement.
+// Always start goroutines that assert with ctx.Go, never with a bare `go` statement. The AfterEach
+// below belongs to the one spec of this suite, so it observes exactly that spec's tasks: if the
+// spec did not wait for them, it would see fewer than two here.
 func TestParallel_ctxGoRunsAssertionsConcurrently(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{}
@@ -67,6 +94,12 @@ func TestParallel_ctxGoRunsAssertionsConcurrently(t *testing.T) {
 	}
 
 	specs.Describe(t, "services", func(s *specs.Spec) {
+		s.AfterEach(func(ctx *specs.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			ctx.Expect(len(seen)).ToEqual(2) // both tasks finished before the hooks ran
+		})
+
 		s.It("pings both services at once", func(ctx *specs.Context) {
 			ctx.Go(func(ctx *specs.Context) {
 				record("billing")
@@ -76,12 +109,6 @@ func TestParallel_ctxGoRunsAssertionsConcurrently(t *testing.T) {
 				record("inventory")
 				ctx.Expect("pong").ToEqual("pong")
 			})
-		})
-
-		s.It("has finished both tasks by the time the next spec runs", func(ctx *specs.Context) {
-			mu.Lock()
-			defer mu.Unlock()
-			ctx.Expect(len(seen)).ToEqual(2)
 		})
 	})
 }
