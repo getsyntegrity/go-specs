@@ -49,7 +49,7 @@ as part of this work — a reader currently learns the wrong engine.
 | Non-test consumers | `specs/spec.go`, `specs/path_builder.go` |
 | Tests | `execution_plan_test.go`, `_isolation_test.go`, `_recovery_test.go`, `_reporter_test.go`, `compiled_runner_test.go`, `lifecycle_hooks_test.go`, `spec_event_path_test.go`, `subtest_identity_test.go` |
 | Benchmarks | `minimal_and_buildsuite_bench_test.go`, `describe_variants_bench_test.go`, `e2e_test.go` (`*testing.T` path) |
-| Docs | README, `ARCHITECTURE.md`, `EXECUTION_MODEL.md`, every `examples/*` |
+| Docs | README, `ARCHITECTURE.md`, `EXECUTION_MODEL.md`, every file under `examples/` |
 | Reason to exist | It is the product. |
 
 ### 1.2 `Builder` / `Program` / `Runner`
@@ -60,7 +60,7 @@ as part of this work — a reader currently learns the wrong engine.
 | Public surface | `Builder`, `NewBuilder`, `BuildProgram`, `Program`, `Runner`, `NewRunner`, `NewRunnerWithReporter` |
 | Reachable from `Describe` | **No** — caller-constructed only |
 | Non-test consumers | `RunShard`/`RunShardWithReporter` (`specs/scheduler.go:265,280`), `benchmarks/helpers.go` |
-| Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/parallel/parallel_test.go` |
+| Docs | README:120,126; `DSL.md:56-62`; `EXECUTION_MODEL.md:20,45,105,171,203-213`; `ARCHITECTURE.md:146`; `examples/builder_test.go` |
 | **Unique capabilities** | **None left.** `RunShard` was the last one: it existed only here until [#251](https://github.com/getsyntegrity/go-specs/issues/251) spec 2 added `CompiledSuite.RunShard`, the canonical engine's own package-level `RunShard`'s equivalent — see Stage 4 item 4 below. `Focus`/`Skip`/`Pending` (the `SpecFn`/`ItWith` wrapper style) are also Builder-only, but `Spec` has the same underlying capability directly as `FIt`/`SkipIt`/`PendingIt` since [#245](https://github.com/getsyntegrity/go-specs/issues/245) — see Stage 4 item 1 below. `ItParallel` is likewise Builder-only as a `SpecFn`-free direct method, but `Spec.ItParallel` has the same capability with a stronger guarantee — a real per-spec `*testing.T` and `-run` addressing — since #245's second spec; see Stage 4 item 2 below. `FailFast` was Builder-only too, but `CompiledSuite.SetFailFast` gives the canonical engine the same contract since #251 spec 1; see Stage 4 item 3 below. |
 
 This engine is no longer load-bearing the way it was: removing it no longer removes any capability
@@ -156,7 +156,7 @@ Two asymmetries are **deliberate** and must not be "consolidated" away:
 | Engine | Class | Rationale |
 |---|---|---|
 | `ExecutionPlan` + `CompiledSuite` | **Canonical** | The `Describe` path. Every invariant lands here first. |
-| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/parallel`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
+| `Builder` / `Program` / `Runner` | **Compatibility surface** | Documented and exercised by `examples/builder_test.go`. Focus/skip/pending, `ItParallel`, `FailFast` and now `RunShard` all have equivalents on the canonical engine (#245, #251); Stage 4's capability gap is closed, so removing this engine is a migration question, not a feature regression — see Stage 4's closing note for what is still out of scope. |
 | `MinimalRunner` | **Compatibility surface (narrow)** | Named in README, benchmarked, and the documented partner of `ShardSpecs`. Keep `Run`/`RunParallel`/`RunParallelBatched`; do not grow it. |
 | Parallel scheduler | **Internal substrate** | Already declared non-public in `CHANGELOG/CHANGELOG-0.1.md`. Keep unexported. |
 | `BytecodeRunner` / `BCProgram` / `BCBuilder` | **Experimental → deprecate** | Zero documentation, zero benchmarks, zero consumers beyond `ShardBCProgram`. A strictly weaker duplicate of the canonical model with no measured justification. |
