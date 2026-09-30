@@ -87,8 +87,7 @@ campaign mode, but it cannot be the primary API for the reasons above.
 
 A nested module at `property/`, import path `github.com/getsyntegrity/go-specs/property`, with its own
 `go.mod` that requires rapid. `go build ./...` and `go test ./...` at the repository root do not
-descend into a nested module, so CI and the Makefile run it explicitly (see the CI section of this
-file once implemented). Its `go` directive follows the same `.go-version` rule as every `go.mod`.
+descend into a nested module, so CI and the Makefile run it explicitly (see "Running it in CI" below). Its `go` directive follows the same `.go-version` rule as every `go.mod`.
 
 Until a core version that contains these changes is tagged, the nested module uses a `replace`
 directive to the parent directory. A release has to drop it, and the nested module gets its own tag
@@ -99,8 +98,12 @@ directive to the parent directory. A release has to drop it, and the nested modu
 ```go
 package property
 
-// Check runs prop and fails tb with a full report when the property is falsified.
-func Check(tb testing.TB, prop func(*T), opts ...Option)
+// TB is the part of *testing.T that Check needs: Helper, Name and Errorf.
+// Check runs prop and reports on tb when the property is falsified, panics or is exhausted.
+func Check(tb TB, prop func(*T), opts ...Option)
+
+// Fuzz adapts a property to a native fuzz target (rapid.MakeFuzz underneath).
+func Fuzz(prop func(*T)) func(*testing.T, []byte)
 
 // Run runs prop and returns the outcome instead of failing a test. Check is Run plus reporting;
 // Run exists so a program can inspect, replay and assert on a failure.
@@ -124,6 +127,7 @@ func WithSeed(seed uint64) Option         // deterministic replay of one generat
 func WithSteps(n int) Option              // average Repeat steps
 func WithShrinkTime(d time.Duration) Option
 func WithName(name string) Option         // names the property, and its fail-file directory
+func WithFailFile(path string) Option   // replay one corpus file first
 func WithoutFailFile() Option             // do not persist a corpus file
 
 type Outcome int // Passed, Failed, Panicked, Exhausted
@@ -134,8 +138,8 @@ type Result struct {
     Rejected       int      // inputs the property rejected before the first failure
     Seed           uint64   // pass to WithSeed to reproduce the failure
     FailFile       string   // corpus file written, when any
-    Original       []Draw   // the first failing input found
-    Counterexample []Draw   // the input after shrinking
+    Original       []Drawn  // the first failing input found
+    Counterexample []Drawn  // the input after shrinking
     Failures       []string // assertion failure messages of the counterexample run
     Panic          *PanicInfo
     Report         string   // human-readable summary
@@ -150,12 +154,40 @@ that run, exactly like a fatal assertion in a spec. Three outcomes are kept apar
 rejected input is not a failure and is counted; an assertion failure carries the matcher message; a
 panic carries the value and stack, and is never reported as an assertion failure.
 
+A native fuzz target is one line: `func FuzzX(f *testing.F) { f.Fuzz(property.Fuzz(prop)) }`.
+`property.Fuzz` wraps `rapid.MakeFuzz`. `property/fuzz_test.go` has a working example.
+
 ## Running it in CI
 
-Two modes, documented with the implementation:
+There are two modes, and only the first is on the pull request path.
 
-- Every pull request: `go test ./...` in the `property` module replays the seeds and any committed
-  fail files with the default number of checks. It is deterministic when a seed is set and bounded in
-  time.
-- Campaign: `go test -fuzz` over the `rapid.MakeFuzz` bridge on a schedule or on demand, like the
-  existing `fuzz.yml`, never on the pull request path.
+**Normal run, every pull request.** The `property` job of `ci.yml` runs `go vet`, `go test` and
+`go test -race` inside `property/`. Locally, `make test-property` runs the first two. This is bounded
+and deterministic:
+
+- a property runs 100 valid inputs (20 under `-short`), or the number set with `WithChecks` or
+  `-rapid.checks=N`;
+- a test that needs a fixed input sets `WithSeed`, and two runs with the same seed and the same
+  property give the same counterexample;
+- every `Fuzz` target runs only its `f.Add` seeds and `testdata/fuzz/<Target>/`;
+- a failure found locally writes `testdata/rapid/<name>/<name>-<time>-<pid>.fail`. Commit that file
+  (keep its `<name>-*.fail` name: the engine finds corpus files by that pattern) and every later `go test` replays it first, before generating anything, so the
+  counterexample becomes a regression test. Delete the file once the bug is fixed and the test passes.
+
+**Campaign, scheduled or on demand.** Coverage-guided search belongs outside the pull request path,
+like the existing `fuzz.yml` for the assertion diagnostics:
+
+```sh
+cd property
+go test -run '^$' -fuzz '^FuzzReverseTwice$' -fuzztime 10m .
+```
+
+For a longer random (not coverage-guided) search with shrinking and replay, raise the count once:
+`go test -run TestName -rapid.checks=100000 .`. A failing campaign prints the seed and writes a fail
+file; reproduce it with `-rapid.seed=N` or `property.WithSeed(N)`.
+
+`fuzz.yml` does not run property targets yet; adding `FuzzReverseTwice`-style targets to its matrix is a
+follow-up, kept out of this change so the workflow can be reviewed on its own.
+
+Properties run one at a time: the engine is configured through process-wide flags, which `Run` sets for
+its duration, so `t.Parallel()` does not make two properties overlap.

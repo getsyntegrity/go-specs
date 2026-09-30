@@ -6,7 +6,7 @@ This document describes the repository layout and package boundaries for `go-spe
 
 ## Monorepo Layout
 
-The repository is a **single Go module** (`github.com/getsyntegrity/go-specs`, root `go.mod`). There is no `go.work` and no per-package `go.mod`; every directory below is a regular package within that one module.
+The core is a **single Go module** (`github.com/getsyntegrity/go-specs`, root `go.mod`). There is no `go.work`; every directory below except `property/` is a regular package within that module. `property/` is the one nested module (`github.com/getsyntegrity/go-specs/property`, its own `go.mod`): it depends on the property-testing engine `pgregory.net/rapid`, and keeping it apart means the core `go.mod` and `go.sum` carry no engine. Root `go build ./...` and `go test ./...` do not reach it; run `make test-property`. See [docs/PROPERTY_TESTING.md](docs/PROPERTY_TESTING.md).
 
 ```
 go-specs
@@ -14,6 +14,7 @@ go-specs
 ├── assert       # core assertions / matchers (package: github.com/getsyntegrity/go-specs/assert)
 ├── snapshots    # snapshot storage and comparison (package: github.com/getsyntegrity/go-specs/snapshots)
 ├── mock         # mocking utilities (package: github.com/getsyntegrity/go-specs/mock)
+├── property/    # property testing with replay and shrinking; NESTED MODULE (github.com/getsyntegrity/go-specs/property)
 ├── report/      # event types and reporter (package: github.com/getsyntegrity/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
 ├── examples/    # usage examples (package: github.com/getsyntegrity/go-specs/examples)
@@ -30,6 +31,7 @@ go-specs
 - **report** → (none)
 - **snapshots** → (none)
 - **mock** → (none)
+- **property** (separate module) → assert, pgregory.net/rapid
 - **benchmarks** → specs
 - **examples** → specs, mock
 - **tools/specs-cli** → specs
