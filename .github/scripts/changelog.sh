@@ -66,10 +66,21 @@ range="${previous:+$previous..}$ref"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # ── Included PRs ────────────────────────────────────────────────
+# Prints the PR as JSON, or nothing when the number is an issue (a commit subject can end in an
+# issue number; the API answers 404 for it). Any other API failure stops the script.
 pr_json() {
-  if [ -n "${PR_FIXTURES:-}" ]; then cat "$PR_FIXTURES/$1.json"
-  else curl -fsS -H "Authorization: Bearer ${GH_TOKEN:?missing GH_TOKEN}" \
-         -H "Accept: application/vnd.github+json" "$api/repos/$repo/pulls/$1"; fi
+  if [ -n "${PR_FIXTURES:-}" ]; then
+    if [ -f "$PR_FIXTURES/$1.json" ]; then cat "$PR_FIXTURES/$1.json"; fi
+    return 0
+  fi
+  local code
+  code=$(curl -sS -o "$tmp/pr.json" -w '%{http_code}' -H "Authorization: Bearer ${GH_TOKEN:?missing GH_TOKEN}" \
+           -H "Accept: application/vnd.github+json" "$api/repos/$repo/pulls/$1")
+  case "$code" in
+    200) cat "$tmp/pr.json" ;;
+    404) echo "::notice::#$1 is not a pull request: skipped" >&2 ;;
+    *) die "GitHub API answered $code for PR #$1" ;;
+  esac
 }
 
 git log --format=%s "$range" \

@@ -84,6 +84,7 @@ commit "chore: sync (#10)";               pr "$fx" 10 "chore: sync" sync/release
 commit "chore: with note (#11)";          pr "$fx" 11 "chore: with note" chore/h develop kind/chore "$chore_note"
 commit "refactor: no label, no note (#12)"; pr "$fx" 12 "refactor: no label, no note" refactor/i develop ""
 commit "deprecate: old api (#13)";        pr "$fx" 13 "deprecate: old api" dep/j develop kind/deprecation
+commit "docs: mention an issue (#99)"     # #99 is an issue, not a PR: the API answers 404, no fixture
 printf 'module example.com/x\n\ngo 1.25.0\n\nrequire example.org/dep v1.0.0\n' > go.mod
 mkdir -p CHANGELOG
 printf '### Added\n\n- Legacy A, first line\n  and its continuation line.\n\n### Fixed\n\n- Legacy F.\n' > CHANGELOG/unreleased-legacy.md
