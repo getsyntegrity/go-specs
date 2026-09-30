@@ -267,7 +267,7 @@ func (m *Method) Call(args ...any) Result {
 		for i, e := range exps {
 			reason := reasons[i]
 			if reason == "" {
-				reason = fmt.Sprintf("matched but at capacity (want %s, got %d)", e.countText(), e.got)
+				reason = e.capacityReason()
 			}
 			lines = append(lines, fmt.Sprintf("  expectation %d %s declared at %s: %s", i+1, e.describe(), e.site, reason))
 		}
@@ -282,6 +282,7 @@ func (m *Method) Call(args ...any) Result {
 		c.t.Errorf("mock: unexpected call %s%s", formatCall(m.name, rc.Args), detail)
 		return Result{}
 	}
+	claimed.notifyClaim(rc.Args)
 	return claimed.respond(n, rc.Args)
 }
 
