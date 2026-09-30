@@ -66,7 +66,9 @@ func (m *satisfyMatcher) FailureMessage(actual any) string {
 		}
 		return fmt.Sprintf("Satisfy: no predicate given for %q", m.description)
 	}
-	return fmt.Sprintf("expected %v to satisfy %s", actual, m.named())
+	// The actual is arbitrary user data: renderBounded keeps %v for ordinary values and cannot
+	// overflow the stack on a self-containing map or slice.
+	return fmt.Sprintf("expected %s to satisfy %s", renderBounded(actual, "%v"), m.named())
 }
 
 // Description implements Describer; see equalMatcher.Description.

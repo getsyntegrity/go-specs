@@ -8,13 +8,14 @@ import (
 	"strings"
 )
 
-// Rendering of the value a poll last observed, for PollResult.Message.
+// Rendering of arbitrary user values in failure messages: the value a poll last observed
+// (PollResult.Message) and the actual of Satisfy.
 //
-// The observed value is arbitrary user data, and fmt has no cycle protection: a map that contains
-// itself overflows the stack, which no recover can catch. renderObserved therefore checks the value
-// first. An acyclic value of ordinary size is printed with %#v, so common failures read as before.
-// A cyclic or oversized one is printed by a bounded renderer that marks a cycle as "<cycle>" and cuts
-// off at a depth and element limit.
+// These values are arbitrary user data, and fmt has no cycle protection: a map that contains itself
+// overflows the stack, which no recover can catch. renderBounded therefore checks the value first. An
+// acyclic value of ordinary size is printed with the caller's fmt verb, so common failures read as
+// before. A cyclic or oversized one is printed by a bounded renderer that marks a cycle as "<cycle>"
+// and cuts off at a depth and element limit.
 
 const (
 	cycleMarker      = "<cycle>"
@@ -23,13 +24,19 @@ const (
 	renderNodeBudget = 10_000
 )
 
-func renderObserved(v any) string {
+// renderObserved renders the value a poll last observed, with %#v when that is safe.
+func renderObserved(v any) string { return renderBounded(v, "%#v") }
+
+// renderBounded renders v with verb when v is acyclic and of ordinary size, and with the bounded
+// renderer otherwise.
+func renderBounded(v any, verb string) string {
 	rv := reflect.ValueOf(v)
-	if rv.IsValid() {
-		w := walker{path: map[visit]bool{}, budget: renderNodeBudget}
-		if w.safe(rv) {
-			return fmt.Sprintf("%#v", v)
-		}
+	if !rv.IsValid() {
+		return fmt.Sprintf(verb, v) // an untyped nil, spelled by fmt as before
+	}
+	w := walker{path: map[visit]bool{}, budget: renderNodeBudget}
+	if w.safe(rv) {
+		return fmt.Sprintf(verb, v)
 	}
 	var b strings.Builder
 	r := renderer{path: map[visit]bool{}, b: &b}

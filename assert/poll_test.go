@@ -382,7 +382,7 @@ func TestPollReleasesEveryTimerOnEachExitPath(t *testing.T) {
 }
 
 // neverMatches fails with a fixed message, so these tests exercise PollResult.Message alone and not
-// the failure message of a matcher (Satisfy, for one, renders its actual with a plain %v).
+// the failure message of a matcher.
 type neverMatches struct{}
 
 func (neverMatches) Match(any) bool            { return false }
@@ -394,11 +394,17 @@ const cycleChildEnv = "GO_SPECS_POLL_CYCLE_CHILD"
 // stack overflow (which no recover can catch) fails one test instead of killing the whole suite.
 func runCycleChild(t *testing.T, name string, observe func() any) {
 	t.Helper()
+	runPollChild(t, name, Eventually, neverMatches{}, observe)
+}
+
+// runPollChild is runCycleChild for any poll helper and matcher, and returns the child's output.
+func runPollChild(t *testing.T, name string, poll func(func() any, Matcher, ...PollOption) PollResult, m Matcher, observe func() any) string {
+	t.Helper()
 	if os.Getenv(cycleChildEnv) == name {
 		clock := NewManualClock()
-		res := Eventually(func() any { clock.Advance(tick); return observe() }, neverMatches{}, WithClock(clock), WithTimeout(tick), WithInterval(tick))
+		res := poll(func() any { clock.Advance(tick); return observe() }, m, WithClock(clock), WithTimeout(tick), WithInterval(tick))
 		fmt.Println("MESSAGE:", res.Message())
-		return
+		return ""
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
 	cmd.Env = append(os.Environ(), cycleChildEnv+"="+name)
@@ -413,6 +419,7 @@ func runCycleChild(t *testing.T, name string, observe func() any) {
 	if !strings.Contains(string(out), "<cycle>") {
 		t.Fatalf("message lacks the cycle marker:\n%s", head)
 	}
+	return string(out)
 }
 
 func TestPollMessageRendersACyclicMapSafely(t *testing.T) {
@@ -446,5 +453,53 @@ func TestPollMessageKeepsGoSyntaxForOrdinaryValues(t *testing.T) {
 		WithClock(clock), WithTimeout(tick), WithInterval(tick))
 	if want := `last observed: map[string]int{"a":1}`; !strings.Contains(res.Message(), want) {
 		t.Fatalf("message = %q, want it to contain %q", res.Message(), want)
+	}
+}
+
+// The public path from the review of #366: a self-containing value observed through Satisfy used to
+// overflow the stack in Satisfy's own failure message, before PollResult.Message was reached.
+func TestPollWithSatisfyOnSelfContainingValuesReportsABoundedDiagnostic(t *testing.T) {
+	polls := []struct {
+		name string
+		poll func(func() any, Matcher, ...PollOption) PollResult
+	}{{"eventually", Eventually}, {"consistently", Consistently}}
+	values := []struct {
+		name    string
+		observe func() any
+	}{
+		{"map", func() any {
+			m := map[string]any{}
+			m["self"] = m
+			return m
+		}},
+		{"slice", func() any {
+			s := make([]any, 1)
+			s[0] = s
+			return s
+		}},
+	}
+	for _, p := range polls {
+		for _, v := range values {
+			t.Run(p.name+"/"+v.name, func(t *testing.T) {
+				never := Satisfy("never true", func(any) bool { return false })
+				out := runPollChild(t, "satisfy-"+p.name+"-"+v.name, p.poll, never, v.observe)
+				if out == "" {
+					return
+				}
+				if !strings.Contains(out, "matcher failure: expected ") || !strings.Contains(out, `to satisfy "never true"`) {
+					t.Fatalf("output lacks the Satisfy failure message:\n%s", out)
+				}
+				if len(out) > 4096 {
+					t.Fatalf("diagnostic is not bounded: %d bytes", len(out))
+				}
+			})
+		}
+	}
+}
+
+func TestSatisfyKeepsPlainFormattingForOrdinaryValues(t *testing.T) {
+	m := Satisfy("is even", func(any) bool { return false })
+	if got, want := m.FailureMessage(map[string]int{"a": 1}), `expected map[a:1] to satisfy "is even"`; got != want {
+		t.Fatalf("FailureMessage = %q, want %q", got, want)
 	}
 }
