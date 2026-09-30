@@ -191,6 +191,9 @@ change touches no Go file; removing it can be a follow-up.
   Requests) and `docs/CI.md` rewritten for the new pipeline. Check: every workflow and script named
   in the docs exists; no reference to `release-prep` or the App remains outside investigation
   notes.
+  Commit: `a239704`. Final run: actionlint, shellcheck (7 scripts), script tests (13/13),
+  `make check-go-version`, `tools/release validate`, `go build ./...` and `goreleaser check` all
+  pass.
 
 ## Acceptance criteria
 
