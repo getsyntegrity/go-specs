@@ -36,6 +36,8 @@ go-specs
 
 No cycles: assert, snapshots, and mock do not depend on specs or runner.
 
+`mock` stays independent of `specs` even though `*specs.Context` is what most specs pass to `mock.NewController`: the controller asks for a small `mock.TB` interface (`Helper`, `Cleanup`, `Errorf`) that `*testing.T`, `*testing.B` and `*specs.Context` all satisfy, and it looks for an optional `Testing() testing.TB` method (which `*specs.Context` provides) only to mark its own frames as helpers on a real `*testing.T`. Tests that exercise `mock` under go-specs live in the external test package `mock_test`, which may import `specs`.
+
 ---
 
 ## Import Paths

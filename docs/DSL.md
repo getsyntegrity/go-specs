@@ -611,6 +611,158 @@ benchmark), or nil on `Builder.ItParallel`, `RunParallel` and fake backends, whe
 Together they make `*specs.Context` satisfy `interface{ Helper(); Cleanup(func()); Errorf(string, ...any) }`,
 the same shape `*testing.T` has, which is what packages like `mock` ask of a test.
 
+## Mocking interfaces with `mock.Controller`
+
+A test double for an interface (a repository, an HTTP client, a publisher) has two jobs: return what
+the test configured, and prove how it was called. `mock.Controller` does both from one place, and
+because `*specs.Context` satisfies `mock.TB`, it works the same on every engine (`Spec.It`,
+`Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`). The `mock` package still does not import
+`specs`; `NewController` takes a small interface (`Helper`, `Cleanup`, `Errorf`) that `*testing.T`,
+`*testing.B` and `*specs.Context` all satisfy. Runnable versions of everything below are in
+`examples/mocks/`.
+
+### The typed adapter pattern
+
+There is no code generation. For each interface, write a small struct that implements it by forwarding
+every method to `Controller.Method(name).Call(args...)` and turning the stubbed `Result` back into typed
+return values:
+
+```go
+type userRepoMock struct{ c *mock.Controller }
+
+func (m userRepoMock) Find(ctx context.Context, id string) (*User, error) {
+    r := m.c.Method("Find").Call(ctx, id)
+    return mock.Value[*User](r, 0), r.Err(1)
+}
+
+s.It("rejects a taken id", func(ctx *specs.Context) {
+    ctrl := mock.NewController(ctx)           // Verify is registered with ctx.Cleanup
+    svc := Onboarding{Repo: userRepoMock{ctrl}}
+    ctrl.Method("Find").Expect(mock.Any(), "u1").Return(&User{ID: "u1"}, nil)
+
+    _, err := svc.Register(bg, "u1", "Ada")
+
+    ctx.Expect(errors.Is(err, ErrExists)).To(specs.BeTrue())
+})
+```
+
+`Method(name)` returns the same `*Method` for the same name, so the string is the method's identity:
+use one that is unique per interface method (`"UserRepository.Find"` when two interfaces share a name).
+`Result.Get(i)`, `Result.Err(i)` and `mock.Value[T](r, i)` read the i-th stubbed value; an index that
+was never configured reads as nil or the zero `T`, and `Value` panics with a message naming the method
+when the configured value has another type. Assessing generated adapters is a separate question; the
+hand-written adapter keeps the mock API small and the call sites readable.
+
+### Expectations: which call matches, and how often
+
+`Method.Expect(args...)` declares one call shape. Each argument is an `ArgMatcher` (`mock.Any()`,
+`mock.Equal(x)`, `mock.Match`, `mock.MatchT`, a captor's matcher) or a plain value, which is wrapped in
+`Equal`. The number of arguments must match exactly.
+
+**Matching rule.** The expectations of a method are tried in declaration order; the first whose
+matchers all match and that still has capacity takes the call. So a specific expectation declared
+before a general one wins until its count is used up, then the general one takes over.
+
+**Counts.** Without a count an expectation means `Times(1)`. `Times(n)` is exact, `AtLeast(n)` has no
+upper bound, `AtMost(n)` allows none up to `n`, `AnyTimes()` allows any number, and `Never()` (`Times(0)`)
+turns any matching call into a failure. `AtLeast` and `AtMost` combine into a range in either order,
+so `AtLeast(2).AtMost(5)` and `AtMost(5).AtLeast(2)` both mean two to five calls. Any other pair
+replaces the earlier count: the last one wins. A negative count, or a range whose minimum exceeds its
+maximum, panics at declaration.
+
+**Return values.** `Return(values...)` configures one response. Calling it repeatedly builds a
+sequence: the n-th matched call gets the n-th response, and once the sequence is used up the last
+response repeats for the remaining calls the count allows. `Do(fn)` computes the results from a copy
+of the call's arguments (`fn(args []any) []any`), runs outside the controller's lock so it may call
+other mocked methods, and wins over `Return` when both are set. A panic inside `Do` propagates to the
+code under test that made the call.
+
+### Matchers and captors
+
+`mock.MatchT[T](desc, pred)` matches an argument of type `T` with a predicate; `mock.Match(desc, pred)`
+takes `any`. Write `desc` as what is wanted, because it appears in diagnostics
+(`argument 1: got "b", want an adult age`). A `mock.Captor[T]` (`NewCaptor`, then `Matcher()` in
+`Expect`, then `Values()` and `Last()`) records the arguments of the calls its expectation
+**claimed**. A call rejected because another argument did not match, because the expectation was at
+capacity, or because an earlier expectation took it leaves the captor untouched.
+
+### Order across methods and spies
+
+Every call to any method of a controller, and to any spy obtained from `Controller.Spy(name)`, gets
+one global sequence number. `ctrl.InOrder(e1, e2, e3)` requires that the first call matched by `e1`
+came before the first call matched by `e2`, and so on, whichever adapter made them. `ctrl.Calls()` returns the
+whole log, in sequence order, as copies.
+
+### Automatic verification
+
+`NewController(ctx)` registers `Verify` with `ctx.Cleanup`, so no spec calls it. It runs when the case
+ends: after `AfterEach` and after every `ctx.Go` task settled, and **also when the body failed a fatal
+assertion or panicked**, so the unmet expectation is reported next to the failure that caused it. It
+reports one line per problem through `ctx.Errorf`: an expectation with fewer calls than its minimum
+(`mock: unmet expectation Put(equal to "k", any value) declared at store_test.go:42: want 1, got 0`),
+and each `InOrder` violation with the observed sequence. `Verify` is idempotent, so calling it
+yourself earlier is allowed and does not duplicate the report. Because it goes through `ctx.Errorf`,
+the message reaches `SpecResultEvent.Message` on every engine. On `Builder.ItParallel` a spec records
+only its first failure (that engine's contract), so when the body fails before `Verify` runs, the case
+still fails but the unmet-expectation text is not the message; fix the first failure and it appears.
+
+### Unexpected calls
+
+A call that no expectation accepts (no match, or every match is at capacity) is reported immediately
+through `ctx.Errorf`, attributed to the line that made the call, and does not panic: the call returns a
+zero `Result` so the code under test keeps running and later problems are still reported. The message
+names the method, the formatted arguments, and for each expectation of that method where it was
+declared and why it did not take the call:
+
+```
+mock: unexpected call Get(context.Background, "b"):
+  expectation 1 Get(any value, equal to "a") declared at users_test.go:31: argument 1: got "b", want equal to "a"
+```
+
+On a real `*testing.T` the reported `file:line` is the adapter's call to `Method.Call`, not a line in
+`mock`: every reporting function of the package marks itself as a helper through `ctx.Testing()`, and on
+`Builder.ItParallel` the stack walk that attributes failures skips `mock` frames. A failure at cleanup
+time (unmet expectations, order violations) has no user frame on the stack, so its report carries the
+declaration site of the expectation in the message instead.
+
+### Reset
+
+`ctrl.Reset()` drops all expectations, the recorded calls (including the ones of controller spies),
+and the order constraints, and re-arms `Verify`; the controller stays registered for cleanup. Captors
+keep the values they already hold, because they are not owned by the controller. Do not call `Reset`
+while calls are in flight.
+
+### Concurrency
+
+`Controller`, `Method`, `Expectation` and `Captor` are safe for concurrent use: calls from `ctx.Go`
+tasks, from `ItParallel` cases, or from goroutines of the code under test can share one controller.
+Sequence numbers are assigned under the controller's lock, so they are unique and dense; counts are
+never over-claimed, so `Times(n)` accepts exactly `n` matching calls however they interleave. Matchers
+and `Do` callbacks run outside the lock. The order in which concurrent calls receive their sequence
+numbers, and the recording order of a captor, follow the interleaving and are not deterministic.
+
+### Ownership of recorded arguments
+
+The argument slice of a call is copied when it is recorded, but its elements are not deep-copied. A
+pointer, slice or map passed to a mocked method is **shared** with the caller: if the code under test
+mutates it after the call, `Calls()`, `Method.Calls()` and a captor report the mutated value. A test
+that needs a snapshot takes it inside `Do`, which runs during the call:
+
+```go
+var snapshot []string
+ctrl.Method("Publish").Expect(mock.Any()).AnyTimes().Do(func(args []any) []any {
+    snapshot = append([]string(nil), args[0].([]string)...) // copy now, the caller may reuse it
+    return nil
+})
+```
+
+### Compatibility
+
+`Mock`, `Spy`, `Call`, `ArgMatcher`, `Any` and `Equal` behave exactly as before; nothing has to migrate.
+`Controller.Spy(name)` returns a regular `*mock.Spy` whose calls also join the controller's global
+order, without taking part in expectations, so an existing spy can be added to an `InOrder`-checked flow
+by getting it from the controller.
+
 ## Builder.It, Skip and Focus
 
 `Builder.It` is the Builder-API counterpart of `Spec.It`: `func (b *Builder) It(name string, fn func(*Context))`. Use it directly for a plain spec body:
