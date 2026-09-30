@@ -6,6 +6,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
 
 ## [Unreleased]
 
+## [v0.3.2] - 2026-09-30
+
 ### Added
 
 - `ctx.Cleanup(fn)`, `ctx.Errorf(format, args...)` and `ctx.Helper()`: a per-case seam for packages built on go-specs, such as `mock` (#357). `Cleanup` runs `fn` when the case ends, on every engine (`Spec.It`, `Spec.ItParallel`, `Builder.It`, `Builder.ItParallel`, `RunParallel` and the flat runners) and on fake backends: after `AfterEach` and after every `ctx.Go` task settled, last registered first, also after a fatal assertion or a panic. A panic inside `fn` is recovered and reported as an error of that case, and the other cleanups still run. `Errorf` is a non-fatal failure through the assertion path: the case keeps running, the first message is the one `SpecResultEvent.Message` reports, and the failure is attributed to the caller (`ctx.T` helper marking, or the stack walk on `Builder.ItParallel`, which now also skips `mock` frames). `*specs.Context` therefore satisfies `interface{ Helper(); Cleanup(func()); Errorf(string, ...any) }`. Cases that never call them pay one nil check and no allocation. See `docs/DSL.md`.
@@ -1188,7 +1190,8 @@ Entries for `v0.0.1`–`v0.0.9` predate this file — see [GitHub Releases](http
   Documentation only; no code change. Tracked in
   [#124](https://github.com/getsyntegrity/go-specs/issues/124).
 
-[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/getsyntegrity/go-specs/compare/v0.3.2...HEAD
+[v0.3.2]: https://github.com/getsyntegrity/go-specs/compare/v0.3.1...v0.3.2
 [v0.3.1]: https://github.com/getsyntegrity/go-specs/compare/v0.3.0...v0.3.1
 [v0.3.0]: https://github.com/getsyntegrity/go-specs/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/getsyntegrity/go-specs/compare/v0.1.0...v0.2.0
