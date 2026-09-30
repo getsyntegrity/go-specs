@@ -127,6 +127,11 @@ func cleanupRealTBody(t *testing.T, engine string) {
 		ctx.Errorf("errorf-msg %d", 7)
 		mark("errorf continued")
 	}
+	helperErrorf := func(ctx *Context) {
+		_, _, line, _ := runtime.Caller(0)
+		fmt.Printf("HELPER_LINE=%d\n", line+2) // the helper call is two lines below Caller(0)
+		errorfThroughHelper(ctx, "helper-msg")
+	}
 	rep := &recordingReporter{}
 	switch engine {
 	case "spec", "specparallel":
@@ -143,6 +148,7 @@ func cleanupRealTBody(t *testing.T, engine string) {
 			it(s, "panic", panics)
 			it(s, "cleanuppanic", cleanupPanics)
 			it(s, "errorf", errorf)
+			it(s, "helpererrorf", helperErrorf)
 		})
 	case "builder", "builderparallel":
 		b := NewBuilder()
@@ -159,6 +165,7 @@ func cleanupRealTBody(t *testing.T, engine string) {
 			it("panic", panics)
 			it("cleanuppanic", cleanupPanics)
 			it("errorf", errorf)
+			it("helpererrorf", helperErrorf)
 		})
 		NewRunnerWithReporter(b.Build(), "suite", rep).Run(t)
 	}
@@ -232,6 +239,49 @@ func runCleanupRealT(t *testing.T, testName, engine string) {
 	}
 	if want := "context_errorf_test.go:" + m[1] + ": "; !strings.Contains(out, want) {
 		t.Errorf("Errorf is not attributed to the caller's line (want %q):\n%s", want, out)
+	}
+	h := regexp.MustCompile(`HELPER_LINE=(\d+)`).FindStringSubmatch(out)
+	if h == nil {
+		t.Fatalf("the helpererrorf case never ran:\n%s", out)
+	}
+	// A helper package marks its own frame through ctx.Testing().Helper(), so the report points at the
+	// helper's caller, not at the helper (#357: this is how mock stays invisible on a real *testing.T).
+	if want := "context_errorf_test.go:" + h[1] + ": helper-msg"; !strings.Contains(out, want) {
+		t.Errorf("Errorf through a helper is not attributed to the helper's caller (want %q):\n%s", want, out)
+	}
+}
+
+// errorfThroughHelper stands for a helper package such as mock: it marks its own frame on the real
+// *testing.T, when there is one, before reporting through the Context.
+//
+//go:noinline
+func errorfThroughHelper(ctx *Context, msg string) {
+	if tb := ctx.Testing(); tb != nil {
+		tb.Helper()
+	}
+	ctx.Errorf("%s", msg)
+}
+
+func TestCtxTestingReturnsTheCaseTestingTB(t *testing.T) {
+	var specT, parallelT testing.TB
+	var caseT *testing.T
+	Describe(t, "suite", func(s *Spec) {
+		s.It("case", func(ctx *Context) { specT, caseT = ctx.Testing(), ctx.T })
+	})
+	b := NewBuilder()
+	b.Describe("suite", func() {
+		b.ItParallel("case", func(ctx *Context) { parallelT = ctx.Testing() })
+	})
+	NewRunner(b.Build()).Run(t)
+	if specT == nil || specT != testing.TB(caseT) {
+		t.Errorf("Spec.It: Testing() = %v, want the case's *testing.T %v", specT, caseT)
+	}
+	if parallelT != nil {
+		t.Errorf("Builder.ItParallel: Testing() = %v, want nil (its bodies have no *testing.T)", parallelT)
+	}
+	var nilCtx *Context
+	if nilCtx.Testing() != nil {
+		t.Error("a nil Context must report no testing.TB")
 	}
 }
 

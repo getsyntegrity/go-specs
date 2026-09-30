@@ -604,7 +604,9 @@ caller of `Errorf`: on a real `*testing.T` through helper marking, on `Builder.I
 `RunParallel` through the stack walk that skips go-specs' own frames (the `specs`, `snapshots` and
 `mock` packages). `ctx.Helper()` delegates to the backend's `Helper` and is a no-op where there is none.
 It marks `Context.Helper` itself rather than the calling function, so a helper package that must be
-invisible in the reported `file:line` on a real `*testing.T` should be handed `ctx.T`.
+invisible in the reported `file:line` on a real `*testing.T` calls `ctx.Testing().Helper()` from its own
+frames. `ctx.Testing()` returns the case's `testing.TB` (its `*testing.T`, or the `*testing.B` of a
+benchmark), or nil on `Builder.ItParallel`, `RunParallel` and fake backends, where no marking is needed.
 
 Together they make `*specs.Context` satisfy `interface{ Helper(); Cleanup(func()); Errorf(string, ...any) }`,
 the same shape `*testing.T` has, which is what packages like `mock` ask of a test.

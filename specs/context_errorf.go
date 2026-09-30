@@ -3,7 +3,10 @@
 // first. With ctx.Cleanup (context_cleanup.go), *Context satisfies mock's TB interface on every engine.
 package specs
 
-import "fmt"
+import (
+	"fmt"
+	"testing"
+)
 
 // Errorf reports a non-fatal failure of the current case: it marks the case failed, keeps the message,
 // and returns, so the case continues, like testing.T.Errorf. It goes through the same path as a
@@ -36,14 +39,30 @@ func (c *Context) Errorf(format string, args ...any) {
 	c.backend.Errorf("%s", msg)
 }
 
+// Testing returns the testing.TB the current case runs on — the case's own *testing.T, or the
+// *testing.B of a benchmark — or nil where there is none: Builder.ItParallel bodies, RunParallel
+// workers, fake backends and a nil Context.
+//
+// It exists for helper packages that report through the Context (Errorf, Cleanup), such as mock: to
+// stay out of the reported file:line on a real *testing.T they call Testing().Helper() from their own
+// frames, because ctx.Helper() can only mark Context.Helper itself. Where Testing returns nil no such
+// marking is needed: the stack walk that attributes those engines' failures skips go-specs' frames.
+func (c *Context) Testing() testing.TB {
+	if c == nil || c.tb == nil {
+		return nil
+	}
+	return c.tb
+}
+
 // Helper marks the calling function as a test helper on the backend that has one, and is a no-op
 // otherwise (a nil Context, no backend, parallelBackend). It exists so *Context satisfies the
 // interface packages such as mock ask of a test.
 //
 // Like every wrapper it marks its own frame, not its caller's: testing.T.Helper marks the function
-// that called it, and here that function is Context.Helper. A helper package that must be invisible in
-// the reported file:line on a real *testing.T should be handed ctx.T; on Builder.ItParallel and
-// RunParallel attribution never needs Helper, because the stack walk skips go-specs' frames.
+// that called it, and here that function is Context.Helper. A helper package that must be invisible
+// in the reported file:line on a real *testing.T calls ctx.Testing().Helper() from its own frames; on
+// Builder.ItParallel and RunParallel attribution never needs Helper, because the stack walk skips
+// go-specs' frames.
 func (c *Context) Helper() {
 	if c == nil {
 		return
