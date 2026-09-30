@@ -1,6 +1,6 @@
 // parallel_test.go shows concurrency inside a suite: Spec.ItParallel and ctx.Go.
 //
-//   - ItParallel runs adjacent independent specs at the same time, each as its own Go subtest with
+//   - ItParallel lets adjacent independent specs run at the same time, each as its own Go subtest with
 //     its own Context. Use it for slow, independent specs (network-free integration work, big
 //     computations) so the suite takes as long as its slowest member.
 //   - ctx.Go runs assertions concurrently inside ONE spec, and the spec waits for every task
@@ -17,32 +17,20 @@ package examples_test
 import (
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/getsyntegrity/go-specs/specs"
 )
 
-// The two specs below wait for each other. That is only possible if they really run at the same
-// time; run sequentially, the first one would time out. This makes the concurrency observable
-// without sleeping or depending on the scheduler.
-func TestParallel_itParallelRunsSiblingsConcurrently(t *testing.T) {
-	var barrier sync.WaitGroup
-	barrier.Add(2)
-
-	meet := func(ctx *specs.Context) {
-		barrier.Done()
-		done := make(chan struct{})
-		go func() { barrier.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			ctx.Errorf("the sibling spec never started: specs are not running concurrently")
-		}
-	}
-
+// Each ItParallel spec below is independent: it owns its input and result and never waits for a
+// sibling, so it passes the same way when selected alone with -run or when the Go test runner is
+// limited with -parallel=1. ItParallel makes adjacent siblings eligible to overlap; it does not
+// require them to. That they really do overlap is proved by the library's internal tests
+// (specs/spec_itparallel*_test.go), not by an example.
+func TestParallel_itParallelRunsIndependentSpecs(t *testing.T) {
 	specs.Describe(t, "parallel math", func(s *specs.Spec) {
-		s.ItParallel("first independent spec", meet)
-		s.ItParallel("second independent spec", meet)
+		s.ItParallel("adds", func(ctx *specs.Context) { ctx.Expect(1 + 1).ToEqual(2) })
+		s.ItParallel("multiplies", func(ctx *specs.Context) { ctx.Expect(3 * 4).ToEqual(12) })
+		s.ItParallel("concatenates", func(ctx *specs.Context) { ctx.Expect("go" + "-specs").ToEqual("go-specs") })
 	})
 }
 
