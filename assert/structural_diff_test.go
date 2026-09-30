@@ -3,6 +3,8 @@ package assert
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -338,6 +340,68 @@ func TestStructuralDiffAgreesWithDeepEqual(t *testing.T) {
 		diff := structuralDiff(p[0], p[1])
 		if equal := reflect.DeepEqual(p[0], p[1]); equal != (diff == "") {
 			t.Fatalf("pair %d: DeepEqual=%v but diff=%q", i, equal, diff)
+		}
+	}
+}
+
+// runInSubprocess re-executes this test binary running only the named test with envVar set, so a
+// stack overflow (which no recover can catch) fails one assertion instead of killing the suite.
+func runInSubprocess(t *testing.T, name, envVar string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+name+"$")
+	cmd.Env = append(os.Environ(), envVar+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		text := string(out)
+		if len(text) > 600 {
+			text = text[:600]
+		}
+		t.Fatalf("child failed: %v\n%s", err, text)
+	}
+	return string(out)
+}
+
+func TestStructuralDiffTerminatesOnSelfContainingSlices(t *testing.T) {
+	const env = "GO_SPECS_SLICE_CYCLE_CHILD"
+	if os.Getenv(env) == "1" {
+		a, b := make([]any, 2), make([]any, 2)
+		a[0], a[1] = a, 1
+		b[0], b[1] = b, 2
+		fmt.Println("MSG-BEGIN")
+		fmt.Println(EqualFailureMessage(a, b))
+
+		m1, m2 := map[string]any{"n": 1}, map[string]any{"n": 2}
+		s1, s2 := []any{m1}, []any{m2}
+		m1["s"], m2["s"] = s1, s2
+		fmt.Println(EqualFailureMessage(s1, s2))
+		fmt.Println("MSG-END")
+		return
+	}
+	out := runInSubprocess(t, "TestStructuralDiffTerminatesOnSelfContainingSlices", env)
+	if !strings.Contains(out, "  [1]: expected 1, actual 2") {
+		t.Fatalf("slice cycle diff missing element difference:\n%s", out)
+	}
+	if !strings.Contains(out, `  [0]["n"]: expected 1, actual 2`) || !strings.Contains(out, "MSG-END") {
+		t.Fatalf("map-in-slice cycle diff missing or child did not finish:\n%s", out)
+	}
+}
+
+func TestStructuralDiffOrdersKeysSharingALongPrefixByFullKey(t *testing.T) {
+	prefix := strings.Repeat("k", diffMaxValueRunes*2)
+	var first string
+	for i := 0; i < 50; i++ {
+		expected := map[string]int{prefix + "B": 2, prefix + "A": 1, prefix + "C": 3}
+		actual := map[string]int{prefix + "B": 102, prefix + "A": 101, prefix + "C": 103}
+		msg := EqualFailureMessage(expected, actual)
+		if i == 0 {
+			first = msg
+			got := diffLines(t, msg)
+			if len(got) != 3 || !strings.HasSuffix(got[0], "expected 1, actual 101") ||
+				!strings.HasSuffix(got[1], "expected 2, actual 102") || !strings.HasSuffix(got[2], "expected 3, actual 103") {
+				t.Fatalf("keys are not ordered by their full value:\n%s", msg)
+			}
+		} else if msg != first {
+			t.Fatalf("order depends on map iteration:\n%s\n---\n%s", first, msg)
 		}
 	}
 }

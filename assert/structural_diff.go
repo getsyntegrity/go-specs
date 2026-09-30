@@ -39,8 +39,9 @@ type diffWalker struct {
 
 // diffVisit identifies a pointer-like pair already under comparison, as reflect.DeepEqual does.
 type diffVisit struct {
-	a, b uintptr
-	typ  reflect.Type
+	a, b   uintptr
+	na, nb int // slice lengths, so slices sharing a backing array but not a length stay distinct
+	typ    reflect.Type
 }
 
 // structuralDiff returns the "differences:" section for expected versus actual, or "" when the diff
@@ -186,7 +187,10 @@ func (w *diffWalker) walkElemTypes(a, b reflect.Value, path string, depth int) {
 
 // seen records a pointer-like pair and reports whether it was already being compared.
 func (w *diffWalker) seen(a, b reflect.Value) bool {
-	key := diffVisit{a.Pointer(), b.Pointer(), a.Type()}
+	key := diffVisit{a: a.Pointer(), b: b.Pointer(), typ: a.Type()}
+	if a.Kind() == reflect.Slice {
+		key.na, key.nb = a.Len(), b.Len()
+	}
 	if w.visited[key] {
 		return true
 	}
@@ -244,6 +248,11 @@ func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 		if a.Pointer() == b.Pointer() && a.Len() == b.Len() {
 			return
 		}
+		// A slice pair already under comparison is a cycle (a[0] == a): treat it as equal, as for
+		// pointers and maps, so the walk and differs both terminate.
+		if a.Len() > 0 && w.seen(a, b) {
+			return
+		}
 	}
 	la, lb := a.Len(), b.Len()
 	if la != lb {
@@ -286,13 +295,15 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	}
 }
 
-// sortedMapKeys orders keys by their rendering, so the same two maps always produce the same diff
-// whatever order the runtime iterates them in.
+// sortedMapKeys orders keys by their full rendering, so the same two maps always produce the same
+// diff whatever order the runtime iterates them in. The sort key is deliberately not the bounded
+// display form: long keys sharing a prefix longer than diffMaxValueRunes would tie there and fall
+// back to map iteration order.
 func sortedMapKeys(m reflect.Value) []reflect.Value {
 	keys := m.MapKeys()
 	rendered := make([]string, len(keys))
 	for i, k := range keys {
-		rendered[i] = renderDiffValue(k, 0)
+		rendered[i] = renderValue(k, 0)
 	}
 	sort.Sort(&keySorter{keys, rendered})
 	return keys
@@ -456,7 +467,7 @@ func cycleWalk(v reflect.Value, onPath map[diffVisit]bool) bool {
 		if v.Kind() == reflect.Slice && isScalarKind(v.Type().Elem().Kind()) {
 			return false
 		}
-		key := diffVisit{v.Pointer(), 0, v.Type()}
+		key := diffVisit{a: v.Pointer(), typ: v.Type()}
 		if inProgress, seen := onPath[key]; seen {
 			return inProgress
 		}
