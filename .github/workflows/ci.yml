@@ -643,8 +643,12 @@ jobs:
   # the rulesets are not touched. No `name:` on purpose: the check GitHub reports is the job id,
   # the exact string the rulesets require. `if: always()` lets it report a real pass/fail even when
   # a needed job failed; a skipped result is fine for any need.
+  # !cancelled() instead of always(): when the concurrency group cancels a superseded run (for
+  # example a labeled event right after a push), ci-ok is skipped instead of failing, so that
+  # stale run cannot post a red required check that may land after the newer run's green one.
+  # A failed or timed-out job does not cancel the workflow, so ci-ok still runs and fails then.
   ci-ok:
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [flow, verify, lint, plan, test, test-report, race, modules, bench-smoke, report-cli, tidy, api, vuln, goreleaser, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
