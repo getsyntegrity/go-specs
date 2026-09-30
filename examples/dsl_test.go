@@ -44,11 +44,6 @@ func TestDSL_nested(t *testing.T) {
 	})
 }
 
-// directTB makes a suite run its specs directly on the enclosing test instead of as subtests. It
-// is only for examples that count executions across several runs or shards, where `-run` filtering
-// of subtests would change the count. Failures still go to the wrapped test.
-type directTB struct{ testing.TB }
-
 // DescribeFlat and DescribeFast are compatibility aliases of Describe (docs/EXECUTION_ENGINES.md).
 // They run the same engine, report the same subtests, and cost the same allocations. Prefer
 // Describe in new code; you only meet the other two in older suites.
@@ -67,27 +62,21 @@ func TestDSL_describeAliases(t *testing.T) {
 // you can run later, several times, or shard (see sharding_test.go). This is the entry point for
 // benchmarks that want to measure execution without paying the build cost each iteration.
 //
-// The suite runs on directTB rather than t itself. With a real *testing.T every run becomes a
-// subtest, and `go test -run` only matches the first of several same-named subtests, so a count
-// of runs would depend on the selector. directTB runs the specs in place.
+// The suite runs on the plain t, so each run is a normal subtest. The spec checks only itself:
+// it fails if building the suite had already executed it. Nothing counts executions across the
+// runs, so the example passes however `go test -run` selects subtests.
 func TestDSL_buildSuiteThenRun(t *testing.T) {
-	runs := 0
-	suite := specs.BuildSuite(directTB{t}, "compiled", func(s *specs.Spec) {
-		s.It("counts its executions", func(ctx *specs.Context) {
-			runs++
+	running := false
+	suite := specs.BuildSuite(t, "compiled", func(s *specs.Spec) {
+		s.It("only runs once the suite is run", func(ctx *specs.Context) {
+			ctx.Expect(running).ToEqual(true)
 		})
 	})
 
-	// Nothing has run yet: building only compiles.
-	if runs != 0 {
-		t.Fatalf("BuildSuite must not run specs, ran %d", runs)
-	}
-
+	// Nothing has run yet: building only compiles. Now run the same suite several times.
+	running = true
 	for range 3 {
-		suite.Run(directTB{t})
-	}
-	if runs != 3 {
-		t.Fatalf("expected 3 runs, got %d", runs)
+		suite.Run(t)
 	}
 }
 

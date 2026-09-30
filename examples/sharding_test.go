@@ -14,39 +14,30 @@ package examples_test
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
 )
 
-// BuildSuite compiles once, RunShard runs one slice. Running both halves of a 2-way split covers
-// every spec exactly once. Here two shards run in one test to prove the partition; in CI each job
-// runs only its own shard, taken from ShardFromArgsOrEnv. The suite runs on directTB (see
-// dsl_test.go) so the coverage check does not depend on `go test -run` selecting subtests.
+// BuildSuite compiles once, RunShard runs one slice. Running both halves of a 2-way split runs
+// each spec in exactly one shard. Here two shards run in one test; in CI each job runs only its
+// own shard, taken from ShardFromArgsOrEnv. Every spec checks only itself: a spec assigned to
+// both shards would see its own counter at 2 on the second run and fail. Nothing counts how many
+// specs ran, so the example passes however `go test -run` selects subtests.
 func TestSharding_runShardPartitionsTheSuite(t *testing.T) {
 	seen := map[string]int{}
-	suite := specs.BuildSuite(directTB{t}, "shardable", func(s *specs.Spec) {
+	suite := specs.BuildSuite(t, "shardable", func(s *specs.Spec) {
 		for _, name := range []string{"a", "b", "c", "d", "e"} {
-			s.It(name, func(ctx *specs.Context) { seen[name]++ })
+			s.It(name, func(ctx *specs.Context) {
+				seen[name]++
+				ctx.Expect(seen[name]).ToEqual(1) // this spec ran in one shard only
+			})
 		}
 	})
 
 	const total = 2
 	for shard := range total {
-		suite.RunShard(directTB{t}, shard, total)
-	}
-
-	var names []string
-	for name, runs := range seen {
-		if runs != 1 {
-			t.Errorf("spec %q ran %d times, want exactly once", name, runs)
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	if fmt.Sprint(names) != "[a b c d e]" {
-		t.Fatalf("shards did not cover the suite: %v", names)
+		suite.RunShard(t, shard, total)
 	}
 }
 
