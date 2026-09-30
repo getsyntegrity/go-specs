@@ -7,7 +7,7 @@ ifeq ($(wildcard $(BENCHSTAT)),)
 BENCHSTAT := benchstat
 endif
 
-.PHONY: help test test-property test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version
+.PHONY: help test test-property test-race coverage bench bench-smoke bench-report bench-e2e bench-ratio-guard bench-compare fmt fmt-check lint build tidy clean check-go-version test-ci-scripts
 
 # Default target: show all tasks with short descriptions
 help:
@@ -30,6 +30,7 @@ help:
 	@echo "  make tidy          go mod tidy"
 	@echo "  make clean         Remove coverage.* and benchmark results"
 	@echo "  make check-go-version  Verify every go.mod matches the MAJOR.MINOR.0 floor derived from .go-version"
+	@echo "  make test-ci-scripts   Test the release scripts in .github/scripts (next-version, release-changelog)"
 	@echo ""
 
 # Fail when any go.mod's `go` directive is not MAJOR.MINOR.0 of .go-version
@@ -37,6 +38,11 @@ help:
 # caught before pushing.
 check-go-version:
 	./.github/scripts/check-go-version.sh
+
+# Test the release scripts (next-version.sh, release-changelog.sh) in throwaway git
+# repositories. Same command CI's `verify` job runs.
+test-ci-scripts:
+	bash ./.github/scripts/test/run.sh
 
 # Run tests
 test:

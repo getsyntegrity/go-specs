@@ -109,7 +109,7 @@ jobs:
       # .github/actions/setup-go/action.yml's header for why. This step
       # installs the pinned toolchain and runs check-go-version.sh.
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: vet
 
@@ -163,7 +163,7 @@ jobs:
       # See verify's Set up Go step: Checkout must run first for a local
       # composite action to resolve.
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: test
 
@@ -190,7 +190,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: property
 
@@ -215,7 +215,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: race
 
@@ -234,7 +234,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: bench
 
@@ -339,7 +339,7 @@ jobs:
       # See verify's Set up Go step: Checkout must run first for a local
       # composite action to resolve.
       - name: Set up Go
-        uses: ./.github/actions/setup-go
+        uses: ./.github/actions/go-setup
         with:
           cache-key: report
 
