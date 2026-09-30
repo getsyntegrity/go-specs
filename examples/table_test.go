@@ -71,18 +71,31 @@ func TestTable_table(t *testing.T) {
 }
 
 // Hooks wrap every row, and a When adds a grouping segment only because the caller asked for one.
+//
+// No spec asserts on what another one did, so each passes when selected alone with -run. A row
+// only checks that its own BeforeEach has run; the exact count (one call per spec that ran) is
+// checked once, in t.Cleanup, after the whole suite has finished.
 func TestTable_withHooksAndGroup(t *testing.T) {
+	var calls, ran int
+	t.Cleanup(func() {
+		if calls != ran {
+			t.Errorf("BeforeEach must run once per spec: ran=%d calls=%d", ran, calls)
+		}
+	})
+
 	specs.Describe(t, "add", func(s *specs.Spec) {
-		var calls int
 		s.BeforeEach(func(*specs.Context) { calls++ })
 		s.When("integers", func(s *specs.Spec) {
 			specs.Table(s, tableAddCases, func(tc tableAddCase) string { return tc.name },
 				func(ctx *specs.Context, tc tableAddCase) {
+					ran++
+					ctx.Expect(calls > 0).ToEqual(true) // its own BeforeEach ran first
 					ctx.Expect(tableAdd(tc.a, tc.b)).ToEqual(tc.want)
 				})
 		})
-		s.It("ran the hook once per row", func(ctx *specs.Context) {
-			ctx.Expect(calls).ToEqual(len(tableAddCases) + 1)
+		s.It("runs the hook before a plain spec too", func(ctx *specs.Context) {
+			ran++
+			ctx.Expect(calls > 0).ToEqual(true)
 		})
 	})
 }

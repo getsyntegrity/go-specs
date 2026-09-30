@@ -86,7 +86,8 @@ func (d *testDatabase) query(name string) string {
 
 // BeforeAll runs once, right before the first spec of its group, not once per spec. AfterAll runs
 // once, right after the last one, and still runs when a spec fails. Both specs below share the
-// same fixture, and the counter proves it was built only once.
+// same fixture, and the counter proves it was built only once. Each spec checks that on its own,
+// so it passes whether it runs alone or with its sibling.
 func TestHooks_beforeAllAfterAll(t *testing.T) {
 	var db *testDatabase
 	setups := 0
@@ -107,7 +108,7 @@ func TestHooks_beforeAllAfterAll(t *testing.T) {
 			})
 			s.It("emails a receipt", func(ctx *specs.Context) {
 				ctx.Expect(db.query("receipt")).ToEqual("row for receipt")
-				ctx.Expect(db.queries).ToEqual(2) // the same fixture served both specs
+				ctx.Expect(setups).ToEqual(1) // the fixture was built once, however many specs share it
 			})
 		})
 	})
