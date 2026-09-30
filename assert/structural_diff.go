@@ -373,16 +373,41 @@ func disambiguatedKeyLabels(keys []reflect.Value, methods bool) []string {
 // the same two maps always give the same window whatever order the runtime iterates them in.
 func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 	top = make([]mapEntry, 0, min(m.Len(), k))
+	// Iterating with it.Key and it.Value copies every entry, so a huge map would still allocate in
+	// proportion to its size. When the map may be read through Set (it was not reached through an
+	// unexported field), each key and value is loaded into one reusable slot instead, and only the
+	// entries that enter the window are copied out.
+	reuse := m.CanInterface()
+	var keySlot, valSlot reflect.Value
+	if reuse {
+		keySlot = reflect.New(m.Type().Key()).Elem()
+		valSlot = reflect.New(m.Type().Elem()).Elem()
+	}
 	for it := m.MapRange(); it.Next(); {
 		total++
-		key := it.Key()
+		key, valLoaded := keySlot, false
+		if reuse {
+			keySlot.SetIterKey(it)
+		} else {
+			key = it.Key()
+		}
+		value := func() reflect.Value {
+			if !reuse {
+				return it.Value()
+			}
+			if !valLoaded {
+				valSlot.SetIterValue(it)
+				valLoaded = true
+			}
+			return valSlot
+		}
 		// The value is only fetched when the key ties or the entry enters the window, so an entry
 		// that is clearly out costs one key comparison and no value copy.
 		pos := len(top)
 		for pos > 0 {
 			c := compareMapKeys(key, top[pos-1].key)
 			if c == 0 {
-				c = compareMapEntries(mapEntry{key: key, val: it.Value(), fromA: true}, top[pos-1])
+				c = compareMapEntries(mapEntry{key: key, val: value(), fromA: true}, top[pos-1])
 			}
 			if c >= 0 {
 				break
@@ -396,9 +421,20 @@ func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
 			top = append(top, mapEntry{})
 		}
 		copy(top[pos+1:], top[pos:])
-		top[pos] = mapEntry{key: key, val: it.Value(), fromA: true}
+		top[pos] = mapEntry{key: detached(key, reuse), val: detached(value(), reuse), fromA: true}
 	}
 	return top, total
+}
+
+// detached returns v itself, or a copy of it when v is a reusable slot that the next iteration
+// overwrites.
+func detached(v reflect.Value, slot bool) reflect.Value {
+	if !slot {
+		return v
+	}
+	c := reflect.New(v.Type()).Elem()
+	c.Set(v)
+	return c
 }
 
 // compareMapKeys is a total order over every comparable key kind, reading only through reflect (never

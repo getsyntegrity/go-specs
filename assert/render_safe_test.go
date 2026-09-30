@@ -261,7 +261,7 @@ func TestDiffRendererSelectsMapEntriesWithoutSortingTheWholeMap(t *testing.T) {
 	if want := "map[0: 0, 1: 1, 2: 2, 3: 3, … +299996 more]"; out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
-	if n > 4<<20 {
+	if n > 1<<20 {
 		t.Fatalf("rendering a wide map allocated %d bytes, want it bounded", n)
 	}
 }
@@ -277,7 +277,7 @@ func TestPollFallbackRendersWideMapsWithBoundedWork(t *testing.T) {
 	if !strings.Contains(out, "more}") || !strings.Contains(out, "<cycle>") {
 		t.Fatalf("unexpected rendering %.200q", out)
 	}
-	if n > 4<<20 {
+	if n > 1<<20 {
 		t.Fatalf("rendering a wide map allocated %d bytes, want it bounded", n)
 	}
 }
@@ -323,5 +323,19 @@ func TestDiffLeafWithoutMethodsMatchesFmt(t *testing.T) {
 		if want := fmt.Sprintf("%v", v); got != want {
 			t.Errorf("%T(%v): got %q, want %q", v, v, got, want)
 		}
+	}
+}
+
+// A map reached through an unexported field cannot be loaded through Set, so the window falls back
+// to copying entries; it must still render the same smallest entries.
+func TestDiffRendererSelectsEntriesOfAMapBehindAnUnexportedField(t *testing.T) {
+	type holder struct{ m map[int]int }
+	h := holder{m: map[int]int{}}
+	for i := 9; i >= 0; i-- {
+		h.m[i] = i * 10
+	}
+	out := renderDiffValue(reflect.ValueOf(h).Field(0), true)
+	if want := "map[0: 0, 1: 10, 2: 20, 3: 30, … +6 more]"; out != want {
+		t.Fatalf("got %q, want %q", out, want)
 	}
 }
