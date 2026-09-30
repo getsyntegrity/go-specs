@@ -170,6 +170,39 @@ jobs:
       - name: Test
         run: go test ./...
 
+  # The property module is a nested Go module (property/go.mod), so `go vet ./...` and `go test ./...`
+  # at the repository root never reach it; this job is its whole gate. Plain `go test` replays the
+  # seeds and committed corpus files only and runs no fuzz campaign (that is fuzz.yml's job), so it
+  # is bounded and deterministic. The race detector runs here too, once, in the same job: the module
+  # is small, so a separate race job would only repeat the toolchain setup.
+  property:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        working-directory: property
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+        with:
+          cache-key: property
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test with race detector
+        run: go test -race ./...
+
   race:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -550,7 +583,7 @@ jobs:
   # No `name:` on purpose: the check GitHub reports is then the job id, `ci-ok`, the exact string
   # the rulesets require -- a display name would be a second spelling to keep in sync.
   ci-ok:
-    needs: [verify, unit, race, bench-smoke, report-cli, lint, govulncheck, goreleaser, dependency-review]
+    needs: [verify, unit, property, race, bench-smoke, report-cli, lint, govulncheck, goreleaser, dependency-review]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
