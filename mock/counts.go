@@ -2,12 +2,21 @@ package mock
 
 import "fmt"
 
-// AtLeast requires at least n calls with no upper bound. It panics when n is negative.
+// AtLeast requires at least n calls and sets only the minimum. It panics when n is negative or when
+// the resulting range would have a minimum above its maximum.
 //
-// Count rules: AtLeast and AtMost combine into a range in either order, so AtLeast(2).AtMost(5)
-// and AtMost(5).AtLeast(2) both mean 2..5 calls. Times, Never and AnyTimes replace whatever count
-// was set before, and Times/AtLeast/AtMost called after them start over: the last count call wins
-// except for that AtLeast/AtMost pairing. A range whose minimum exceeds its maximum panics.
+// Count rules:
+//   - Times, Never and AnyTimes set a complete configuration (both bounds) and replace whatever
+//     count was set before.
+//   - AtLeast sets only the minimum and AtMost only the maximum. When the current configuration is
+//     a range built by earlier AtLeast/AtMost calls, the other bound is kept, so AtLeast(2).AtMost(5)
+//     and AtMost(5).AtLeast(2) both mean 2..5 and AtLeast(2).AtMost(5).AtLeast(3) means 3..5.
+//   - When the previous configuration came from Times, Never or AnyTimes, or nothing was set (the
+//     default of exactly 1), AtLeast/AtMost start a new range: the other bound resets to its default
+//     (minimum 0, maximum unbounded), so Times(2).AtLeast(1) means 1 or more.
+//   - Every AtLeast/AtMost validates the resulting range, zero bounds included, and panics when the
+//     minimum exceeds the maximum (AtMost(0).AtLeast(1), AtLeast(3).AtMost(2)). A panicking call
+//     leaves the expectation unchanged.
 func (e *Expectation) AtLeast(n int) *Expectation {
 	if e == nil {
 		return nil
@@ -19,19 +28,19 @@ func (e *Expectation) AtLeast(n int) *Expectation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	max := -1
-	// A finite maximum with min 0 and max > 0 can only come from AtMost: keep it as the range top.
-	if e.countSet && e.min == 0 && e.max > 0 {
+	if e.kind == countRange {
 		max = e.max
-		if n > max {
-			panic(fmt.Sprintf("mock: AtLeast(%d) exceeds the maximum of %d", n, max))
-		}
 	}
-	e.countSet, e.min, e.max = true, n, max
+	if max >= 0 && n > max {
+		panic(fmt.Sprintf("mock: AtLeast(%d) exceeds the maximum of %d", n, max))
+	}
+	e.kind, e.min, e.max = countRange, n, max
 	return e
 }
 
-// AtMost allows up to n calls, including none. A call beyond n is an unexpected call. AtMost(0)
-// is Never. It combines with AtLeast into a range (see AtLeast) and panics when n is negative.
+// AtMost allows up to n calls, including none, and sets only the maximum. A call beyond n is an
+// unexpected call. AtMost(0) is Never. It combines with AtLeast into a range under the rules
+// documented on AtLeast, and panics when n is negative or below the range minimum.
 func (e *Expectation) AtMost(n int) *Expectation {
 	if e == nil {
 		return nil
@@ -43,14 +52,13 @@ func (e *Expectation) AtMost(n int) *Expectation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	min := 0
-	// An unbounded minimum from AtLeast (or AnyTimes, whose min is 0) becomes the range bottom.
-	if e.countSet && e.max < 0 {
+	if e.kind == countRange {
 		min = e.min
-		if min > n {
-			panic(fmt.Sprintf("mock: AtMost(%d) is below the minimum of %d", n, min))
-		}
 	}
-	e.countSet, e.min, e.max = true, min, n
+	if n < min {
+		panic(fmt.Sprintf("mock: AtMost(%d) is below the minimum of %d", n, min))
+	}
+	e.kind, e.min, e.max = countRange, min, n
 	return e
 }
 

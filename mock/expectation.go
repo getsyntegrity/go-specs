@@ -12,9 +12,10 @@ const mockPkgPrefix = "github.com/getsyntegrity/go-specs/mock."
 // Method.Expect and configured by chaining.
 //
 // Extension points for later work (all state is guarded by the owning Controller's mutex):
-//   - counts: min/max is the accepted call count range (max < 0 means unbounded) and countSet says
-//     whether a count method ran; without one the default is exactly 1. AtLeast/AtMost/Never/AnyTimes
-//     only set these fields through setCount.
+//   - counts: min/max is the accepted call count range (max < 0 means unbounded) and kind records
+//     how it was configured: countDefault (no count method ran: exactly 1), countExact (Times, Never
+//     or AnyTimes set both bounds) or countRange (AtLeast/AtMost set one bound each). The kind is
+//     stored explicitly so AtLeast/AtMost never infer it from the bound values.
 //   - stubbing: respond builds the Result of a claimed call; Return/Do add their state here and
 //     leave the calling code in Method.Call unchanged.
 type Expectation struct {
@@ -22,7 +23,7 @@ type Expectation struct {
 	matchers []ArgMatcher
 	site     string
 
-	countSet bool
+	kind     countKind
 	min, max int
 
 	responses [][]any           // Return: one entry per response, in call order
@@ -45,15 +46,25 @@ func (e *Expectation) Times(n int) *Expectation {
 	return e
 }
 
+// countKind says how an expectation's bounds were configured.
+type countKind uint8
+
+const (
+	countDefault countKind = iota // no count method ran: exactly 1
+	countExact                    // Times, Never or AnyTimes set both bounds
+	countRange                    // AtLeast/AtMost built the range one bound at a time
+)
+
+// setCount installs a complete configuration (Times, Never, AnyTimes), replacing any earlier one.
 func (e *Expectation) setCount(min, max int) {
 	e.m.c.mu.Lock()
-	e.countSet, e.min, e.max = true, min, max
+	e.kind, e.min, e.max = countExact, min, max
 	e.m.c.mu.Unlock()
 }
 
 // bounds returns the effective accepted call range; the caller holds the controller lock.
 func (e *Expectation) bounds() (min, max int) {
-	if !e.countSet {
+	if e.kind == countDefault {
 		return 1, 1
 	}
 	return e.min, e.max
