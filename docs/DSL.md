@@ -689,6 +689,27 @@ reflect.DeepEqual(x, y)   // true  — same pointed-to value
 
 So `EqualTo(ctx, x, y)` fails while `ctx.Expect(x).ToEqual(y)` passes, for the exact same `x`/`y`. This is the tradeoff: pick `EqualTo`/`ExpectT` for the zero-allocation, no-reflection fast path when your type's `==` already means what you want (primitives, or plain value structs with no pointer fields); pick `ctx.Expect(...).ToEqual(...)` when you need value-based deep equality for structs, slices, or maps.
 
+### Equality failures show a structural diff
+
+When `ctx.Expect(x).ToEqual(y)`, `ctx.Expect(x).To(Equal(y))` or `assert.EqualFailureMessage` reports a mismatch between composite values, the familiar first line is followed by a `differences:` section that names each mismatch by path, with the expected and the actual value found there:
+
+```
+expected {1 [{a 1} {b 2} {c 12.5}] map[] <nil>} to equal {1 [{a 1} {b 2} {c 9.99}] map[] <nil>}
+differences:
+  Order.Items[2].Price: expected 9.99, actual 12.5
+```
+
+The diff only explains a verdict that was already reached: it is built after the comparison failed, so a passing assertion allocates nothing extra, and it never changes what passes. `ValuesEqual`, typed `==` and `errors.Is` decide exactly as before.
+
+- **Supported types.** Structs (unexported fields included), slices, arrays, maps, pointers and interfaces, nested to any depth. A scalar mismatch (`42` versus `43`) and an error mismatch keep their single-line messages, since a diff would add nothing.
+- **Paths.** The root is named after its type (`Order`); an unnamed root such as `[]int` starts directly with the index (`[2]`). Fields are `.Field`, elements `[2]`, map entries `["key"]`.
+- **What is reported.** A differing value; a nil versus empty slice or map (Go treats them as different, and the line says which side is nil); a nil pointer versus a non-nil one; a type mismatch (`type mismatch: expected int (1), actual string ("1")`); a slice length difference plus each `missing in actual` or `unexpected in actual` element; a map key present on one side only.
+- **Determinism.** Map keys are visited in sorted order, so the same two maps always produce the same diff.
+- **Cycles.** A pointer, map or slice pair already being compared is treated as equal, as `reflect.DeepEqual` does, so a self-referencing value terminates. A cyclic value is rendered in the first line with the bounded renderer instead of `%v`.
+- **Opaque structs.** A struct that implements `fmt.Stringer` or `error` and has unexported fields (`time.Time`, for one) is reported as a single value using its `String()`, not field by field.
+- **Limits.** At most 10 differences are listed, followed by `... more differences not shown (limit 10)`. Paths are followed 8 segments deep; below that a single line says `differs below this point (depth limit 8 reached)`. Each rendered value shows at most 80 characters (`…` marks a cut), 4 elements or fields per container, and 3 levels of nesting.
+- **Not covered.** `EqualTo` and `ExpectT(...).ToEqual` compare with `==` and keep their one-line message. Map keys that are pointers or channels render as addresses and so order by address. Snapshot failures keep their own diff.
+
 ### Errors compare by identity, and the comparison is oriented
 
 Structural equality is the wrong question to ask about an error. `reflect.DeepEqual` dereferences two `*errorString` pointers and compares the structs, so two errors built independently from the same message compare as equal — and a wrapped error fails against the very sentinel it wraps. Both halves are wrong, and the first one is silent.
