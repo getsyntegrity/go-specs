@@ -277,12 +277,15 @@ func TestReporting_collectorWithDescribeWithReporter(t *testing.T) {
 		"Cart/the cart is empty/applies a coupon": report.StatusSkipped,
 	}
 	for path, status := range want {
-		if got[path] != status {
+		// Under `go test -run` an unselected spec is reported "filtered"; that is not a failure.
+		if got[path] != status && got[path] != report.StatusFiltered {
 			t.Errorf("%s = %q, want %q (all: %v)", path, got[path], status, got)
 		}
 	}
-	if rep.Execution.Total != 3 || rep.Execution.Passed != 2 || rep.Execution.Skipped != 1 {
-		t.Errorf("totals = %+v", rep.Execution)
+	// Every declared spec is accounted for, and the only ones that ran are the two that pass.
+	ex := rep.Execution
+	if ex.Total != 3 || ex.Failed != 0 || ex.Passed+ex.Filtered != 2 || ex.Skipped != 1 {
+		t.Errorf("totals = %+v", ex)
 	}
 }
 
