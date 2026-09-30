@@ -92,12 +92,18 @@ func (e *Expectation) describe() string {
 func (e *Expectation) countText() string {
 	min, max := e.bounds()
 	switch {
+	case max == 0:
+		return "never"
+	case max < 0 && min == 0:
+		return "any number"
 	case max < 0:
 		return fmt.Sprintf("at least %d", min)
 	case min == max:
 		return fmt.Sprintf("%d", min)
+	case min == 0:
+		return fmt.Sprintf("at most %d", max)
 	default:
-		return fmt.Sprintf("%d to %d", min, max)
+		return fmt.Sprintf("%d..%d", min, max)
 	}
 }
 
