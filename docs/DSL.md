@@ -544,6 +544,64 @@ Edge cases:
 - Specs that never call `ctx.Go` pay nothing: no allocation and no synchronization on the assertion
   path. `ctx.Go` itself allocates (a task context and a goroutine).
 
+### `ctx.Eventually` and `ctx.Consistently`: asserting on asynchronous behavior
+
+Concurrent work, such as another `ctx.Go` task, a worker, or a cache being filled, does not finish on your schedule. Two assertions poll for you instead of hand-written loops:
+
+```go
+s.It("the replica catches up", func(ctx *specs.Context) {
+    ctx.Go(func(ctx *specs.Context) { primary.Put("k", "v") })
+    ctx.Go(func(ctx *specs.Context) {
+        // Becomes true: passes on the first attempt that matches.
+        ctx.Eventually(func() any { return replica.Get("k") }, specs.Equal("v"),
+            specs.WithTimeout(2*time.Second), specs.WithInterval(5*time.Millisecond))
+    })
+})
+
+s.It("nothing is evicted while the cache is warm", func(ctx *specs.Context) {
+    // Stays true: passes only if it matches on every attempt for the whole timeout.
+    ctx.Consistently(func() any { return cache.Len() }, specs.Equal(100), specs.WithTimeout(500*time.Millisecond))
+})
+```
+
+Signatures (`assert.Eventually` and `assert.Consistently` take the same arguments and return the verdict as an `assert.PollResult` instead of failing a spec):
+
+```go
+func (c *Context) Eventually(fn func() any, m Matcher, opts ...PollOption)
+func (c *Context) Consistently(fn func() any, m Matcher, opts ...PollOption)
+
+WithTimeout(d time.Duration)   // default 1s; how long Eventually tries / Consistently must hold
+WithInterval(d time.Duration)  // default 10ms; time between attempts
+WithContext(ctx context.Context)
+WithClock(c Clock)             // default: the real clock; NewManualClock() for tests
+```
+
+The contract:
+
+- **The callback runs on every attempt.** `fn` is called again each time, so it reads the live state. Passing a value captured once would poll a constant. The first attempt is immediate.
+- **Only the final verdict fails the spec.** The matcher is evaluated once per attempt without recording anything; an attempt that does not match is remembered, not reported. A failing verdict is reported once, with the termination reason, the elapsed time, the number of attempts, the last observed value and the matcher's failure message, for example `Eventually: timed out after 2s (400 attempts)`.
+- **Termination.** `Eventually` passes at the first match and otherwise ends on timeout, cancellation, panic or invalid options. `Consistently` fails at the first mismatch, without waiting out the interval, and passes when the timeout elapses with every attempt matching.
+- **Timeout and interval.** The interval is measured from the start of one attempt to the start of the next, so a slow callback is followed at once by the next attempt. The timeout is checked between attempts: an attempt that finishes after the deadline still counts (a late match passes `Eventually`), and no further attempt runs. If the interval and the timeout come due together, the timeout wins. An interval longer than the timeout means a single attempt.
+- **Cancellation.** The context is checked before every attempt and while waiting, so an already cancelled context runs no attempt. A cancelled context fails `Eventually`, and fails `Consistently` too, because the condition was not observed for the whole interval. The failure carries `context.Canceled` or `context.DeadlineExceeded`.
+- **Blocking callbacks.** The callback runs on the calling goroutine and go-specs never interrupts it, because Go cannot forcibly stop arbitrary code. The helpers start no goroutines, so none survive them. A callback that blocks blocks its spec, so a callback that can wait must watch the context it hands to `WithContext` (or its own deadline).
+- **Panics.** A panic in the callback or in the matcher is recovered and becomes the final verdict, a spec failure with the panic value and stack, and polling stops. It is not retried. `runtime.Goexit` (for example `ctx.T.FailNow()` inside the callback) is not recoverable and ends the calling goroutine as it always does.
+- **Invalid arguments** (a non-positive timeout or interval, a nil context, clock, option, callback or matcher) fail the spec with an `invalid arguments` message and run no attempt. All problems are listed.
+- **Inside `ctx.Go`.** Both methods work on a task's own `*Context`, so a task can poll while another task produces. The failure is charged to the spec that started the task.
+
+To test polling without sleeping, drive a `NewManualClock()` from the callback: time passes only when `Advance` is called, so the outcome is deterministic.
+
+```go
+clock := specs.NewManualClock()
+attempts := 0
+ctx.Eventually(func() any {
+    attempts++
+    clock.Advance(10 * time.Millisecond) // one interval passes per attempt
+    return attempts
+}, specs.Equal(3), specs.WithClock(clock))
+```
+
+Existing assertions are unchanged, and specs that never call these methods pay nothing.
+
 ### Context lifecycle at a glance
 
 - A spec's `ctx` is valid while its body, its `BeforeEach`/`AfterEach` hooks and its `ctx.Go` tasks
