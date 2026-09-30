@@ -150,3 +150,46 @@ func isScalarKind(k reflect.Kind) bool {
 	}
 	return false
 }
+
+// truncationMarker is what a fallback renderer prints where it ran out of node budget. A diagnostic
+// never drops content silently.
+const truncationMarker = "<truncated>"
+
+// renderLimits are the bounds of one bounded renderer: how deep it descends, how many elements of a
+// collection it prints, and how many values (nodes) it visits in total. The structural diff and the
+// poll and matcher renderer share the machinery but keep their own limits and formats.
+type renderLimits struct{ maxDepth, maxElems, nodeBudget int }
+
+// diffRenderLimits bound one value in a structural diff line. Depth and element limits already cap a
+// rendering at a few hundred nodes; the budget is the backstop that keeps the guarantee explicit.
+var diffRenderLimits = renderLimits{maxDepth: renderMaxDepth, maxElems: renderMaxElems, nodeBudget: 1024}
+
+// pollRenderLimits bound a value in a poll result or a matcher message.
+var pollRenderLimits = renderLimits{maxDepth: boundedMaxDepth, maxElems: boundedMaxElems, nodeBudget: boundedNodeBudget}
+
+// nodeBudget counts the values one render visits. Once take reports false, hit stays true and the
+// renderer stops descending.
+type nodeBudget struct {
+	left int
+	hit  bool
+}
+
+func (b *nodeBudget) take() bool {
+	if b.left <= 0 {
+		b.hit = true
+		return false
+	}
+	b.left--
+	return true
+}
+
+// cutRunes returns the first n runes of s, without copying the rest.
+func cutRunes(s string, n int) string {
+	for i := range s {
+		if n == 0 {
+			return s[:i]
+		}
+		n--
+	}
+	return s
+}

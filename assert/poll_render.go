@@ -37,17 +37,25 @@ func renderBounded(v any, verb string) string {
 	if safeForFmt(rv) {
 		return fmt.Sprintf(verb, v)
 	}
+	return renderFallback(rv)
+}
+
+// renderFallback prints v with the bounded renderer: depth, element and node limits, a marker on a
+// cycle, and no user method ever called.
+func renderFallback(v reflect.Value) string {
 	var b strings.Builder
-	r := renderer{path: map[refKey]bool{}, b: &b}
-	r.write(rv, 0)
+	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}}
+	r.write(v, 0)
 	return b.String()
 }
 
-// renderer prints a value with a depth limit, an element limit and cycle detection. It reads values
-// by kind, never through Interface, so it also works on unexported struct fields.
+// renderer prints a value with a depth limit, an element limit, a node budget and cycle detection. It
+// reads values by kind, never through Interface, so it also works on unexported struct fields and never
+// runs a String, Error, Format or GoString method.
 type renderer struct {
-	path map[refKey]bool
-	b    *strings.Builder
+	path  map[refKey]bool
+	b     *strings.Builder
+	nodes *nodeBudget
 }
 
 func (r *renderer) write(v reflect.Value, depth int) {
@@ -57,6 +65,10 @@ func (r *renderer) write(v reflect.Value, depth int) {
 	}
 	if depth > boundedMaxDepth {
 		r.b.WriteString("...")
+		return
+	}
+	if !r.nodes.take() {
+		r.b.WriteString(truncationMarker)
 		return
 	}
 	if key, ok := refIdentity(v); ok {
@@ -94,16 +106,27 @@ func (r *renderer) write(v reflect.Value, depth int) {
 				break
 			}
 			r.write(v.Index(i), depth+1)
+			if r.nodes.hit {
+				break
+			}
 		}
 		r.b.WriteString("}")
 	case reflect.Struct:
-		r.b.WriteString(v.Type().String() + "{")
+		t := v.Type()
+		r.b.WriteString(t.String() + "{")
 		for i := 0; i < v.NumField(); i++ {
 			if i > 0 {
 				r.b.WriteString(", ")
 			}
-			r.b.WriteString(v.Type().Field(i).Name + ":")
+			if i == boundedMaxElems {
+				fmt.Fprintf(r.b, "... %d more", v.NumField()-i)
+				break
+			}
+			r.b.WriteString(t.Field(i).Name + ":")
 			r.write(v.Field(i), depth+1)
+			if r.nodes.hit {
+				break
+			}
 		}
 		r.b.WriteString("}")
 	default:
@@ -111,31 +134,57 @@ func (r *renderer) write(v reflect.Value, depth int) {
 	}
 }
 
+// mapSortCap is the largest map whose keys are all rendered and sorted by their text. A larger map
+// prints only its boundedMaxElems smallest keys in the total order of compareMapKeys, so the work stays
+// bounded and the choice does not depend on map iteration order.
+const mapSortCap = 1024
+
+type renderedEntry struct {
+	key  string
+	pair mapEntry
+}
+
 func (r *renderer) writeMap(v reflect.Value, depth int) {
 	r.b.WriteString(v.Type().String() + "{")
-	type entry struct {
-		key string
-		val reflect.Value
+	var picked []mapEntry
+	total := v.Len()
+	if total > mapSortCap {
+		picked, _ = smallestMapEntries(v, boundedMaxElems)
+	} else {
+		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
 	}
-	var entries []entry
-	iter := v.MapRange()
-	for iter.Next() {
+	entries := make([]renderedEntry, len(picked))
+	for i, e := range picked {
 		var kb strings.Builder
-		kr := renderer{path: r.path, b: &kb}
-		kr.write(iter.Key(), depth+1)
-		entries = append(entries, entry{kb.String(), iter.Value()})
+		kr := renderer{path: r.path, b: &kb, nodes: r.nodes}
+		kr.write(e.key, depth+1)
+		entries[i] = renderedEntry{kb.String(), e}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	// Ties in the rendered key (NaN keys, keys that render alike) fall back to the shared key and value
+	// order, so the output never depends on the order the runtime iterates the map.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if c := strings.Compare(entries[i].key, entries[j].key); c != 0 {
+			return c < 0
+		}
+		return compareMapEntries(entries[i].pair, entries[j].pair) < 0
+	})
 	for i, e := range entries {
 		if i > 0 {
 			r.b.WriteString(", ")
 		}
 		if i == boundedMaxElems {
-			fmt.Fprintf(r.b, "... %d more", len(entries)-i)
+			fmt.Fprintf(r.b, "... %d more", total-i)
 			break
 		}
 		r.b.WriteString(e.key + ":")
-		r.write(e.val, depth+1)
+		r.write(e.pair.val, depth+1)
+		if r.nodes.hit {
+			r.b.WriteString("}")
+			return
+		}
+	}
+	if len(entries) <= boundedMaxElems && total > len(entries) {
+		fmt.Fprintf(r.b, ", ... %d more", total-len(entries))
 	}
 	r.b.WriteString("}")
 }

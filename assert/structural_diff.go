@@ -5,6 +5,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,7 @@ type diffWalker struct {
 	limit   int  // stop once more than limit entries exist
 	depth   int  // paths deeper than this are summarised
 	opaque  bool // when set, Stringer structs with hidden fields are walked, not treated as values
+	methods bool // both values passed safeForFmt, so rendering may use their String and Error text
 	visited map[refPair]bool
 }
 
@@ -46,7 +48,8 @@ func structuralDiff(expected, actual any) string {
 	if !isDiffComposite(ev) && !isDiffComposite(av) {
 		return ""
 	}
-	w := &diffWalker{limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{}}
+	w := &diffWalker{limit: diffMaxEntries, depth: diffMaxDepth, visited: map[refPair]bool{},
+		methods: safeForFmt(ev) && safeForFmt(av)}
 	w.walk(ev, av, diffRootLabel(ev, av), 0)
 	if len(w.entries) == 0 {
 		return ""
@@ -96,6 +99,9 @@ func diffRootLabel(values ...reflect.Value) string {
 	return ""
 }
 
+// render renders v for one diff line with this walk's method policy.
+func (w *diffWalker) render(v reflect.Value) string { return renderDiffValue(v, w.methods) }
+
 func (w *diffWalker) full() bool { return len(w.entries) > w.limit }
 
 func (w *diffWalker) add(path, detail string) {
@@ -119,7 +125,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 	}
 	if !a.IsValid() || !b.IsValid() {
 		if a.IsValid() != b.IsValid() {
-			w.add(path, fmt.Sprintf("expected %s, actual %s", renderDiffValue(a, 0), renderDiffValue(b, 0)))
+			w.add(path, fmt.Sprintf("expected %s, actual %s", w.render(a), w.render(b)))
 		}
 		return
 	}
@@ -136,7 +142,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 	case reflect.Interface:
 		if a.IsNil() || b.IsNil() {
 			if a.IsNil() != b.IsNil() {
-				w.add(path, fmt.Sprintf("expected %s, actual %s", renderDiffValue(a, 0), renderDiffValue(b, 0)))
+				w.add(path, fmt.Sprintf("expected %s, actual %s", w.render(a), w.render(b)))
 			}
 			return
 		}
@@ -144,7 +150,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 	case reflect.Pointer:
 		if a.IsNil() || b.IsNil() {
 			if a.IsNil() != b.IsNil() {
-				w.add(path, fmt.Sprintf("expected %s, actual %s", renderDiffValue(a, 0), renderDiffValue(b, 0)))
+				w.add(path, fmt.Sprintf("expected %s, actual %s", w.render(a), w.render(b)))
 			}
 			return
 		}
@@ -164,7 +170,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 		}
 	default:
 		if !diffScalarEqual(a, b) {
-			w.add(path, fmt.Sprintf("expected %s, actual %s", renderDiffValue(a, 0), renderDiffValue(b, 0)))
+			w.add(path, fmt.Sprintf("expected %s, actual %s", w.render(a), w.render(b)))
 		}
 	}
 }
@@ -173,7 +179,7 @@ func (w *diffWalker) walk(a, b reflect.Value, path string, depth int) {
 func (w *diffWalker) walkElemTypes(a, b reflect.Value, path string, depth int) {
 	if a.Type() != b.Type() {
 		w.add(path, fmt.Sprintf("type mismatch: expected %s (%s), actual %s (%s)",
-			a.Type(), renderDiffValue(a, 0), b.Type(), renderDiffValue(b, 0)))
+			a.Type(), w.render(a), b.Type(), w.render(b)))
 		return
 	}
 	w.walk(a, b, path, depth)
@@ -193,7 +199,7 @@ func (w *diffWalker) walkStruct(a, b reflect.Value, path string, depth int) {
 	if !w.opaque && isOpaqueStruct(a) && a.CanInterface() && b.CanInterface() {
 		// time.Time and friends: their fields are an implementation detail, their String is the value.
 		if w.differs(a, b) {
-			w.add(path, fmt.Sprintf("expected %s, actual %s", renderDiffValue(a, 0), renderDiffValue(b, 0)))
+			w.add(path, fmt.Sprintf("expected %s, actual %s", w.render(a), w.render(b)))
 		}
 		return
 	}
@@ -233,7 +239,7 @@ func joinField(path, name string) string {
 func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 	if a.Kind() == reflect.Slice {
 		if a.IsNil() != b.IsNil() {
-			w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a), describeNilness(b)))
+			w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods), describeNilness(b, w.methods)))
 			return
 		}
 		if a.Pointer() == b.Pointer() && a.Len() == b.Len() {
@@ -254,16 +260,16 @@ func (w *diffWalker) walkList(a, b reflect.Value, path string, depth int) {
 		w.walk(a.Index(i), b.Index(i), fmt.Sprintf("%s[%d]", path, i), depth+1)
 	}
 	for i := common; i < la; i++ {
-		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(a.Index(i), 0)))
+		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("missing in actual (expected %s)", w.render(a.Index(i))))
 	}
 	for i := common; i < lb; i++ {
-		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(b.Index(i), 0)))
+		w.add(fmt.Sprintf("%s[%d]", path, i), fmt.Sprintf("unexpected in actual (%s)", w.render(b.Index(i))))
 	}
 }
 
 func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	if a.IsNil() != b.IsNil() {
-		w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a), describeNilness(b)))
+		w.add(path, fmt.Sprintf("expected %s, actual %s", describeNilness(a, w.methods), describeNilness(b, w.methods)))
 		return
 	}
 	if a.Pointer() == b.Pointer() || w.seen(a, b) {
@@ -287,7 +293,7 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 	for i, e := range entries {
 		keys[i] = e.key
 	}
-	labels := disambiguatedKeyLabels(keys)
+	labels := disambiguatedKeyLabels(keys, w.methods)
 	for i, e := range entries {
 		if !e.fromA {
 			continue
@@ -295,7 +301,7 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 		keyPath := fmt.Sprintf("%s[%s]", path, labels[i])
 		bv := b.MapIndex(e.key)
 		if !bv.IsValid() {
-			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", renderDiffValue(e.val, 0)))
+			w.add(keyPath, fmt.Sprintf("missing in actual (expected %s)", w.render(e.val)))
 			continue
 		}
 		w.walk(e.val, bv, keyPath, depth+1)
@@ -305,7 +311,7 @@ func (w *diffWalker) walkMap(a, b reflect.Value, path string, depth int) {
 			continue
 		}
 		w.add(fmt.Sprintf("%s[%s]", path, labels[i]),
-			fmt.Sprintf("unexpected in actual (%s)", renderDiffValue(e.val, 0)))
+			fmt.Sprintf("unexpected in actual (%s)", w.render(e.val)))
 	}
 }
 
@@ -344,11 +350,11 @@ func compareMapEntries(x, y mapEntry) int {
 // two or more distinct keys (long strings with a common prefix, structs differing past the rendered
 // fields) gets its 1-based ordinal among the colliding keys appended after a space, inside the
 // brackets: `["kkkk… #1]`, `["kkkk… #2]`. Labels that are unique are left exactly as rendered.
-func disambiguatedKeyLabels(keys []reflect.Value) []string {
+func disambiguatedKeyLabels(keys []reflect.Value, methods bool) []string {
 	labels := make([]string, len(keys))
 	count := make(map[string]int, len(keys))
 	for i, k := range keys {
-		labels[i] = renderDiffValue(k, 0)
+		labels[i] = renderDiffValue(k, methods)
 		count[labels[i]]++
 	}
 	seen := make(map[string]int)
@@ -361,12 +367,38 @@ func disambiguatedKeyLabels(keys []reflect.Value) []string {
 	return labels
 }
 
-// sortedMapEntries returns the entries of m ordered by compareMapEntries, so the same two maps always
-// produce the same diff whatever order the runtime iterates them in.
-func sortedMapEntries(m reflect.Value) []mapEntry {
-	entries := rangeMapEntries(m, true, make([]mapEntry, 0, m.Len()))
-	sort.SliceStable(entries, func(i, j int) bool { return compareMapEntries(entries[i], entries[j]) < 0 })
-	return entries
+// smallestMapEntries returns the k first entries of m in compareMapEntries order, and the number of
+// entries m holds. It makes one MapRange pass and keeps a sorted window of k, so a huge map costs one
+// comparison per entry (plus a few for the entries that enter the window) instead of a full sort, and
+// the same two maps always give the same window whatever order the runtime iterates them in.
+func smallestMapEntries(m reflect.Value, k int) (top []mapEntry, total int) {
+	top = make([]mapEntry, 0, min(m.Len(), k))
+	for it := m.MapRange(); it.Next(); {
+		total++
+		key := it.Key()
+		// The value is only fetched when the key ties or the entry enters the window, so an entry
+		// that is clearly out costs one key comparison and no value copy.
+		pos := len(top)
+		for pos > 0 {
+			c := compareMapKeys(key, top[pos-1].key)
+			if c == 0 {
+				c = compareMapEntries(mapEntry{key: key, val: it.Value(), fromA: true}, top[pos-1])
+			}
+			if c >= 0 {
+				break
+			}
+			pos--
+		}
+		if pos >= k {
+			continue
+		}
+		if len(top) < k {
+			top = append(top, mapEntry{})
+		}
+		copy(top[pos+1:], top[pos:])
+		top[pos] = mapEntry{key: key, val: it.Value(), fromA: true}
+	}
+	return top, total
 }
 
 // compareMapKeys is a total order over every comparable key kind, reading only through reflect (never
@@ -482,7 +514,7 @@ func cmpFloat(a, b float64) int {
 
 // describeNilness says which side of a nil-versus-non-nil slice or map difference a value is on,
 // because reflect.DeepEqual treats nil and empty as different and the reader needs to see why.
-func describeNilness(v reflect.Value) string {
+func describeNilness(v reflect.Value, methods bool) string {
 	kind := "slice"
 	if v.Kind() == reflect.Map {
 		kind = "map"
@@ -493,7 +525,7 @@ func describeNilness(v reflect.Value) string {
 	case v.Len() == 0:
 		return "empty non-nil " + kind
 	default:
-		return "non-nil " + kind + " " + renderDiffValue(v, 0)
+		return "non-nil " + kind + " " + renderDiffValue(v, methods)
 	}
 }
 
@@ -518,79 +550,116 @@ func diffScalarEqual(a, b reflect.Value) bool {
 	return true
 }
 
-// renderDiffValue renders v for one diff line: bounded in depth, in element count and in length,
-// and safe on unexported fields and cyclic values. It never calls Interface, so it cannot panic on a
-// value reached through an unexported field.
-func renderDiffValue(v reflect.Value, depth int) string {
-	s := renderValue(v, depth)
+// renderDiffValue renders v for one diff line: bounded in depth, in element count, in node count and
+// in length, and safe on unexported fields and cyclic values. It reads by kind and never calls
+// Interface except for a value that may render itself: methods says the value passed safeForFmt, so a
+// named scalar or an opaque struct may use its own String or Error text, exactly as in an ordinary
+// message. With methods false (a cyclic or oversized value) no user method is ever called.
+func renderDiffValue(v reflect.Value, methods bool) string {
+	return renderDiffLimited(v, diffRenderLimits, methods)
+}
+
+func renderDiffLimited(v reflect.Value, lim renderLimits, methods bool) string {
+	r := diffRenderer{lim: lim, methods: methods, nodes: nodeBudget{left: lim.nodeBudget}}
+	s := r.render(v, 0)
 	if r := []rune(s); len(r) > diffMaxValueRunes {
 		return string(r[:diffMaxValueRunes]) + "…"
 	}
 	return s
 }
 
-func renderValue(v reflect.Value, depth int) string {
+// diffRenderer holds the state of one renderDiffValue call: its limits, whether user methods may be
+// used, and the node budget shared by every value the call visits.
+type diffRenderer struct {
+	lim     renderLimits
+	methods bool
+	nodes   nodeBudget
+}
+
+// usesMethods reports whether v renders itself through fmt: only on the ordinary path, and only for a
+// value fmt is allowed to call methods on.
+func (r *diffRenderer) usesMethods(v reflect.Value) bool {
+	return r.methods && v.CanInterface() && v.Type().NumMethod() > 0
+}
+
+func (r *diffRenderer) render(v reflect.Value, depth int) string {
 	if !v.IsValid() {
 		return "nil"
 	}
+	if !r.nodes.take() {
+		return truncationMarker
+	}
 	switch v.Kind() {
 	case reflect.String:
-		return fmt.Sprintf("%q", v.String())
+		if r.usesMethods(v) {
+			return fmt.Sprintf("%q", v)
+		}
+		// Cut before quoting so a huge string is never copied whole; the caller cuts the quoted text
+		// to the same number of runes, and quoting never shortens a rune, so the result is identical.
+		return strconv.Quote(cutRunes(v.String(), diffMaxValueRunes))
 	case reflect.Interface:
 		if v.IsNil() {
 			return "nil"
 		}
-		return renderValue(v.Elem(), depth)
+		return r.render(v.Elem(), depth)
 	case reflect.Pointer:
 		if v.IsNil() {
 			return "nil"
 		}
-		if depth >= renderMaxDepth {
+		if depth >= r.lim.maxDepth {
 			return "&…"
 		}
-		return "&" + renderValue(v.Elem(), depth+1)
+		return "&" + r.render(v.Elem(), depth+1)
 	case reflect.Struct:
-		if depth >= renderMaxDepth {
+		if depth >= r.lim.maxDepth {
 			return "{…}"
 		}
-		if v.CanInterface() && isOpaqueStruct(v) {
+		if r.methods && v.CanInterface() && isOpaqueStruct(v) {
 			return fmt.Sprint(v.Interface())
 		}
 		t := v.Type()
-		parts := make([]string, 0, min(v.NumField(), renderMaxElems)+1)
+		parts := make([]string, 0, min(v.NumField(), r.lim.maxElems)+1)
 		for i := 0; i < v.NumField(); i++ {
-			if i == renderMaxElems {
+			if i == r.lim.maxElems {
 				parts = append(parts, "…")
 				break
 			}
-			parts = append(parts, t.Field(i).Name+": "+renderValue(v.Field(i), depth+1))
+			parts = append(parts, t.Field(i).Name+": "+r.render(v.Field(i), depth+1))
+			if r.nodes.hit {
+				break
+			}
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case reflect.Slice, reflect.Array:
-		if depth >= renderMaxDepth {
+		if depth >= r.lim.maxDepth {
 			return "[…]"
 		}
 		n := v.Len()
-		parts := make([]string, 0, min(n, renderMaxElems)+1)
-		for i := 0; i < n && i < renderMaxElems; i++ {
-			parts = append(parts, renderValue(v.Index(i), depth+1))
+		parts := make([]string, 0, min(n, r.lim.maxElems)+1)
+		for i := 0; i < n && i < r.lim.maxElems; i++ {
+			parts = append(parts, r.render(v.Index(i), depth+1))
+			if r.nodes.hit {
+				return "[" + strings.Join(parts, ", ") + "]"
+			}
 		}
-		if n > renderMaxElems {
-			parts = append(parts, fmt.Sprintf("… +%d more", n-renderMaxElems))
+		if n > r.lim.maxElems {
+			parts = append(parts, fmt.Sprintf("… +%d more", n-r.lim.maxElems))
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case reflect.Map:
-		if depth >= renderMaxDepth {
+		if depth >= r.lim.maxDepth {
 			return "map[…]"
 		}
-		entries := sortedMapEntries(v)
-		parts := make([]string, 0, min(len(entries), renderMaxElems)+1)
-		for i, e := range entries {
-			if i == renderMaxElems {
-				parts = append(parts, fmt.Sprintf("… +%d more", len(entries)-renderMaxElems))
-				break
+		entries, total := smallestMapEntries(v, r.lim.maxElems)
+		parts := make([]string, 0, len(entries)+1)
+		for _, e := range entries {
+			parts = append(parts, r.render(e.key, depth+1)+": "+r.render(e.val, depth+1))
+			if r.nodes.hit {
+				return "map[" + strings.Join(parts, ", ") + "]"
 			}
-			parts = append(parts, renderValue(e.key, depth+1)+": "+renderValue(e.val, depth+1))
+		}
+		if total > r.lim.maxElems {
+			parts = append(parts, fmt.Sprintf("… +%d more", total-r.lim.maxElems))
 		}
 		return "map[" + strings.Join(parts, ", ") + "]"
 	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
@@ -599,8 +668,34 @@ func renderValue(v reflect.Value, depth int) string {
 		}
 		return v.Type().String()
 	default:
+		return r.leaf(v)
+	}
+}
+
+// leaf renders a scalar. A named scalar with methods keeps its String text on the ordinary path (a
+// time.Duration reads 1s); otherwise the text is built from the kind alone, which is what fmt prints
+// for a value without methods.
+func (r *diffRenderer) leaf(v reflect.Value) string {
+	if r.usesMethods(v) {
 		return fmt.Sprintf("%v", v)
 	}
+	switch v.Kind() {
+	case reflect.Bool:
+		return strconv.FormatBool(v.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(v.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(v.Uint(), 10)
+	case reflect.Float32:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 32)
+	case reflect.Float64:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+	case reflect.Complex64:
+		return strconv.FormatComplex(v.Complex(), 'g', -1, 64)
+	case reflect.Complex128:
+		return strconv.FormatComplex(v.Complex(), 'g', -1, 128)
+	}
+	return "<" + v.Type().String() + ">"
 }
 
 // deepCompareBudget bounds the nodes one compareDeepValues call visits, so a tie-break over a huge
