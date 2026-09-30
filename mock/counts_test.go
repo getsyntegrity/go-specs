@@ -124,7 +124,7 @@ func TestNeverViolatedImmediately(t *testing.T) {
 	c := mock.NewController(tb)
 	c.Method("Delete").Expect("u1").Never()
 	c.Method("Delete").Call("u1")
-	wantErrContains(t, tb, `unexpected call Delete("u1")`, "declared at", "counts_test.go:", "says never")
+	wantErrContains(t, tb, `forbidden call Delete("u1")`, "declared at", "counts_test.go:", "says never")
 	c.Verify()
 	if len(tb.errs()) != 1 {
 		t.Fatalf("Verify must not add errors: %q", tb.errs())

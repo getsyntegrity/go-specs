@@ -39,7 +39,8 @@ func (e *Expectation) AtLeast(n int) *Expectation {
 }
 
 // AtMost allows up to n calls, including none, and sets only the maximum. A call beyond n is an
-// unexpected call. AtMost(0) is Never. It combines with AtLeast into a range under the rules
+// unexpected call. AtMost(0), also as the final bound of a range such as AtLeast(0).AtMost(0), is
+// Never: a prohibition that takes precedence over permissive expectations. It combines with AtLeast into a range under the rules
 // documented on AtLeast, and panics when n is negative or below the range minimum.
 func (e *Expectation) AtMost(n int) *Expectation {
 	if e == nil {
@@ -62,8 +63,11 @@ func (e *Expectation) AtMost(n int) *Expectation {
 	return e
 }
 
-// Never declares that no call may match: a matching call is reported immediately as an unexpected
-// call. It is equivalent to Times(0) and AtMost(0). To assert that a whole method was never called,
+// Never declares that no call may match: a matching call is reported immediately as a forbidden
+// call. It is equivalent to Times(0) and AtMost(0) (any expectation whose effective maximum is 0)
+// and acts as a prohibition: it takes precedence over every permissive expectation matching the
+// same call, whatever the declaration order, so Expect(mock.Any()).AnyTimes() cannot swallow it.
+// A forbidden call runs no Return/Do, feeds no captor and yields a zero Result. To assert that a whole method was never called,
 // declare Expect(...).Never() with one matcher per argument (mock.Any() for each), or check
 // len(method.Calls()) == 0 after the code under test ran.
 func (e *Expectation) Never() *Expectation {
