@@ -208,6 +208,30 @@ s.It("adds numbers", func(ctx *specs.Context) {
 
 Each `It` is compiled into a step sequence: before hooks (outer to inner), then the spec body, then after hooks (inner to outer).
 
+## Table-driven specs: `specs.Table` and `specs.TableParallel`
+
+`Table` registers one spec per typed row. It is shorthand for a `for` loop around `It`, which stays fully supported; it is not a second execution engine.
+
+```go
+specs.Describe(t, "add", func(s *specs.Spec) {
+    specs.Table(s, cases, func(c addCase) string { return c.name },
+        func(ctx *specs.Context, c addCase) {
+            ctx.Expect(add(c.a, c.b)).ToEqual(c.want)
+        })
+})
+```
+
+Every row is an ordinary `It`: its own Go subtest (`go test -run 'TestAdd/add/negative'` runs one row), wrapped by the enclosing `BeforeEach`/`AfterEach`, reported as its own spec and failing on its own. `Table` adds no hierarchy segment (the row above is `add/negative`); wrap it in `s.When` if you want a grouping segment. `examples/table` walks through migrating a plain `t.Run` table test.
+
+Rules, all checked before any row is registered (a rejected table registers nothing, and the panic names the rows by index):
+
+- A row name must not be empty.
+- Row names must be unique. A duplicate would be disambiguated as `name#01` by `go test` and make `-run` ambiguous, so it is a registration panic. Names that differ only by whitespace versus `_` also count as duplicates, because `go test` rewrites spaces to underscores.
+- `name` and `body` must not be nil.
+- `rows` is copied when `Table` is called and each body call gets its own copy of the row; pointers, slices and maps inside a row stay shared. `name` runs once per row at registration.
+
+`TableParallel` registers rows with `ItParallel`, so consecutive rows run concurrently under the semantics described in the `ItParallel` section. Rows must not write shared state without their own synchronization.
+
 ## Shared behaviors: reusing specs across implementations
 
 A "shared behavior" — the same set of specs applied to several implementations of one interface —

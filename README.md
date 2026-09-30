@@ -221,13 +221,14 @@ Reproducible benchmark suite: [benchmarks/](benchmarks). From the repository roo
 
 ## Architecture overview
 
-go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel`, on both the `Describe`/`Spec` path and the Builder) are grouped and run concurrently, then execution continues sequentially — `Spec.ItParallel` launches each parallel spec as its own real Go subtest with a live `ctx.T`, while `Builder.ItParallel` shares one worker-style step with `ctx.T == nil`; see [docs/DSL.md](docs/DSL.md#itparallel). `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The repository is a single Go module; packages include:
+go-specs compiles a spec tree (from `Describe` / `It` / `BeforeEach` / etc.) into an execution plan once. The runner then executes that plan in order: for each spec it runs before hooks, the spec body, and after hooks (LIFO). No maps or reflection are used at run time; the plan is a flat sequence of steps with direct function pointers. Parallel specs (`ItParallel`, on both the `Describe`/`Spec` path and the Builder) are grouped and run concurrently, then execution continues sequentially — `Spec.ItParallel` launches each parallel spec as its own real Go subtest with a live `ctx.T`, while `Builder.ItParallel` shares one worker-style step with `ctx.T == nil`; see [docs/DSL.md](docs/DSL.md#itparallel). `MinimalRunner.RunParallel`/`RunParallelBatched` offer an additional opt-in worker-pool execution path, distributing specs across goroutines instead of the default sequential loop. The core is a single Go module (the property-testing package is a nested one, so the core has no extra dependency); packages include:
 
 - **specs** — Core DSL, runner, context, and execution plan
 - **assert** — Matcher implementations (Equal, BeTrue, BeNil, HaveLen, BeEmpty, StartWith, EndWith, MatchRegex, HaveKey, HavePair, ContainAllOf, BeOneOf, BeGreaterThan, BeBetween, BeZero, Satisfy, etc.) and composition (Not, All, Any)
 - **benchmarks** — Benchmark suite (go-specs vs Testify vs Gomega)
 - **mock** — Spies, argument matchers and `Controller` expectations for interface mocks ([examples/mocks](examples/mocks))
 - **snapshots** — Snapshot testing support
+- **property** — Property testing with shrinking and replay, a separate Go module that depends on `pgregory.net/rapid` ([docs/PROPERTY_TESTING.md](docs/PROPERTY_TESTING.md))
 - **examples** — Example tests (basic, hooks, parallel, and more)
 
 ## Running benchmarks
