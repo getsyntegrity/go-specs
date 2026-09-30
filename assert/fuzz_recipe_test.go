@@ -148,7 +148,8 @@ type fzGraph struct {
 	rd       *fzReader // positioned at the tail; use tail() for a fresh reader
 	addrKeys bool      // some map is keyed by a pointer: its text may legitimately depend on addresses
 	data     []byte    // the recipe
-	heavy    int       // elements the wide kinds may still allocate in this graph
+	twins    map[[2]byte]*fzGraph
+	heavy    int // elements the wide kinds may still allocate in this graph
 }
 
 // fzHeavyBudget bounds the elements of every wide map and big slice in one graph, so a recipe that
@@ -667,6 +668,11 @@ func (g *fzGraph) tail() *fzReader { return &fzReader{data: g.rd.data, pos: g.rd
 // addresses). A recipe shorter than its own node table has nothing to change.
 func (g *fzGraph) twin(tl *fzReader) *fzGraph {
 	i, x := int(tl.next())%g.n, tl.next()|1
+	// One twin per change, built once: a diagnostic run again on this graph must see the same twin, at
+	// the same addresses, or the relative address order of two pointer keys could change between runs.
+	if t, ok := g.twins[[2]byte{byte(i), x}]; ok {
+		return t
+	}
 	data := append([]byte(nil), g.data...)
 	kind, param := 3+2*i, 3+2*i+1
 	if param < len(data) {
@@ -675,7 +681,15 @@ func (g *fzGraph) twin(tl *fzReader) *fzGraph {
 			data[param] ^= x
 		}
 	}
-	return fzBuild(data)
+	t := fzBuild(data)
+	if g.twins == nil {
+		g.twins = map[[2]byte]*fzGraph{}
+	}
+	g.twins[[2]byte{byte(i), x}] = t
+	// The twin's pointer keys are other objects than this graph's: the order of a key of one against
+	// a key of the other is by address, so a graph with a pointer-keyed twin is address-ordered too.
+	g.addrKeys = g.addrKeys || t.addrKeys
+	return t
 }
 
 // operandB is the second operand of a diagnostic, chosen by one tail byte: node b of this graph, or
