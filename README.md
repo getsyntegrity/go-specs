@@ -18,7 +18,7 @@ go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expe
   `BeforeAll`/`AfterAll` (once per group) for structured specs
 - **Deterministic execution** — Specs run in declaration order; no map iteration or nondeterministic scheduling
 - **Low overhead** — Zero allocations on the typed assertion path, for values of any size; compiled execution plan
-- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, `ContainAllOf`, `BeOneOf`, `BeGreaterThan`, `BeBetween`, `BeZero`, `Satisfy`, etc.), composable with `Not`/`All`/`Any`, and snapshot testing
+- **Rich assertions** — `Expect(x).ToEqual(y)`, matchers (`BeTrue`, `Equal`, `BeNil`, `HaveLen`, `BeEmpty`, `StartWith`, `EndWith`, `MatchRegex`, `HaveKey`, `HavePair`, `ContainAllOf`, `BeOneOf`, `BeGreaterThan`, `BeBetween`, `BeZero`, `Satisfy`, etc.), composable with `Not`/`All`/`Any`, `ctx.Eventually`/`ctx.Consistently` polling assertions, and snapshot testing
 - **Lightweight mocking** — Spies, argument matchers and `mock.Controller` (stubbing, counts, captors, call order, automatic verification at cleanup) for hand-written typed adapters, without code generation; see [docs/DSL.md](docs/DSL.md#mocking-interfaces-with-mockcontroller)
 
 ## Installation
