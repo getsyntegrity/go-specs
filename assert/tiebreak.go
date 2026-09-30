@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"math/bits"
 	"reflect"
 	"sort"
 )
@@ -32,14 +33,29 @@ import (
 // by nil-ness only. Only reflect is used and never Interface, so user methods are never called and
 // unexported fields work.
 //
-// Limits: fingerprintMaxBytes bytes, fingerprintMaxDepth levels and fingerprintMaxMapEntries entries
-// per nested map (a larger nested map is recorded by its length only and marked incomplete). Each
-// nested map entry gets an equal share of the bytes left, so which part of a map is cut never depends
-// on iteration order.
+// Limits per entry: fingerprintMaxBytes bytes, fingerprintMaxNodes values visited, fingerprintMaxDepth
+// levels and fingerprintMaxMapEntries entries per nested map (a larger nested map is recorded by its
+// length only and marked incomplete). Each nested map entry gets an equal share of the bytes and of
+// the nodes left, so which part of a map is cut never depends on iteration order. Sorting the entries
+// of a nested map is charged to the nodes as well, up front, so a map whose sort does not fit is
+// recorded by its length only.
+//
+// Limit per message: the cost of a single entry is bounded, but a message can hold thousands of tied
+// entries and render the same map many times, so the work of all the fingerprints of one message is
+// bounded too, by fingerprintMessageBudget nodes (see fpMeter). The budget is split without looking at
+// iteration order: the tied entries of a map are counted first, and each of them gets the same
+// allowance. An entry that runs out of allowance is cut, deterministically, and entries that agree on
+// what was visited form an ambiguity group as before; running out of budget is never a claim of
+// equality.
 const (
 	fingerprintMaxBytes      = 4096
+	fingerprintMaxNodes      = 4096
 	fingerprintMaxDepth      = 64
 	fingerprintMaxMapEntries = 256
+
+	// fingerprintMessageBudget is the number of nodes all the fingerprints of one diagnostic message
+	// may visit together. At about 150 ns a node it costs a few milliseconds at most.
+	fingerprintMessageBudget = 32768
 )
 
 // ambiguousValueMarker replaces the value of an entry that cannot be told apart from another entry
@@ -53,10 +69,11 @@ type valueFingerprint struct {
 	complete bool
 }
 
-// newValueFingerprint returns a fingerprint that owns its bytes.
+// newValueFingerprint returns a fingerprint that owns its bytes, computed with the whole per-entry
+// allowance and no message meter. Production code fingerprints through an fpMeter instead.
 func newValueFingerprint(v reflect.Value) *valueFingerprint {
 	var b fpBuilder
-	fp := b.compute(v)
+	fp := b.compute(v, fingerprintMaxNodes)
 	fp.data = bytes.Clone(fp.data)
 	return &fp
 }
@@ -88,16 +105,19 @@ const (
 type fpBuilder struct {
 	buf        []byte
 	max        int
+	left       int  // nodes this builder may still visit
 	full       bool // no more room: stop writing
 	incomplete bool // something was cut, here or in a nested part
+	nodeCut    bool // the cut was for want of nodes, so a larger allowance could see more
 	path       *[]refKey
 	own        []refKey
 }
 
-// compute fingerprints v into the builder's buffer, reusing it: the returned data is only valid until
-// the next call.
-func (b *fpBuilder) compute(v reflect.Value) valueFingerprint {
-	b.buf, b.max, b.full, b.incomplete = b.buf[:0], fingerprintMaxBytes, false, false
+// compute fingerprints v into the builder's buffer, reusing it, with at most allowance nodes: the
+// returned data is only valid until the next call. The nodes visited are allowance - b.left.
+func (b *fpBuilder) compute(v reflect.Value, allowance int) valueFingerprint {
+	b.buf, b.max, b.full, b.incomplete, b.nodeCut = b.buf[:0], fingerprintMaxBytes, false, false, false
+	b.left = allowance
 	b.own = b.own[:0]
 	b.path = &b.own
 	b.value(v, 0)
@@ -203,6 +223,11 @@ func (b *fpBuilder) value(v reflect.Value, depth int) {
 	if b.full {
 		return
 	}
+	if b.left <= 0 {
+		b.full, b.incomplete, b.nodeCut = true, true, true
+		return
+	}
+	b.left--
 	if !v.IsValid() {
 		b.byteOf(fpInvalid)
 		return
@@ -319,18 +344,28 @@ func (b *fpBuilder) descend(key refKey, target reflect.Value, depth int) {
 
 // mapEntries writes the entries of a nested map in the canonical order of their own fingerprints
 // (key and value together, so tied keys are ordered by value too). Each entry gets an equal share of
-// the room left, so the cut does not depend on the order the runtime iterates the map.
+// the room and of the nodes left, so the cut does not depend on the order the runtime iterates the
+// map. Visiting the entries and sorting them cost n + n*log2(n) nodes, charged before any work is
+// done; a map that does not fit is recorded by its length only.
 func (b *fpBuilder) mapEntries(m reflect.Value, depth int) {
 	n := m.Len()
 	if n == 0 || b.full {
 		return
 	}
-	share := (b.max - len(b.buf)) / n
+	cost := n + n*bits.Len(uint(n))
+	if cost > b.left {
+		b.incomplete, b.nodeCut = true, true
+		return
+	}
+	b.left -= cost
+	share, nodeShare := (b.max-len(b.buf))/n, b.left/n
 	subs := make([]valueFingerprint, 0, n)
 	for it := m.MapRange(); it.Next(); {
-		sub := fpBuilder{max: share, path: b.path, buf: make([]byte, 0, min(share, 64))}
+		sub := fpBuilder{max: share, left: nodeShare, path: b.path, buf: make([]byte, 0, min(share, 64))}
 		sub.value(it.Key(), depth+1)
 		sub.value(it.Value(), depth+1)
+		b.left -= nodeShare - sub.left
+		b.nodeCut = b.nodeCut || sub.nodeCut
 		subs = append(subs, valueFingerprint{data: sub.buf, complete: !sub.incomplete})
 	}
 	sort.Slice(subs, func(i, j int) bool { return compareFingerprints(&subs[i], &subs[j]) < 0 })
@@ -349,5 +384,137 @@ func (b *fpBuilder) mapEntries(m reflect.Value, depth int) {
 		} else {
 			b.buf = append(b.buf, 0)
 		}
+	}
+}
+
+// fpMeter is the work budget of ONE diagnostic message. Every renderer and walker of the message
+// shares it, so the fingerprints of the whole message together visit at most
+// fingerprintMessageBudget nodes, however many tied entries it holds and however often the same map
+// is rendered.
+//
+// The budget is spent map by map, in the deterministic order the message visits maps, and split
+// inside a map without reading iteration order: tieAllowance counts the tied entries first and gives
+// each of them the same number of nodes. Which entry is fingerprinted first therefore never changes
+// what any entry gets.
+type fpMeter struct {
+	left    int // nodes still available to this message
+	visited int // nodes visited by this message's fingerprints so far
+	memo    map[fpMemoKey]fpMemoEntry
+}
+
+func newFPMeter() *fpMeter { return &fpMeter{left: fingerprintMessageBudget} }
+
+// tieAllowance is the number of nodes each of tied entries of one map may visit: an equal share of
+// half of what is left (so a map cannot starve the maps after it), at most fingerprintMaxNodes,
+// rounded down to a power of two. The rounding keeps the allowance stable while the message spends
+// its budget in small steps, which lets a fingerprint computed earlier be recalled instead of built
+// again.
+func (m *fpMeter) tieAllowance(tied int) int {
+	if tied <= 0 {
+		return 0
+	}
+	a := min(fingerprintMaxNodes, m.left/2/tied)
+	if a < 1 {
+		return 0
+	}
+	return 1 << (bits.Len(uint(a)) - 1)
+}
+
+// fpMemoKey identifies the value of a tied entry that is, or holds through an interface, a pointer,
+// map or slice: the static type of the value and the identity of the reference. Its fingerprint
+// starts from an empty path, so it is a pure function of what the reference reaches.
+type fpMemoKey struct {
+	typ reflect.Type
+	ref refKey
+}
+
+type fpMemoEntry struct {
+	allowance int
+	nodeCut   bool // cut for want of nodes: valid for this allowance only
+	fp        *valueFingerprint
+}
+
+func fpMemoKeyOf(v reflect.Value) (fpMemoKey, bool) {
+	e := v
+	for e.Kind() == reflect.Interface && !e.IsNil() {
+		e = e.Elem()
+	}
+	ref, ok := refIdentity(e)
+	return fpMemoKey{typ: v.Type(), ref: ref}, ok
+}
+
+// tieFingerprint returns the fingerprint of the value of a tied entry within allowance nodes, and
+// charges the meter for the nodes it visits. A value that is a reference already fingerprinted in
+// this message is recalled without work when the recalled result is exactly what a new computation
+// would give: the same allowance, or a larger one when nothing was cut for want of nodes. shared says
+// that fp.data belongs to the meter and may be kept; otherwise it is b's buffer, valid until b is
+// used again.
+func (m *fpMeter) tieFingerprint(b *fpBuilder, v reflect.Value, allowance int) (fp valueFingerprint, shared bool) {
+	if allowance <= 0 {
+		return valueFingerprint{}, true // nothing visited: empty and incomplete, so entries tie as truncated
+	}
+	key, keyed := fpMemoKeyOf(v)
+	if keyed {
+		if e, ok := m.memo[key]; ok && (e.allowance == allowance || (!e.nodeCut && allowance > e.allowance)) {
+			return *e.fp, true
+		}
+	}
+	fp = b.compute(v, allowance)
+	used := allowance - b.left
+	m.left -= used
+	m.visited += used
+	if !keyed {
+		return fp, false
+	}
+	owned := &valueFingerprint{data: bytes.Clone(fp.data), complete: fp.complete}
+	if m.memo == nil {
+		m.memo = map[fpMemoKey]fpMemoEntry{}
+	}
+	m.memo[key] = fpMemoEntry{allowance: allowance, nodeCut: b.nodeCut, fp: owned}
+	return *owned, true
+}
+
+// ownedFingerprint returns fp with bytes that outlive the builder.
+func ownedFingerprint(fp valueFingerprint, shared bool) *valueFingerprint {
+	if !shared {
+		fp.data = bytes.Clone(fp.data)
+	}
+	return &fp
+}
+
+// sortEntries puts entries in compareMapEntries order and gives every entry whose key ties a
+// fingerprint. Tie classes are found first, by key alone, so their sizes do not depend on iteration
+// order; the whole map then has one allowance per tied entry; and only then are fingerprints built,
+// class by class in key order.
+func (m *fpMeter) sortEntries(entries []mapEntry) {
+	sort.SliceStable(entries, func(i, j int) bool { return compareMapKeys(entries[i].key, entries[j].key) < 0 })
+	tied := 0
+	eachTieClass(entries, func(lo, hi int) { tied += hi - lo })
+	if tied == 0 {
+		return
+	}
+	allowance := m.tieAllowance(tied)
+	var b fpBuilder
+	eachTieClass(entries, func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			fp, shared := m.tieFingerprint(&b, entries[i].val, allowance)
+			entries[i].fp = ownedFingerprint(fp, shared)
+		}
+		class := entries[lo:hi]
+		sort.SliceStable(class, func(i, j int) bool { return compareMapEntries(&class[i], &class[j]) < 0 })
+	})
+}
+
+// eachTieClass calls f for every run of two or more entries of sorted whose keys tie.
+func eachTieClass(sorted []mapEntry, f func(lo, hi int)) {
+	for lo := 0; lo < len(sorted); {
+		hi := lo + 1
+		for hi < len(sorted) && compareMapKeys(sorted[lo].key, sorted[hi].key) == 0 {
+			hi++
+		}
+		if hi-lo > 1 {
+			f(lo, hi)
+		}
+		lo = hi
 	}
 }

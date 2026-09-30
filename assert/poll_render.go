@@ -31,8 +31,15 @@ func renderObserved(v any) string { return formatUserValue(v, "%#v") }
 // renderFallback prints v with the bounded renderer: depth, element and node limits, a marker on a
 // cycle, and no user method ever called.
 func renderFallback(v reflect.Value) string {
+	return renderFallbackWith(v, newFPMeter())
+}
+
+// renderFallbackWith is renderFallback spending the fingerprint budget of meter: the tie-break
+// fingerprints of the whole message, however often a map is met, visit at most
+// fingerprintMessageBudget nodes together.
+func renderFallbackWith(v reflect.Value, meter *fpMeter) string {
 	var b strings.Builder
-	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}}
+	r := renderer{path: map[refKey]bool{}, b: &b, nodes: &nodeBudget{left: pollRenderLimits.nodeBudget}, meter: meter}
 	r.write(v, 0)
 	return b.String()
 }
@@ -44,6 +51,7 @@ type renderer struct {
 	path  map[refKey]bool
 	b     *strings.Builder
 	nodes *nodeBudget
+	meter *fpMeter
 }
 
 func (r *renderer) write(v reflect.Value, depth int) {
@@ -137,18 +145,20 @@ func (r *renderer) writeMap(v reflect.Value, depth int) {
 	var picked []mapEntry
 	total := v.Len()
 	if total > mapSortCap {
-		picked, _ = smallestMapEntries(v, boundedMaxElems)
+		picked, _ = smallestMapEntriesWith(v, boundedMaxElems, r.meter)
 	} else {
 		picked = rangeMapEntries(v, true, make([]mapEntry, 0, total))
 		// Keys are rendered in this order and each costs node budget, so when the budget runs out
 		// partway the entries cut to "<truncated>" must not depend on the order the runtime iterates
-		// the map. smallestMapEntries above already returns its window in this order.
-		sort.SliceStable(picked, func(i, j int) bool { return compareMapEntries(&picked[i], &picked[j]) < 0 })
+		// the map. sortEntries puts the entries in the total order of compareMapEntries and resolves
+		// the fingerprints of tied keys within the message budget; smallestMapEntriesWith above
+		// already returns its window in this order.
+		r.meter.sortEntries(picked)
 	}
 	entries := make([]renderedEntry, len(picked))
 	for i, e := range picked {
 		var kb strings.Builder
-		kr := renderer{path: r.path, b: &kb, nodes: r.nodes}
+		kr := renderer{path: r.path, b: &kb, nodes: r.nodes, meter: r.meter}
 		kr.write(e.key, depth+1)
 		entries[i] = renderedEntry{kb.String(), e}
 	}
