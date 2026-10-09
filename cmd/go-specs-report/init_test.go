@@ -127,7 +127,13 @@ func TestInitResolvesARelativeReportDirToAbsoluteInItsOutput(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
 	kv := parseKV(t, stdout)
-	want := filepath.Join(base, "runs")
+	// os.Getwd reports the symlink-resolved path (e.g. /private/var on macOS),
+	// so the expectation must resolve base the same way.
+	resolved, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolved, "runs")
 	if kv[coordination.EnvReportDir] != want {
 		t.Fatalf("%s = %q, want %q (must be absolute)", coordination.EnvReportDir, kv[coordination.EnvReportDir], want)
 	}
