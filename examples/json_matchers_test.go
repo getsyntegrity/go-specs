@@ -113,6 +113,6 @@ func Example_matchJSONInvalidInput() {
 	// false MatchJSON: actual is not valid JSON: trailing content after the JSON document
 	// false MatchJSON: actual is not valid JSON: duplicate key "a" at $
 	// false MatchJSON: int is not a string or []byte
-	// MatchJSON: expected is not valid JSON: invalid character 'o'
+	// MatchJSON: expected is not valid JSON: invalid character 'o' looking for beginning of value
 	// MatchJSON: expected must be a string or []byte, got int
 }
