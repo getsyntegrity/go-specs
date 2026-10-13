@@ -1,3 +1,4 @@
+# CI policy: docs/ci-economy.md; complete checks below are local only.
 # go-specs Makefile
 # Single Go module at the repository root; run targets from repo root.
 
@@ -166,3 +167,7 @@ tidy:
 clean:
 	rm -f coverage.out coverage.html
 	rm -f $(BENCH_RESULTS)/*.txt $(BENCH_RESULTS)/*.png
+
+.PHONY: ci-fast
+ci-fast: ## Format, build and fast unit tests without expensive checks
+	go run .github/scripts/ci-fast.go
