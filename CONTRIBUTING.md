@@ -1,3 +1,7 @@
+> **CI policy update (2026-10-13):** GitHub Actions runs only fast validation.
+> Race, integration, guards, judges and long checks below are local-only.
+> See [the current economical CI policy](docs/ci-economy.md).
+
 # CONTRIBUTING.md
 
 Thanks for contributing to go-specs.

@@ -1,3 +1,7 @@
+> **CI policy update (2026-10-13):** GitHub Actions runs only fast validation.
+> Race, integration, guards, judges and long checks below are local-only.
+> See [the current economical CI policy](ci-economy.md).
+
 # CI/CD pipeline guide
 
 How this repository's GitHub Actions pipeline works. It is modeled on the pipeline of the `ego`
