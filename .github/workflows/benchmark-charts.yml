@@ -152,7 +152,7 @@ jobs:
       # No `[skip ci]` on the commit message (unlike the old direct-to-main commit this replaces):
       # this now becomes a real pull request, and CI must run on it like any other PR.
       - name: Open or update the rolling benchmark-charts PR
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           # ego's token convention: the org PAT when the secret exists (so CI runs on the PR),
           # else github.token (the PR opens, but GitHub does not start workflows from it: close
